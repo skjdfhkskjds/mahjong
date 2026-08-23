@@ -1,5 +1,11 @@
 export type SocketConnectionState =
-  "connecting" | "connected" | "protocol-error" | "reconnecting" | "stopped";
+  | "authentication-required"
+  | "connecting"
+  | "connected"
+  | "protocol-error"
+  | "reconnecting"
+  | "session-replaced"
+  | "stopped";
 
 export interface ViewerSafeTableSnapshot {
   readonly type: "table/snapshot";
@@ -17,6 +23,13 @@ export interface ViewerSafeTableSnapshot {
     };
   };
 }
+
+export interface SessionReplacedMessage {
+  readonly type: "session/replaced";
+  readonly protocolVersion: 1;
+}
+
+type TableSocketMessage = ViewerSafeTableSnapshot | SessionReplacedMessage;
 
 export interface SocketStatus {
   readonly state: SocketConnectionState;
@@ -91,15 +104,21 @@ export function parseTableSnapshot(value: unknown): ViewerSafeTableSnapshot {
   };
 }
 
-function parseSocketMessage(
-  event: MessageEvent<unknown>,
-): ViewerSafeTableSnapshot {
+function parseSocketMessage(event: MessageEvent<unknown>): TableSocketMessage {
   if (typeof event.data !== "string") {
     throw new Error("Table socket messages must be JSON text.");
   }
 
   try {
-    return parseTableSnapshot(JSON.parse(event.data) as unknown);
+    const value = JSON.parse(event.data) as unknown;
+    if (
+      isRecord(value) &&
+      value["type"] === "session/replaced" &&
+      value["protocolVersion"] === 1
+    ) {
+      return { type: "session/replaced", protocolVersion: 1 };
+    }
+    return parseTableSnapshot(value);
   } catch (error) {
     if (error instanceof SyntaxError) {
       throw new Error("Table socket message is not valid JSON.", {
@@ -171,7 +190,15 @@ export class ReconnectingSocketStatusMonitor implements SocketStatusMonitor {
       });
       socket.addEventListener("message", (event) => {
         try {
-          lastSnapshot = parseSocketMessage(event);
+          const message = parseSocketMessage(event);
+          if (message.type === "session/replaced") {
+            stopped = true;
+            lastSnapshot = undefined;
+            socket?.close(4001, "Session replaced");
+            publish("session-replaced", 0);
+            return;
+          }
+          lastSnapshot = message;
           publish("connected", 0);
         } catch {
           stopped = true;
@@ -179,8 +206,20 @@ export class ReconnectingSocketStatusMonitor implements SocketStatusMonitor {
           publish("protocol-error", attempt);
         }
       });
-      socket.addEventListener("close", () => {
+      socket.addEventListener("close", (event) => {
         if (stopped) {
+          return;
+        }
+        if (event.code === 4001) {
+          stopped = true;
+          lastSnapshot = undefined;
+          publish("session-replaced", 0);
+          return;
+        }
+        if (event.code === 1008) {
+          stopped = true;
+          lastSnapshot = undefined;
+          publish("authentication-required", 0);
           return;
         }
 

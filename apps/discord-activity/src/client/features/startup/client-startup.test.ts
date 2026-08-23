@@ -23,6 +23,8 @@ const bridge: DiscordBridge = {
     Promise.resolve({ id: "server-id", displayName: "Local Player" }),
 };
 
+const tableId = "dGVzdC10YWJsZS1pZC0xNg";
+
 function createApi(overrides: Partial<ActivityApi> = {}): ActivityApi {
   return {
     getHealth: () =>
@@ -33,21 +35,36 @@ function createApi(overrides: Partial<ActivityApi> = {}): ActivityApi {
       }),
     createMockSession: () =>
       Promise.resolve({
+        authenticated: true,
+        access: "member",
+        role: "owner",
         mode: "mock",
         actor: { id: "server-id", displayName: "Local Player" },
         expiresAt: "2026-08-23T13:00:00.000Z",
         csrfToken: "csrf-value",
+        instanceId: "instance-1",
+        tableId,
       }),
     exchangeDiscordCode: () =>
       Promise.reject(new Error("Not used in mock mode.")),
     getSession: () =>
       Promise.resolve({
         authenticated: true,
+        access: "member",
+        role: "owner",
         mode: "mock",
         actor: { id: "server-id", displayName: "Local Player" },
         expiresAt: "2026-08-23T13:00:00.000Z",
         csrfToken: "csrf-value",
+        instanceId: "instance-1",
+        tableId,
       }),
+    createInvitation: () =>
+      Promise.resolve({ capability: "invitation", expiresAt: Date.now() }),
+    redeemInvitation: () => Promise.resolve({ role: "member", tableId }),
+    createResumeCapability: () =>
+      Promise.resolve({ capability: "resume", expiresAt: Date.now() }),
+    logout: () => Promise.resolve(),
     ...overrides,
   };
 }
@@ -121,10 +138,14 @@ describe("client startup", () => {
         getSession: () =>
           Promise.resolve({
             authenticated: true,
+            access: "member",
+            role: "member",
             mode: "mock",
             actor: { id: "different-id", displayName: "Someone Else" },
             expiresAt: "2026-08-23T13:00:00.000Z",
             csrfToken: "csrf-value",
+            instanceId: "instance-1",
+            tableId,
           }),
       }),
       socket: { start: startSocket },
@@ -135,5 +156,83 @@ describe("client startup", () => {
 
     expect(startSocket).not.toHaveBeenCalled();
     expect(statuses.at(-1)?.session).toMatchObject({ state: "failed" });
+  });
+
+  it("keeps join-required sessions stable without opening a socket", async () => {
+    const startSocket = vi.fn();
+    const statuses: ClientStartupStatus[] = [];
+
+    startClientStartup({
+      config,
+      bridge,
+      api: createApi({
+        getSession: () =>
+          Promise.resolve({
+            authenticated: true,
+            access: "join-required",
+            mode: "mock",
+            actor: { id: "server-id", displayName: "Local Player" },
+            expiresAt: "2026-08-23T13:00:00.000Z",
+            csrfToken: "csrf-value",
+            instanceId: "instance-1",
+            tableId,
+          }),
+      }),
+      socket: { start: startSocket },
+      onStatus: (status) => statuses.push(status),
+    });
+
+    await flushPromises();
+
+    expect(startSocket).not.toHaveBeenCalled();
+    expect(statuses.at(-1)).toMatchObject({
+      complete: false,
+      sessionResponse: { access: "join-required", tableId },
+      session: { state: "ready" },
+      socket: { state: "waiting" },
+    });
+  });
+
+  it("clears the table and invalidates startup after session replacement", async () => {
+    const statuses: ClientStartupStatus[] = [];
+    const socket: SocketStatusMonitor = {
+      start: (onStatus) => {
+        onStatus({
+          state: "connected",
+          attempt: 0,
+          snapshot: {
+            type: "table/snapshot",
+            protocolVersion: 1,
+            stateVersion: 0,
+            view: {
+              phase: "lobby",
+              tableId,
+              viewer: {
+                role: "spectator",
+                actor: { id: "server-id", displayName: "Local Player" },
+              },
+            },
+          },
+        });
+        onStatus({ state: "session-replaced", attempt: 0 });
+        return vi.fn();
+      },
+    };
+
+    startClientStartup({
+      config,
+      bridge,
+      api: createApi(),
+      socket,
+      onStatus: (status) => statuses.push(status),
+    });
+    await flushPromises();
+
+    expect(statuses.at(-1)).toMatchObject({
+      complete: false,
+      session: { state: "failed" },
+      socket: { state: "failed" },
+    });
+    expect(statuses.at(-1)?.tableSnapshot).toBeUndefined();
   });
 });

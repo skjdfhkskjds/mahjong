@@ -27,6 +27,7 @@ const COOKIE_NAME_PATTERN = /^[!#$%&'*+\-.^_`|~0-9A-Za-z]+$/u;
 const MOCK_ONLY_SIGNING_KEY =
   "mock-mode-only-signing-key-change-before-deployment";
 const MOCK_INSTANCE_ID = "standalone-local-instance";
+const MAX_PUBLIC_JSON_BODY_BYTES = 4_096;
 const textEncoder = new TextEncoder();
 
 function authenticationMode(env: Env): AuthenticationMode | undefined {
@@ -85,8 +86,38 @@ function jsonRequired(request: Request): Response | undefined {
 }
 
 async function readJson(request: Request): Promise<unknown> {
+  const contentLength = request.headers.get("Content-Length");
+  if (
+    contentLength !== null &&
+    /^\d+$/u.test(contentLength) &&
+    Number(contentLength) > MAX_PUBLIC_JSON_BODY_BYTES
+  ) {
+    return undefined;
+  }
   try {
-    return await request.json();
+    if (request.body === null) return undefined;
+    const reader = (request.body as ReadableStream<Uint8Array>).getReader();
+    const decoder = new TextDecoder();
+    let body = "";
+    let byteLength = 0;
+    try {
+      for (;;) {
+        const chunk = await reader.read();
+        if (chunk.done) {
+          body += decoder.decode();
+          break;
+        }
+        byteLength += chunk.value.byteLength;
+        if (byteLength > MAX_PUBLIC_JSON_BODY_BYTES) {
+          await reader.cancel();
+          return undefined;
+        }
+        body += decoder.decode(chunk.value, { stream: true });
+      }
+    } finally {
+      reader.releaseLock();
+    }
+    return JSON.parse(body) as unknown;
   } catch {
     return undefined;
   }
@@ -110,10 +141,21 @@ function mockActor(value: unknown): ApplicationActor | undefined {
   return { displayName, id: `mock:${crypto.randomUUID()}` };
 }
 
+type PublicTableSession =
+  | {
+      readonly access: "join-required";
+      readonly binding: { readonly tableId: string };
+    }
+  | {
+      readonly access: "member";
+      readonly binding: { readonly tableId: string };
+      readonly role: "member" | "owner";
+    };
+
 function publicSession(
   mode: AuthenticationMode,
   session: Awaited<ReturnType<typeof readApplicationSession>>,
-  tableId?: string,
+  tableSession?: PublicTableSession,
 ): object {
   if (session === undefined) {
     return { authenticated: false, mode };
@@ -125,7 +167,15 @@ function publicSession(
     expiresAt: new Date(session.expiresAt).toISOString(),
     instanceId: session.instanceId,
     mode,
-    ...(tableId ? { tableId } : {}),
+    ...(tableSession === undefined
+      ? {}
+      : {
+          access: tableSession.access,
+          tableId: tableSession.binding.tableId,
+          ...(tableSession.access === "member"
+            ? { role: tableSession.role }
+            : {}),
+        }),
   };
 }
 
@@ -219,7 +269,7 @@ async function getSession(
     publicSession(
       mode,
       validated === undefined ? undefined : session,
-      validated?.binding.tableId,
+      validated,
     ),
   );
 }
@@ -243,8 +293,8 @@ async function createMockSession(
   if (policyFailure !== undefined) {
     return policyFailure;
   }
-  const actor = mockActor(await readJson(request));
-  if (actor === undefined) {
+  const requestedActor = mockActor(await readJson(request));
+  if (requestedActor === undefined) {
     return problemResponse(
       400,
       "invalid-request",
@@ -260,6 +310,19 @@ async function createMockSession(
     );
   }
   const now = Date.now();
+  const existing = await readApplicationSession(
+    request,
+    env.SESSION_SIGNING_KEY,
+    now,
+    configuration,
+    env.SESSION_SIGNING_KEY_PREVIOUS,
+  );
+  const actor =
+    existing?.mode === "mock" &&
+    existing.instanceId === MOCK_INSTANCE_ID &&
+    existing.actor.displayName === requestedActor.displayName
+      ? existing.actor
+      : requestedActor;
   const instanceSession = await issueInstanceSession(
     env,
     MOCK_INSTANCE_ID,
@@ -273,6 +336,7 @@ async function createMockSession(
       "The Activity instance session is unavailable.",
     );
   }
+  if (instanceSession instanceof Response) return instanceSession;
   const created = await createSessionCookie(
     actor,
     {
@@ -285,7 +349,7 @@ async function createMockSession(
     configuration,
   );
   const response = jsonResponse(
-    publicSession(mode, created.session, instanceSession.binding.tableId),
+    publicSession(mode, created.session, instanceSession),
     201,
   );
   response.headers.append("Set-Cookie", created.cookie);
@@ -360,8 +424,9 @@ async function reserveDiscordExchange(
       "Discord authentication is not configured.",
     );
   }
+  let discord: Awaited<ReturnType<typeof exchangeDiscordIdentity>>;
   try {
-    const discord = await exchangeDiscordIdentity(
+    discord = await exchangeDiscordIdentity(
       fields["code"],
       clientId,
       clientSecret,
@@ -372,41 +437,6 @@ async function reserveDiscordExchange(
       instanceId: fields["instanceId"],
       userId: discord.actor.id,
     });
-    const now = Date.now();
-    const instanceSession = await issueInstanceSession(
-      env,
-      fields["instanceId"],
-      discord.actor,
-      now + configuration.lifetimeSeconds * 1_000,
-      fields["resumeCapability"],
-    );
-    if (instanceSession === undefined) {
-      throw new Error("Activity instance session issuance failed.");
-    }
-    const created = await createSessionCookie(
-      discord.actor,
-      {
-        instanceId: fields["instanceId"],
-        sessionGeneration: instanceSession.sessionGeneration,
-        sessionId: instanceSession.sessionId,
-      },
-      env.SESSION_SIGNING_KEY,
-      now,
-      configuration,
-    );
-    const response = jsonResponse(
-      {
-        ...publicSession(
-          mode,
-          created.session,
-          instanceSession.binding.tableId,
-        ),
-        accessToken: discord.accessToken,
-      },
-      201,
-    );
-    response.headers.append("Set-Cookie", created.cookie);
-    return response;
   } catch {
     return problemResponse(
       502,
@@ -414,6 +444,42 @@ async function reserveDiscordExchange(
       "Discord authentication failed.",
     );
   }
+  const now = Date.now();
+  const instanceSession = await issueInstanceSession(
+    env,
+    fields["instanceId"],
+    discord.actor,
+    now + configuration.lifetimeSeconds * 1_000,
+    fields["resumeCapability"],
+  );
+  if (instanceSession === undefined) {
+    return problemResponse(
+      503,
+      "instance-session-unavailable",
+      "The Activity instance session is unavailable.",
+    );
+  }
+  if (instanceSession instanceof Response) return instanceSession;
+  const created = await createSessionCookie(
+    discord.actor,
+    {
+      instanceId: fields["instanceId"],
+      sessionGeneration: instanceSession.sessionGeneration,
+      sessionId: instanceSession.sessionId,
+    },
+    env.SESSION_SIGNING_KEY,
+    now,
+    configuration,
+  );
+  const response = jsonResponse(
+    {
+      ...publicSession(mode, created.session, instanceSession),
+      accessToken: discord.accessToken,
+    },
+    201,
+  );
+  response.headers.append("Set-Cookie", created.cookie);
+  return response;
 }
 
 async function authenticatedMutationSession(

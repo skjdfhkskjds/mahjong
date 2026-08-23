@@ -5,6 +5,7 @@ import type {
 } from "../../adapters/discord/discord-bridge.js";
 import type {
   ActivityApi,
+  AuthenticatedSession,
   HealthResponse,
 } from "../../adapters/transport/activity-api-client.js";
 import type {
@@ -30,13 +31,8 @@ export interface ClientStartupStatus {
   readonly actor?: ActivityActor;
   readonly instanceId?: string;
   readonly healthResponse?: HealthResponse;
-  readonly tableSnapshot?: ViewerSafeTableSnapshot;
-  readonly sessionResponse?: {
-    readonly authenticated: true;
-    readonly mode: RuntimeConfig["mode"];
-    readonly actor: ActivityActor;
-    readonly expiresAt: string;
-  };
+  readonly tableSnapshot?: ViewerSafeTableSnapshot | undefined;
+  readonly sessionResponse?: AuthenticatedSession;
 }
 
 export interface ClientStartupDependencies {
@@ -70,6 +66,11 @@ function errorMessage(error: unknown): string {
 
 function socketCheck(status: SocketStatus): StartupCheck {
   switch (status.state) {
+    case "authentication-required":
+      return {
+        state: "failed",
+        detail: "Table authorization expired or changed. Authenticate again.",
+      };
     case "connected":
       return status.snapshot
         ? {
@@ -89,6 +90,11 @@ function socketCheck(status: SocketStatus): StartupCheck {
       return {
         state: "warning",
         detail: `Connection interrupted; reconnecting (attempt ${String(status.attempt)}).`,
+      };
+    case "session-replaced":
+      return {
+        state: "failed",
+        detail: "This session was replaced. Authenticate again to reconnect.",
       };
     case "protocol-error":
       return {
@@ -194,25 +200,48 @@ export function startClientStartup({
 
       publish({
         actor: session.actor,
-        sessionResponse: {
-          authenticated: true,
-          mode: session.mode,
-          actor: session.actor,
-          expiresAt: session.expiresAt,
-        },
+        sessionResponse: session,
         session: {
           state: "ready",
           detail: `Signed in as ${session.actor.displayName}.`,
         },
       });
 
+      if (session.access === "join-required") {
+        publish({
+          complete: false,
+          socket: {
+            state: "waiting",
+            detail:
+              "Waiting for an actor-bound table invitation before connecting.",
+          },
+        });
+        return;
+      }
+
       stopSocket = socket.start((socketStatus) => {
+        const terminalSession =
+          socketStatus.state === "session-replaced" ||
+          socketStatus.state === "authentication-required";
         publish({
           complete:
             socketStatus.state === "connected" &&
             socketStatus.snapshot !== undefined,
-          ...(socketStatus.snapshot
-            ? { tableSnapshot: socketStatus.snapshot }
+          ...(terminalSession
+            ? { tableSnapshot: undefined }
+            : socketStatus.snapshot
+              ? { tableSnapshot: socketStatus.snapshot }
+              : {}),
+          ...(terminalSession
+            ? {
+                session: {
+                  state: "failed" as const,
+                  detail:
+                    socketStatus.state === "session-replaced"
+                      ? "This session was replaced. Authenticate again."
+                      : "Table authorization expired or changed. Authenticate again.",
+                },
+              }
             : {}),
           socket: socketCheck(socketStatus),
         });

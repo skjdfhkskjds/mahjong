@@ -1,5 +1,10 @@
 import { DurableObject } from "cloudflare:workers";
 
+import {
+  isValidApplicationActor,
+  isValidApplicationDisplayName,
+  type ApplicationActor,
+} from "../auth/application-session.js";
 import type { Env } from "../env.js";
 import {
   jsonResponse,
@@ -17,7 +22,6 @@ const TABLE_ID_PATTERN = /^[A-Za-z0-9_-]{1,64}$/u;
 const TOKEN_PATTERN = /^[A-Za-z0-9_-]{43}$/u;
 const SHORT_TOKEN_PATTERN = /^[A-Za-z0-9_-]{1,64}$/u;
 const CAPABILITY_ID_PATTERN = /^[A-Za-z0-9_-]{22}$/u;
-const DISPLAY_NAME_PATTERN = /^[^\p{Cc}\p{Cf}]{1,40}$/u;
 
 const INTERNAL_ACTOR_ID = "X-Mahjong-Actor-Id";
 const INTERNAL_BINDING_GENERATION = "X-Mahjong-Binding-Generation";
@@ -29,10 +33,7 @@ const INTERNAL_SESSION_EXPIRES_AT = "X-Mahjong-Session-Expires-At";
 const INTERNAL_SESSION_GENERATION = "X-Mahjong-Session-Generation";
 const INTERNAL_TABLE_ID = "X-Mahjong-Table-Id";
 
-interface Actor {
-  readonly id: string;
-  readonly displayName: string;
-}
+type Actor = ApplicationActor;
 
 interface BindingAuthorization {
   readonly bindingGeneration: number;
@@ -55,6 +56,7 @@ interface CapabilityCreateRequest extends BindingAuthorization {
   readonly actorId: string;
   readonly invitedActorId?: string;
   readonly now: number;
+  readonly sessionGeneration: number;
   readonly version: 1;
 }
 
@@ -62,6 +64,7 @@ interface InvitationRedeemRequest extends BindingAuthorization {
   readonly actor: Actor;
   readonly capability: string;
   readonly now: number;
+  readonly sessionGeneration: number;
   readonly version: 1;
 }
 
@@ -131,6 +134,8 @@ interface ParsedCapability {
   readonly tableId: string;
 }
 
+class AtomicMutationConflict extends Error {}
+
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
@@ -164,16 +169,7 @@ function validInstanceId(value: unknown): value is string {
 }
 
 function parseActor(value: unknown): Actor | undefined {
-  if (
-    !isRecord(value) ||
-    !hasExactKeys(value, ["displayName", "id"]) ||
-    !validActorId(value["id"]) ||
-    typeof value["displayName"] !== "string" ||
-    !DISPLAY_NAME_PATTERN.test(value["displayName"])
-  ) {
-    return undefined;
-  }
-  return { displayName: value["displayName"], id: value["id"] };
+  return isValidApplicationActor(value) ? value : undefined;
 }
 
 function parseBindingAuthorization(
@@ -260,6 +256,7 @@ function parseCapabilityCreateRequest(
         "instanceId",
         "invitedActorId",
         "now",
+        "sessionGeneration",
         "version",
       ]
     : [
@@ -268,6 +265,7 @@ function parseCapabilityCreateRequest(
         "bindingProof",
         "instanceId",
         "now",
+        "sessionGeneration",
         "version",
       ];
   const authorization = parseBindingAuthorization(value);
@@ -278,7 +276,9 @@ function parseCapabilityCreateRequest(
     !validActorId(value["actorId"]) ||
     (invitation && !validActorId(value["invitedActorId"])) ||
     !Number.isSafeInteger(value["now"]) ||
-    Math.abs((value["now"] as number) - Date.now()) > MAX_CLOCK_SKEW_MS
+    Math.abs((value["now"] as number) - Date.now()) > MAX_CLOCK_SKEW_MS ||
+    !Number.isSafeInteger(value["sessionGeneration"]) ||
+    (value["sessionGeneration"] as number) < 1
   ) {
     return undefined;
   }
@@ -289,6 +289,7 @@ function parseCapabilityCreateRequest(
       ? { invitedActorId: value["invitedActorId"] as string }
       : {}),
     now: value["now"] as number,
+    sessionGeneration: value["sessionGeneration"] as number,
     version: 1,
   };
 }
@@ -305,13 +306,16 @@ function parseInvitationRedeemRequest(
       "capability",
       "instanceId",
       "now",
+      "sessionGeneration",
       "version",
     ]) ||
     value["version"] !== 1 ||
     typeof value["capability"] !== "string" ||
     value["capability"].length > 256 ||
     !Number.isSafeInteger(value["now"]) ||
-    Math.abs((value["now"] as number) - Date.now()) > MAX_CLOCK_SKEW_MS
+    Math.abs((value["now"] as number) - Date.now()) > MAX_CLOCK_SKEW_MS ||
+    !Number.isSafeInteger(value["sessionGeneration"]) ||
+    (value["sessionGeneration"] as number) < 1
   ) {
     return undefined;
   }
@@ -323,6 +327,7 @@ function parseInvitationRedeemRequest(
     actor,
     capability: value["capability"],
     now: value["now"] as number,
+    sessionGeneration: value["sessionGeneration"] as number,
     version: 1,
   };
 }
@@ -497,6 +502,14 @@ export class TableRoom extends DurableObject<Env> {
     sql.exec(
       "INSERT OR IGNORE INTO storage_metadata (singleton, schema_version) VALUES (1, 1)",
     );
+    const metadata = sql
+      .exec<{ schema_version: number }>(
+        "SELECT schema_version FROM storage_metadata WHERE singleton = 1",
+      )
+      .one();
+    if (metadata.schema_version !== 1) {
+      throw new Error("Unsupported TableRoom storage schema version.");
+    }
     sql.exec(
       "CREATE TABLE IF NOT EXISTS table_record (singleton INTEGER PRIMARY KEY CHECK (singleton = 1), table_id TEXT NOT NULL UNIQUE, owner_actor_id TEXT NOT NULL, created_at INTEGER NOT NULL, instance_id TEXT NOT NULL, binding_generation INTEGER NOT NULL, binding_proof TEXT NOT NULL, binding_operation_id TEXT NOT NULL)",
     );
@@ -606,6 +619,20 @@ export class TableRoom extends DurableObject<Env> {
     );
   }
 
+  private sessionGenerationCurrent(
+    actorId: string,
+    sessionGeneration: number,
+  ): boolean {
+    return (
+      this.ctx.storage.sql
+        .exec<{ session_generation: number }>(
+          "SELECT session_generation FROM actor_sessions WHERE actor_id = ?",
+          actorId,
+        )
+        .toArray()[0]?.session_generation === sessionGeneration
+    );
+  }
+
   private receipt(operationId: string): ReceiptRow | undefined {
     return this.ctx.storage.sql
       .exec<ReceiptRow>(
@@ -640,7 +667,35 @@ export class TableRoom extends DurableObject<Env> {
         "The binding request is invalid.",
       );
     }
-    const requestJson = JSON.stringify(body);
+    const capability =
+      body.intent.kind === "resume"
+        ? parseCapability(body.intent.capability)
+        : undefined;
+    if (body.intent.kind === "resume" && capability?.tableId !== tableId) {
+      return problemResponse(
+        403,
+        "invalid-capability",
+        "The capability is invalid.",
+      );
+    }
+    const capabilitySecretHash =
+      capability === undefined ? undefined : await sha256(capability.secret);
+    const requestJson = JSON.stringify({
+      actor: body.actor,
+      deadlineAt: body.deadlineAt,
+      instanceId: body.instanceId,
+      intent:
+        capability === undefined
+          ? { kind: "create" }
+          : {
+              kind: "resume",
+              capabilityId: capability.capabilityId,
+              capabilitySecretHash,
+              tableId: capability.tableId,
+            },
+      operationId: body.operationId,
+      version: 1,
+    });
     const existing = this.receipt(body.operationId);
     if (existing !== undefined) {
       if (existing.request_json !== requestJson) {
@@ -655,6 +710,18 @@ export class TableRoom extends DurableObject<Env> {
           body: JSON.parse(existing.response_json) as unknown,
           status: existing.http_status,
         });
+      }
+      if (
+        body.deadlineAt <= Date.now() &&
+        this.table()?.binding_operation_id !== body.operationId
+      ) {
+        const expired = problem(
+          410,
+          "binding-expired",
+          "The pending binding operation expired before it committed.",
+        );
+        this.finishReceipt(body.operationId, "rejected", expired);
+        return storedResponse(expired);
       }
     } else {
       if (body.deadlineAt <= Date.now()) {
@@ -673,10 +740,23 @@ export class TableRoom extends DurableObject<Env> {
         now,
       );
     }
-    const result =
-      body.intent.kind === "create"
-        ? this.applyCreate(body, tableId)
-        : await this.applyResume(body, tableId);
+    let result: StoredResult;
+    if (body.intent.kind === "create") {
+      result = this.applyCreate(body, tableId);
+    } else if (capability !== undefined && capabilitySecretHash !== undefined) {
+      result = this.applyResume(
+        body,
+        tableId,
+        capability,
+        capabilitySecretHash,
+      );
+    } else {
+      return problemResponse(
+        403,
+        "invalid-capability",
+        "The capability is invalid.",
+      );
+    }
     this.finishReceipt(
       body.operationId,
       result.status >= 200 && result.status < 300 ? "applied" : "rejected",
@@ -740,101 +820,120 @@ export class TableRoom extends DurableObject<Env> {
     };
   }
 
-  private async applyResume(
+  private applyResume(
     body: ApplyBindingRequest,
     tableId: string,
-  ): Promise<StoredResult> {
-    const table = this.table();
-    if (table === undefined)
-      return problem(404, "table-not-found", "The table does not exist.");
-    if (table.binding_operation_id === body.operationId) {
-      return {
-        body: {
-          version: 1,
-          tableId,
-          bindingGeneration: table.binding_generation,
-          bindingProof: table.binding_proof,
-          role: "owner",
-        },
-        status: 200,
-      };
-    }
-    if (table.owner_actor_id !== body.actor.id) {
-      return problem(
-        403,
-        "resume-not-authorized",
-        "Only the table owner may resume this table.",
-      );
-    }
-    if (body.intent.kind !== "resume") {
-      return problem(
-        400,
-        "invalid-binding-request",
-        "The binding request is invalid.",
-      );
-    }
-    const capability = parseCapability(body.intent.capability);
-    if (capability?.tableId !== tableId) {
-      return problem(403, "invalid-capability", "The capability is invalid.");
-    }
-    const row = this.ctx.storage.sql
-      .exec<CapabilityRow>(
-        "SELECT kind, subject_actor_id, secret_hash, expected_binding_generation, expires_at, consumed_actor_id, consumed_operation_id FROM capabilities WHERE capability_id = ?",
-        capability.capabilityId,
-      )
-      .toArray()[0];
-    if (
-      row?.kind !== "resume" ||
-      row.subject_actor_id !== body.actor.id ||
-      row.secret_hash !== (await sha256(capability.secret))
-    ) {
-      return problem(403, "invalid-capability", "The capability is invalid.");
-    }
-    if (row.expires_at <= Date.now()) {
-      return problem(410, "capability-expired", "The capability has expired.");
-    }
-    if (row.consumed_operation_id !== null) {
-      return problem(
-        410,
-        "capability-consumed",
-        "The capability was already used.",
-      );
-    }
-    if (row.expected_binding_generation !== table.binding_generation) {
-      return problem(
-        409,
-        "stale-binding-generation",
-        "The table binding changed after the capability was issued.",
-      );
-    }
-    const generation = table.binding_generation + 1;
+    capability: ParsedCapability,
+    capabilitySecretHash: string,
+  ): StoredResult {
     const proof = randomToken();
-    this.ctx.storage.transactionSync(() => {
-      this.ctx.storage.sql.exec(
-        "UPDATE table_record SET instance_id = ?, binding_generation = ?, binding_proof = ?, binding_operation_id = ? WHERE singleton = 1 AND binding_generation = ?",
-        body.instanceId,
-        generation,
-        proof,
-        body.operationId,
-        table.binding_generation,
-      );
-      this.ctx.storage.sql.exec(
-        "UPDATE capabilities SET consumed_actor_id = ?, consumed_operation_id = ? WHERE capability_id = ? AND consumed_operation_id IS NULL",
-        body.actor.id,
-        body.operationId,
-        capability.capabilityId,
-      );
-    });
-    return {
-      body: {
-        version: 1,
-        tableId,
-        bindingGeneration: generation,
-        bindingProof: proof,
-        role: "owner",
-      },
-      status: 200,
-    };
+    try {
+      return this.ctx.storage.transactionSync(() => {
+        const table = this.table();
+        if (table === undefined) {
+          return problem(404, "table-not-found", "The table does not exist.");
+        }
+        if (table.binding_operation_id === body.operationId) {
+          return {
+            body: {
+              version: 1,
+              tableId,
+              bindingGeneration: table.binding_generation,
+              bindingProof: table.binding_proof,
+              role: "owner",
+            },
+            status: 200,
+          };
+        }
+        if (table.owner_actor_id !== body.actor.id) {
+          return problem(
+            403,
+            "resume-not-authorized",
+            "Only the table owner may resume this table.",
+          );
+        }
+        const row = this.ctx.storage.sql
+          .exec<CapabilityRow>(
+            "SELECT kind, subject_actor_id, secret_hash, expected_binding_generation, expires_at, consumed_actor_id, consumed_operation_id FROM capabilities WHERE capability_id = ?",
+            capability.capabilityId,
+          )
+          .toArray()[0];
+        if (
+          row?.kind !== "resume" ||
+          row.subject_actor_id !== body.actor.id ||
+          row.secret_hash !== capabilitySecretHash
+        ) {
+          return problem(
+            403,
+            "invalid-capability",
+            "The capability is invalid.",
+          );
+        }
+        if (row.expires_at <= Date.now()) {
+          return problem(
+            410,
+            "capability-expired",
+            "The capability has expired.",
+          );
+        }
+        if (row.consumed_operation_id !== null) {
+          return problem(
+            410,
+            "capability-consumed",
+            "The capability was already used.",
+          );
+        }
+        if (row.expected_binding_generation !== table.binding_generation) {
+          return problem(
+            409,
+            "stale-binding-generation",
+            "The table binding changed after the capability was issued.",
+          );
+        }
+        const generation = table.binding_generation + 1;
+        const capabilityUpdate = this.ctx.storage.sql.exec(
+          "UPDATE capabilities SET consumed_actor_id = ?, consumed_operation_id = ? WHERE capability_id = ? AND consumed_operation_id IS NULL AND expected_binding_generation = ?",
+          body.actor.id,
+          body.operationId,
+          capability.capabilityId,
+          table.binding_generation,
+        );
+        const tableUpdate = this.ctx.storage.sql.exec(
+          "UPDATE table_record SET instance_id = ?, binding_generation = ?, binding_proof = ?, binding_operation_id = ? WHERE singleton = 1 AND binding_generation = ?",
+          body.instanceId,
+          generation,
+          proof,
+          body.operationId,
+          table.binding_generation,
+        );
+        if (
+          capabilityUpdate.rowsWritten !== 1 ||
+          tableUpdate.rowsWritten !== 1
+        ) {
+          throw new AtomicMutationConflict();
+        }
+        this.ctx.storage.sql.exec("DELETE FROM actor_sessions");
+        return {
+          body: {
+            version: 1,
+            tableId,
+            bindingGeneration: generation,
+            bindingProof: proof,
+            role: "owner",
+          },
+          status: 200,
+        };
+      });
+    } catch (error) {
+      if (error instanceof AtomicMutationConflict) {
+        return problem(
+          409,
+          "binding-conflict",
+          "The table binding changed concurrently.",
+        );
+      }
+      throw error;
+    }
   }
 
   private async createCapability(
@@ -842,136 +941,165 @@ export class TableRoom extends DurableObject<Env> {
     kind: "invitation" | "resume",
   ): Promise<Response> {
     const body = parseCapabilityCreateRequest(value, kind === "invitation");
-    const table = this.table();
-    if (body === undefined || table === undefined) {
+    if (body === undefined) {
       return problemResponse(
         400,
         "invalid-capability-request",
         "The capability request is invalid.",
       );
     }
-    if (
-      !this.bindingAuthorized(body, table) ||
-      table.owner_actor_id !== body.actorId
-    ) {
-      return problemResponse(
-        403,
-        "capability-not-authorized",
-        "The capability request is not authorized.",
-      );
-    }
-    const subjectActorId =
-      kind === "invitation" ? body.invitedActorId : body.actorId;
-    if (
-      subjectActorId === undefined ||
-      (kind === "invitation" && subjectActorId === table.owner_actor_id)
-    ) {
-      return problemResponse(
-        400,
-        "invalid-capability-subject",
-        "The capability subject is invalid.",
-      );
-    }
     const capabilityId = randomCapabilityId();
     const secret = randomToken();
+    const secretHash = await sha256(secret);
     const expiresAt = Date.now() + CAPABILITY_LIFETIME_MS;
-    this.ctx.storage.sql.exec(
-      "INSERT INTO capabilities (capability_id, kind, subject_actor_id, secret_hash, expected_binding_generation, expires_at, consumed_actor_id, consumed_operation_id) VALUES (?, ?, ?, ?, ?, ?, NULL, NULL)",
-      capabilityId,
-      kind,
-      subjectActorId,
-      await sha256(secret),
-      table.binding_generation,
-      expiresAt,
-    );
-    return jsonResponse({
-      version: 1,
-      capability: `v1.${table.table_id}.${capabilityId}.${secret}`,
-      expiresAt,
+    const result = this.ctx.storage.transactionSync<StoredResult>(() => {
+      const table = this.table();
+      if (
+        table === undefined ||
+        !this.bindingAuthorized(body, table) ||
+        table.owner_actor_id !== body.actorId
+      ) {
+        return problem(
+          403,
+          "capability-not-authorized",
+          "The capability request is not authorized.",
+        );
+      }
+      if (
+        !this.sessionGenerationCurrent(body.actorId, body.sessionGeneration)
+      ) {
+        return problem(
+          409,
+          "stale-session-generation",
+          "The application session is no longer current.",
+        );
+      }
+      const subjectActorId =
+        kind === "invitation" ? body.invitedActorId : body.actorId;
+      if (
+        subjectActorId === undefined ||
+        (kind === "invitation" && subjectActorId === table.owner_actor_id)
+      ) {
+        return problem(
+          400,
+          "invalid-capability-subject",
+          "The capability subject is invalid.",
+        );
+      }
+      this.ctx.storage.sql.exec(
+        "INSERT INTO capabilities (capability_id, kind, subject_actor_id, secret_hash, expected_binding_generation, expires_at, consumed_actor_id, consumed_operation_id) VALUES (?, ?, ?, ?, ?, ?, NULL, NULL)",
+        capabilityId,
+        kind,
+        subjectActorId,
+        secretHash,
+        table.binding_generation,
+        expiresAt,
+      );
+      return {
+        body: {
+          version: 1,
+          capability: `v1.${table.table_id}.${capabilityId}.${secret}`,
+          expiresAt,
+        },
+        status: 200,
+      };
     });
+    return storedResponse(result);
   }
 
   private async redeemInvitation(value: unknown): Promise<Response> {
     const body = parseInvitationRedeemRequest(value);
-    const table = this.table();
-    if (body === undefined || table === undefined) {
+    if (body === undefined) {
       return problemResponse(
         400,
         "invalid-invitation-request",
         "The invitation request is invalid.",
       );
     }
-    if (!this.bindingAuthorized(body, table)) {
-      return problemResponse(
-        409,
-        "stale-binding",
-        "The table binding is no longer active.",
-      );
-    }
     const capability = parseCapability(body.capability);
-    if (capability?.tableId !== table.table_id) {
+    if (capability === undefined) {
       return problemResponse(
         403,
         "invalid-capability",
         "The capability is invalid.",
       );
     }
-    const row = this.ctx.storage.sql
-      .exec<CapabilityRow>(
-        "SELECT kind, subject_actor_id, secret_hash, expected_binding_generation, expires_at, consumed_actor_id, consumed_operation_id FROM capabilities WHERE capability_id = ?",
+    const secretHash = await sha256(capability.secret);
+    const result = this.ctx.storage.transactionSync<StoredResult>(() => {
+      const table = this.table();
+      if (!this.bindingAuthorized(body, table)) {
+        return problem(
+          409,
+          "stale-binding",
+          "The table binding is no longer active.",
+        );
+      }
+      if (capability.tableId !== table.table_id) {
+        return problem(403, "invalid-capability", "The capability is invalid.");
+      }
+      if (
+        !this.sessionGenerationCurrent(body.actor.id, body.sessionGeneration)
+      ) {
+        return problem(
+          409,
+          "stale-session-generation",
+          "The application session is no longer current.",
+        );
+      }
+      const row = this.ctx.storage.sql
+        .exec<CapabilityRow>(
+          "SELECT kind, subject_actor_id, secret_hash, expected_binding_generation, expires_at, consumed_actor_id, consumed_operation_id FROM capabilities WHERE capability_id = ?",
+          capability.capabilityId,
+        )
+        .toArray()[0];
+      if (
+        row?.kind !== "invitation" ||
+        row.subject_actor_id !== body.actor.id ||
+        row.secret_hash !== secretHash
+      ) {
+        return problem(403, "invalid-capability", "The capability is invalid.");
+      }
+      if (row.expected_binding_generation !== table.binding_generation) {
+        return problem(
+          409,
+          "stale-binding-generation",
+          "The table binding changed after the capability was issued.",
+        );
+      }
+      if (row.expires_at <= body.now || row.expires_at <= Date.now()) {
+        return problem(
+          410,
+          "capability-expired",
+          "The capability has expired.",
+        );
+      }
+      if (row.consumed_actor_id !== null) {
+        return problem(
+          410,
+          "capability-consumed",
+          "The capability was already used.",
+        );
+      }
+      const capabilityUpdate = this.ctx.storage.sql.exec(
+        "UPDATE capabilities SET consumed_actor_id = ? WHERE capability_id = ? AND consumed_actor_id IS NULL",
+        body.actor.id,
         capability.capabilityId,
-      )
-      .toArray()[0];
-    if (
-      row?.kind !== "invitation" ||
-      row.subject_actor_id !== body.actor.id ||
-      row.secret_hash !== (await sha256(capability.secret))
-    ) {
-      return problemResponse(
-        403,
-        "invalid-capability",
-        "The capability is invalid.",
       );
-    }
-    if (row.expected_binding_generation !== table.binding_generation) {
-      return problemResponse(
-        409,
-        "stale-binding-generation",
-        "The table binding changed after the capability was issued.",
-      );
-    }
-    if (row.expires_at <= body.now || row.expires_at <= Date.now()) {
-      return problemResponse(
-        410,
-        "capability-expired",
-        "The capability has expired.",
-      );
-    }
-    if (row.consumed_actor_id !== null) {
-      return problemResponse(
-        410,
-        "capability-consumed",
-        "The capability was already used.",
-      );
-    }
-    this.ctx.storage.transactionSync(() => {
+      if (capabilityUpdate.rowsWritten !== 1) {
+        throw new AtomicMutationConflict();
+      }
       this.ctx.storage.sql.exec(
         "INSERT OR IGNORE INTO members (actor_id, display_name, role, joined_at) VALUES (?, ?, 'member', ?)",
         body.actor.id,
         body.actor.displayName,
         Date.now(),
       );
-      this.ctx.storage.sql.exec(
-        "UPDATE capabilities SET consumed_actor_id = ? WHERE capability_id = ? AND consumed_actor_id IS NULL",
-        body.actor.id,
-        capability.capabilityId,
-      );
+      return {
+        body: { version: 1, tableId: table.table_id, role: "member" },
+        status: 200,
+      };
     });
-    return jsonResponse({
-      version: 1,
-      tableId: table.table_id,
-      role: "member",
-    });
+    return storedResponse(result);
   }
 
   private activateSession(value: unknown): Response {
@@ -984,24 +1112,11 @@ export class TableRoom extends DurableObject<Env> {
         "The session activation request is invalid.",
       );
     }
-    const member = this.ctx.storage.sql
-      .exec<{ actor_id: string }>(
-        "SELECT actor_id FROM members WHERE actor_id = ?",
-        body.actorId,
-      )
-      .toArray()[0];
     if (!this.bindingAuthorized(body, table)) {
       return problemResponse(
         409,
         "stale-binding",
         "The table binding is no longer active.",
-      );
-    }
-    if (member === undefined) {
-      return problemResponse(
-        403,
-        "session-not-authorized",
-        "The session activation is not authorized.",
       );
     }
     const activeSession = this.ctx.storage.sql
@@ -1040,7 +1155,20 @@ export class TableRoom extends DurableObject<Env> {
         }
       }
     }
-    return jsonResponse({ version: 1, active: true });
+    const member = this.ctx.storage.sql
+      .exec<{ role: string }>(
+        "SELECT role FROM members WHERE actor_id = ?",
+        body.actorId,
+      )
+      .toArray()[0];
+    if (member === undefined) {
+      return problemResponse(
+        403,
+        "session-not-authorized",
+        "The session activation is not authorized.",
+      );
+    }
+    return jsonResponse({ version: 1, active: true, role: member.role });
   }
 
   private connectWebSocket(request: Request): Response {
@@ -1078,7 +1206,7 @@ export class TableRoom extends DurableObject<Env> {
       connectionGeneration === undefined ||
       !SHORT_TOKEN_PATTERN.test(connectionGeneration) ||
       displayName === undefined ||
-      !DISPLAY_NAME_PATTERN.test(displayName) ||
+      !isValidApplicationDisplayName(displayName) ||
       !Number.isSafeInteger(sessionExpiresAt) ||
       sessionExpiresAt <= Date.now() ||
       tableId === undefined ||

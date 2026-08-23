@@ -52,7 +52,9 @@ The first verified actor in a new Activity instance becomes the table owner. A v
 - A fresh Discord exchange may include that value as `resumeCapability`; the server verifies the new instance before rebinding the existing table.
 - `POST /api/session/logout` advances the actor's server-side session generation and clears the cookie.
 
-All mutations require exact origin, JSON, and the current session's `X-CSRF-Token`. Table and capability identifiers are never authorization on their own.
+Authenticated session responses report `access: "member"` with an owner/member `role`, or `access: "join-required"` without a role. Join-required clients do not open a table socket until an actor-bound invitation has been redeemed. Invitation and resume capability strings are intended for direct, out-of-band delivery; do not put them in URLs, storage, or logs.
+
+All authenticated mutations require exact origin, JSON, and the current session's `X-CSRF-Token`. Table and capability identifiers are never authorization on their own.
 
 ## Verification
 

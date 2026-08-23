@@ -73,4 +73,24 @@ describe("Discord OAuth identity exchange", () => {
       exchangeDiscordIdentity("authorization-code", "123", "client-secret"),
     ).rejects.toThrow("Discord user lookup failed.");
   });
+
+  it("falls back to a safe username when the global name contains format characters", async () => {
+    const fetchImplementation = vi.fn<typeof fetch>();
+    fetchImplementation
+      .mockResolvedValueOnce(Response.json({ access_token: "access-token" }))
+      .mockResolvedValueOnce(
+        Response.json({
+          global_name: "East\u200dPlayer",
+          id: "205519959982473217",
+          username: "east.player",
+        }),
+      );
+    vi.stubGlobal("fetch", fetchImplementation);
+
+    await expect(
+      exchangeDiscordIdentity("authorization-code", "123", "client-secret"),
+    ).resolves.toMatchObject({
+      actor: { displayName: "east.player" },
+    });
+  });
 });

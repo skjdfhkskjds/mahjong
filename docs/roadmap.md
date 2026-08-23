@@ -144,6 +144,7 @@ Evidence:
 - The SQLite-backed `ActivityInstance` persists one unpredictable table binding per instance. `TableRoom` owns the table ACL, immutable owner, actor-bound invitations, owner-only resume capabilities, binding receipts, session generations, and connection grants.
 - Runtime tests prove same-instance convergence, different-instance separation, duplicate-session replacement, actor-bound invitation redemption, owner-only rebinding, old-instance rejection, forced-eviction recovery, and rejection of browser-selected table locators.
 - Binding operation receipts and table-owned operation IDs make create/resume replay safe when either side loses a response before finalizing the cross-object saga.
+- The local quality gate passes 64 domain tests, 29 client tests, and 79 Worker/Durable Object tests. The production-style Worker and client bundle also builds locally with CI intentionally disabled.
 
 ## Milestone 3 — Persistent lobby and viewer-safe protocol
 

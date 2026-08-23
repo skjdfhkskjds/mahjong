@@ -107,6 +107,19 @@ describe("application session boundary", () => {
     ).rejects.toThrow(TypeError);
   });
 
+  it("rejects actor identity fields containing control or format characters", async () => {
+    await expect(
+      createSessionCookie(
+        { ...actor, displayName: "East\u200dPlayer" },
+        scope,
+        secret,
+      ),
+    ).rejects.toThrow("Application session actor is invalid.");
+    await expect(
+      createSessionCookie({ ...actor, id: "mock:\neast" }, scope, secret),
+    ).rejects.toThrow("Application session actor is invalid.");
+  });
+
   it("verifies a rotated previous signing key and retains CSRF state", async () => {
     const previous = `${secret}-previous`;
     const created = await createSessionCookie(

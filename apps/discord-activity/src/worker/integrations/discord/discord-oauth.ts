@@ -1,4 +1,8 @@
-import type { ApplicationActor } from "../../auth/application-session.js";
+import {
+  isValidApplicationActor,
+  isValidApplicationDisplayName,
+  type ApplicationActor,
+} from "../../auth/application-session.js";
 
 const DISCORD_API = "https://discord.com/api/v10";
 const MAX_RESPONSE_BYTES = 64 * 1_024;
@@ -60,19 +64,17 @@ export async function exchangeDiscordIdentity(
   const id = user?.["id"];
   const username = user?.["username"];
   const globalName = user?.["global_name"];
-  const displayName =
-    typeof globalName === "string" && globalName.length > 0
-      ? globalName
-      : username;
+  const displayName = [globalName, username].find(
+    isValidApplicationDisplayName,
+  );
+  const actor = { displayName, id };
   if (
     !userResponse.ok ||
     typeof id !== "string" ||
     !/^\d{1,32}$/u.test(id) ||
-    typeof displayName !== "string" ||
-    displayName.length < 1 ||
-    displayName.length > 40
+    !isValidApplicationActor(actor)
   ) {
     throw new Error("Discord user lookup failed.");
   }
-  return { accessToken, actor: { displayName, id } };
+  return { accessToken, actor };
 }

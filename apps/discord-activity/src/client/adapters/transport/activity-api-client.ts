@@ -11,29 +11,57 @@ export interface HealthResponse {
   readonly now: string;
 }
 
+export type TableAccess = "member" | "join-required";
+export type TableMemberRole = "member" | "owner";
+
+interface AuthenticatedSessionFields {
+  readonly authenticated: true;
+  readonly mode: ActivityRuntimeMode;
+  readonly actor: ActivityActor;
+  readonly expiresAt: string;
+  readonly csrfToken: string;
+  readonly instanceId: string;
+  readonly tableId: string;
+}
+
+export type AuthenticatedSession = AuthenticatedSessionFields &
+  (
+    | { readonly access: "join-required" }
+    | { readonly access: "member"; readonly role: TableMemberRole }
+  );
+
 export type SessionResponse =
   | {
       readonly authenticated: false;
       readonly mode: ActivityRuntimeMode;
     }
-  | {
-      readonly authenticated: true;
-      readonly mode: ActivityRuntimeMode;
-      readonly actor: ActivityActor;
-      readonly expiresAt: string;
-      readonly csrfToken: string;
-    };
+  | AuthenticatedSession;
 
-export interface AuthenticatedSession {
-  readonly mode: ActivityRuntimeMode;
-  readonly actor: ActivityActor;
-  readonly expiresAt: string;
-  readonly csrfToken: string;
-}
-
-export interface DiscordExchangeResponse extends AuthenticatedSession {
+export type DiscordExchangeResponse = AuthenticatedSession & {
   readonly mode: "discord";
   readonly accessToken: string;
+};
+
+export interface CapabilityResponse {
+  readonly capability: string;
+  readonly expiresAt: number;
+}
+
+export interface InvitationRedemptionResponse {
+  readonly tableId: string;
+  readonly role: "member";
+}
+
+export class ActivityApiError extends Error {
+  public readonly status: number;
+  public readonly code: string;
+
+  public constructor(message: string, status: number, code: string) {
+    super(message);
+    this.name = "ActivityApiError";
+    this.status = status;
+    this.code = code;
+  }
 }
 
 export interface ActivityApi {
@@ -47,7 +75,18 @@ export interface ActivityApi {
     authorization: DiscordAuthorization,
     context: ActivityContext,
     signal: AbortSignal,
+    resumeCapability?: string,
   ): Promise<DiscordExchangeResponse>;
+  createInvitation(
+    invitedActorId: string,
+    signal: AbortSignal,
+  ): Promise<CapabilityResponse>;
+  redeemInvitation(
+    capability: string,
+    signal: AbortSignal,
+  ): Promise<InvitationRedemptionResponse>;
+  createResumeCapability(signal: AbortSignal): Promise<CapabilityResponse>;
+  logout(signal: AbortSignal): Promise<void>;
 }
 
 type Fetch = typeof globalThis.fetch;
@@ -72,6 +111,48 @@ function readNonEmptyString(value: unknown, field: string): string {
   return value;
 }
 
+function readCapability(value: unknown): string {
+  const capability = readNonEmptyString(value, "capability");
+  if (
+    !/^v1\.[A-Za-z0-9_-]{22}\.[A-Za-z0-9_-]{22}\.[A-Za-z0-9_-]{43}$/u.test(
+      capability,
+    )
+  ) {
+    throw new Error("Capability response has an invalid capability.");
+  }
+  return capability;
+}
+
+function readTableAccess(value: unknown): TableAccess {
+  if (value !== "member" && value !== "join-required") {
+    throw new Error("API response has an invalid table access state.");
+  }
+  return value;
+}
+
+function readTableMemberRole(value: unknown): TableMemberRole {
+  if (value !== "member" && value !== "owner") {
+    throw new Error("API response has an invalid table member role.");
+  }
+  return value;
+}
+
+function readTableId(value: unknown): string {
+  const tableId = readNonEmptyString(value, "tableId");
+  if (!/^[A-Za-z0-9_-]{22}$/u.test(tableId)) {
+    throw new Error("API response has an invalid tableId.");
+  }
+  return tableId;
+}
+
+function readInstanceId(value: unknown): string {
+  const instanceId = readNonEmptyString(value, "instanceId");
+  if (!/^[^\p{Cc}\p{Cf}]{1,128}$/u.test(instanceId)) {
+    throw new Error("API response has an invalid instanceId.");
+  }
+  return instanceId;
+}
+
 function readActor(value: unknown): ActivityActor {
   if (!isRecord(value)) {
     throw new Error("API response is missing actor.");
@@ -84,16 +165,23 @@ function readActor(value: unknown): ActivityActor {
 }
 
 function parseAuthenticatedSession(value: unknown): AuthenticatedSession {
-  if (!isRecord(value)) {
+  if (!isRecord(value) || value["authenticated"] !== true) {
     throw new Error("Authentication response must be an object.");
   }
 
-  return {
+  const access = readTableAccess(value["access"]);
+  const fields: AuthenticatedSessionFields = {
+    authenticated: true,
     mode: readMode(value["mode"]),
     actor: readActor(value["actor"]),
     expiresAt: readNonEmptyString(value["expiresAt"], "expiresAt"),
     csrfToken: readNonEmptyString(value["csrfToken"], "csrfToken"),
+    instanceId: readInstanceId(value["instanceId"]),
+    tableId: readTableId(value["tableId"]),
   };
+  return access === "member"
+    ? { ...fields, access, role: readTableMemberRole(value["role"]) }
+    : { ...fields, access };
 }
 
 export function parseHealthResponse(value: unknown): HealthResponse {
@@ -118,13 +206,55 @@ export function parseSessionResponse(value: unknown): SessionResponse {
     return { authenticated: false, mode };
   }
 
+  return { ...parseAuthenticatedSession(value), mode };
+}
+
+function parseCapabilityResponse(value: unknown): CapabilityResponse {
+  if (
+    !isRecord(value) ||
+    value["version"] !== 1 ||
+    !Number.isSafeInteger(value["expiresAt"]) ||
+    (value["expiresAt"] as number) <= 0
+  ) {
+    throw new Error("Capability response is invalid.");
+  }
   return {
-    authenticated: true,
-    mode,
-    actor: readActor(value["actor"]),
-    expiresAt: readNonEmptyString(value["expiresAt"], "expiresAt"),
-    csrfToken: readNonEmptyString(value["csrfToken"], "csrfToken"),
+    capability: readCapability(value["capability"]),
+    expiresAt: value["expiresAt"] as number,
   };
+}
+
+function parseInvitationRedemptionResponse(
+  value: unknown,
+): InvitationRedemptionResponse {
+  if (
+    !isRecord(value) ||
+    value["version"] !== 1 ||
+    value["role"] !== "member"
+  ) {
+    throw new Error("Invitation redemption response is invalid.");
+  }
+  return { role: "member", tableId: readTableId(value["tableId"]) };
+}
+
+async function apiError(response: Response): Promise<ActivityApiError> {
+  let code = "request-failed";
+  let message = `Activity API request failed with status ${String(response.status)}.`;
+  try {
+    const value = (await response.json()) as unknown;
+    const error = isRecord(value) ? value["error"] : undefined;
+    if (isRecord(error)) {
+      if (typeof error["code"] === "string" && error["code"].length > 0) {
+        code = error["code"];
+      }
+      if (typeof error["message"] === "string" && error["message"].length > 0) {
+        message = error["message"];
+      }
+    }
+  } catch {
+    // Fall back to the stable generic code and message.
+  }
+  return new ActivityApiError(message, response.status, code);
 }
 
 export function parseDiscordExchangeResponse(
@@ -144,9 +274,7 @@ export function parseDiscordExchangeResponse(
 
 async function readJsonResponse(response: Response): Promise<unknown> {
   if (!response.ok) {
-    throw new Error(
-      `Activity API request failed with status ${String(response.status)}.`,
-    );
+    throw await apiError(response);
   }
 
   return response.json() as Promise<unknown>;
@@ -181,6 +309,8 @@ export class HttpActivityApi implements ActivityApi {
     const session = parseSessionResponse(await readJsonResponse(response));
     if (session.authenticated) {
       this.csrfToken = session.csrfToken;
+    } else {
+      this.csrfToken = undefined;
     }
     return session;
   }
@@ -207,15 +337,73 @@ export class HttpActivityApi implements ActivityApi {
     authorization: DiscordAuthorization,
     context: ActivityContext,
     signal: AbortSignal,
+    resumeCapability?: string,
   ): Promise<DiscordExchangeResponse> {
     const response = await this.postJson(
       "/api/auth/discord/exchange",
-      { code: authorization.code, instanceId: context.instanceId },
+      {
+        code: authorization.code,
+        instanceId: context.instanceId,
+        ...(resumeCapability === undefined ? {} : { resumeCapability }),
+      },
       signal,
     );
     const session = parseDiscordExchangeResponse(response);
     this.csrfToken = session.csrfToken;
     return session;
+  }
+
+  public async createInvitation(
+    invitedActorId: string,
+    signal: AbortSignal,
+  ): Promise<CapabilityResponse> {
+    return parseCapabilityResponse(
+      await this.postAuthenticatedJson(
+        "/api/table/invitations",
+        { invitedActorId },
+        signal,
+      ),
+    );
+  }
+
+  public async redeemInvitation(
+    capability: string,
+    signal: AbortSignal,
+  ): Promise<InvitationRedemptionResponse> {
+    return parseInvitationRedemptionResponse(
+      await this.postAuthenticatedJson(
+        "/api/table/invitations/redeem",
+        { capability },
+        signal,
+      ),
+    );
+  }
+
+  public async createResumeCapability(
+    signal: AbortSignal,
+  ): Promise<CapabilityResponse> {
+    return parseCapabilityResponse(
+      await this.postAuthenticatedJson(
+        "/api/table/resume-capabilities",
+        {},
+        signal,
+      ),
+    );
+  }
+
+  public async logout(signal: AbortSignal): Promise<void> {
+    const response = await this.fetchImplementation(
+      `${this.apiBaseUrl}/api/session/logout`,
+      {
+        method: "POST",
+        headers: this.headersForAuthenticatedMutation(),
+        credentials: "include",
+        body: JSON.stringify({}),
+        signal,
+      },
+    );
+    if (!response.ok) throw await apiError(response);
+    this.csrfToken = undefined;
   }
 
   public headersForAuthenticatedMutation(): Headers {
@@ -241,6 +429,24 @@ export class HttpActivityApi implements ActivityApi {
       {
         method: "POST",
         headers: { "content-type": "application/json" },
+        credentials: "include",
+        body: JSON.stringify(body),
+        signal,
+      },
+    );
+    return readJsonResponse(response);
+  }
+
+  private async postAuthenticatedJson(
+    path: string,
+    body: object,
+    signal: AbortSignal,
+  ): Promise<unknown> {
+    const response = await this.fetchImplementation(
+      `${this.apiBaseUrl}${path}`,
+      {
+        method: "POST",
+        headers: this.headersForAuthenticatedMutation(),
         credentials: "include",
         body: JSON.stringify(body),
         signal,

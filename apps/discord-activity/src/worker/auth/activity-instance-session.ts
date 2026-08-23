@@ -5,6 +5,7 @@ import type {
 import type {
   BoundActivityTable,
   IssuedInstanceSession,
+  TableMemberRole,
   ValidatedInstanceSession,
 } from "../durable-objects/activity-instance.js";
 import type { Env } from "../env.js";
@@ -45,6 +46,23 @@ function boundTable(value: unknown): BoundActivityTable | undefined {
   return binding as unknown as BoundActivityTable;
 }
 
+type TableAccess =
+  | { readonly access: "join-required" }
+  | { readonly access: "member"; readonly role: TableMemberRole };
+
+function tableAccess(value: Record<string, unknown>): TableAccess | undefined {
+  if (value["access"] === "join-required" && value["role"] === undefined) {
+    return { access: "join-required" };
+  }
+  if (
+    value["access"] === "member" &&
+    (value["role"] === "owner" || value["role"] === "member")
+  ) {
+    return { access: "member", role: value["role"] };
+  }
+  return undefined;
+}
+
 function sessionBody(session: ApplicationSession): object {
   return {
     actorId: session.actor.id,
@@ -76,7 +94,7 @@ export async function issueInstanceSession(
   actor: ApplicationActor,
   expiresAt: number,
   resumeCapability?: string,
-): Promise<IssuedInstanceSession | undefined> {
+): Promise<IssuedInstanceSession | Response | undefined> {
   let response: Response;
   try {
     response = await instanceFetch(
@@ -93,12 +111,13 @@ export async function issueInstanceSession(
   } catch {
     return undefined;
   }
-  if (!response.ok) return undefined;
+  if (!response.ok) return response;
   const value = await jsonRecord(response);
   const binding = boundTable(value?.["binding"]);
+  const access = value === undefined ? undefined : tableAccess(value);
   if (
     value?.["version"] !== 1 ||
-    (value["access"] !== "member" && value["access"] !== "join-required") ||
+    access === undefined ||
     binding === undefined ||
     typeof value["sessionId"] !== "string" ||
     !OPAQUE_ID_PATTERN.test(value["sessionId"]) ||
@@ -108,7 +127,7 @@ export async function issueInstanceSession(
     return undefined;
   }
   return {
-    access: value["access"],
+    ...access,
     binding,
     sessionGeneration: value["sessionGeneration"] as number,
     sessionId: value["sessionId"],
@@ -134,14 +153,16 @@ export async function validateInstanceSession(
   if (!response.ok) return undefined;
   const value = await jsonRecord(response);
   const binding = boundTable(value?.["binding"]);
+  const access = value === undefined ? undefined : tableAccess(value);
   if (
     value?.["version"] !== 1 ||
     value["valid"] !== true ||
-    binding === undefined
+    binding === undefined ||
+    access === undefined
   ) {
     return undefined;
   }
-  return { binding, valid: true, version: 1 };
+  return { ...access, binding, valid: true, version: 1 };
 }
 
 export async function revokeInstanceSession(

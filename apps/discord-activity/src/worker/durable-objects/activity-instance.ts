@@ -1,6 +1,9 @@
 import { DurableObject } from "cloudflare:workers";
 
-import type { ApplicationActor } from "../auth/application-session.js";
+import {
+  isValidApplicationActor,
+  type ApplicationActor,
+} from "../auth/application-session.js";
 import type { Env } from "../env.js";
 import { jsonResponse, problemResponse } from "../http/responses.js";
 
@@ -13,15 +16,15 @@ const CAPABILITY_PATTERN =
   /^v1\.([A-Za-z0-9_-]{22})\.([A-Za-z0-9_-]{22})\.([A-Za-z0-9_-]{43})$/u;
 const encoder = new TextEncoder();
 
-interface BindingIntent {
-  readonly capability?: string;
+interface StoredBindingIntent {
+  readonly capabilityDigest?: string;
   readonly kind: "create" | "resume";
 }
 
 interface PendingBinding {
   readonly actor: ApplicationActor;
   readonly deadlineAt: number;
-  readonly intent: BindingIntent;
+  readonly intent: StoredBindingIntent;
   readonly operationId: string;
   readonly state: "binding";
   readonly tableId: string;
@@ -38,6 +41,12 @@ export interface BoundActivityTable {
 
 type StoredBinding = PendingBinding | BoundActivityTable;
 
+type BindingAllocation =
+  | { readonly binding: BoundActivityTable; readonly state: "bound" }
+  | { readonly binding: PendingBinding; readonly state: "pending" }
+  | { readonly state: "conflict" }
+  | { readonly state: "invalid-binding-state" };
+
 interface StoredSession {
   readonly expiresAt: number;
   readonly generation: number;
@@ -45,25 +54,55 @@ interface StoredSession {
   readonly version: 1;
 }
 
+type SessionProposal =
+  | {
+      readonly expected: StoredSession | undefined;
+      readonly session: StoredSession;
+      readonly state: "proposed";
+    }
+  | { readonly state: "generation-exhausted" }
+  | { readonly state: "invalid-session-state" };
+
+type SessionPromotion =
+  | { readonly state: "promoted" }
+  | { readonly state: "conflict" }
+  | { readonly state: "invalid-session-state" };
+
+type SessionRevocation =
+  | { readonly state: "revoked" }
+  | { readonly state: "generation-exhausted" }
+  | { readonly state: "session-invalid" };
+
 interface SessionCredential {
   readonly actorId: string;
   readonly sessionGeneration: number;
   readonly sessionId: string;
 }
 
-export interface IssuedInstanceSession {
-  readonly access: "member" | "join-required";
+export type TableMemberRole = "member" | "owner";
+
+type ActivityTableAccess =
+  | { readonly access: "join-required" }
+  | { readonly access: "member"; readonly role: TableMemberRole };
+
+interface IssuedInstanceSessionFields {
   readonly binding: BoundActivityTable;
   readonly sessionGeneration: number;
   readonly sessionId: string;
   readonly version: 1;
 }
 
-export interface ValidatedInstanceSession {
+export type IssuedInstanceSession = ActivityTableAccess &
+  IssuedInstanceSessionFields;
+
+interface ValidatedInstanceSessionFields {
   readonly binding: BoundActivityTable;
   readonly valid: true;
   readonly version: 1;
 }
+
+export type ValidatedInstanceSession = ActivityTableAccess &
+  ValidatedInstanceSessionFields;
 
 function record(value: unknown): Record<string, unknown> | undefined {
   return typeof value === "object" && value !== null && !Array.isArray(value)
@@ -79,20 +118,6 @@ async function readJson(
   } catch {
     return undefined;
   }
-}
-
-function validActor(value: unknown): value is ApplicationActor {
-  const actor = record(value);
-  return (
-    actor !== undefined &&
-    Object.keys(actor).length === 2 &&
-    typeof actor["id"] === "string" &&
-    actor["id"].length >= 1 &&
-    actor["id"].length <= 96 &&
-    typeof actor["displayName"] === "string" &&
-    actor["displayName"].length >= 1 &&
-    actor["displayName"].length <= 40
-  );
 }
 
 function validInstanceId(value: unknown): value is string {
@@ -140,8 +165,13 @@ async function sha256Base64Url(value: string): Promise<string> {
   );
 }
 
-function sameIntent(left: BindingIntent, right: BindingIntent): boolean {
-  return left.kind === right.kind && left.capability === right.capability;
+function sameIntent(
+  left: StoredBindingIntent,
+  right: StoredBindingIntent,
+): boolean {
+  return (
+    left.kind === right.kind && left.capabilityDigest === right.capabilityDigest
+  );
 }
 
 function pendingBinding(value: unknown): PendingBinding | undefined {
@@ -151,7 +181,7 @@ function pendingBinding(value: unknown): PendingBinding | undefined {
   if (
     candidate?.["version"] !== 1 ||
     candidate["state"] !== "binding" ||
-    !validActor(actor) ||
+    !isValidApplicationActor(actor) ||
     !Number.isSafeInteger(candidate["deadlineAt"]) ||
     (candidate["deadlineAt"] as number) < 0 ||
     typeof candidate["operationId"] !== "string" ||
@@ -160,7 +190,10 @@ function pendingBinding(value: unknown): PendingBinding | undefined {
     !TABLE_ID_PATTERN.test(candidate["tableId"]) ||
     intent === undefined ||
     (intent["kind"] !== "create" && intent["kind"] !== "resume") ||
-    (intent["kind"] === "resume" && typeof intent["capability"] !== "string")
+    (intent["kind"] === "resume" &&
+      (typeof intent["capabilityDigest"] !== "string" ||
+        !SESSION_ID_PATTERN.test(intent["capabilityDigest"]))) ||
+    (intent["kind"] === "create" && intent["capabilityDigest"] !== undefined)
   ) {
     return undefined;
   }
@@ -247,25 +280,176 @@ function bindingAuthorization(binding: BoundActivityTable): object {
   };
 }
 
+function sameBinding(
+  left: BoundActivityTable,
+  right: BoundActivityTable,
+): boolean {
+  return (
+    left.tableId === right.tableId &&
+    left.bindingGeneration === right.bindingGeneration &&
+    left.bindingProof === right.bindingProof
+  );
+}
+
+function sameSession(left: StoredSession, right: StoredSession): boolean {
+  return (
+    left.expiresAt === right.expiresAt &&
+    left.generation === right.generation &&
+    left.sessionDigest === right.sessionDigest
+  );
+}
+
+function tableMemberRole(value: unknown): TableMemberRole | undefined {
+  const body = record(value);
+  return body?.["version"] === 1 && body["active"] === true
+    ? body["role"] === "owner" || body["role"] === "member"
+      ? body["role"]
+      : undefined
+    : undefined;
+}
+
 export class ActivityInstance extends DurableObject<Env> {
+  private async allocateBinding(
+    candidate: PendingBinding,
+  ): Promise<BindingAllocation> {
+    return this.ctx.storage.transaction(async (transaction) => {
+      const existingValue = await transaction.get(BINDING_KEY);
+      const existing = storedBinding(existingValue);
+      if (existingValue !== undefined && existing === undefined) {
+        return { state: "invalid-binding-state" };
+      }
+      if (existing?.state === "bound") {
+        return { binding: existing, state: "bound" };
+      }
+      if (existing !== undefined) {
+        return sameIntent(existing.intent, candidate.intent)
+          ? { binding: existing, state: "pending" }
+          : { state: "conflict" };
+      }
+      await transaction.put(BINDING_KEY, candidate);
+      return { binding: candidate, state: "pending" };
+    });
+  }
+
+  private sessionGenerationExhausted(): Response {
+    return problemResponse(
+      500,
+      "session-generation-exhausted",
+      "The application session generation is exhausted.",
+    );
+  }
+
+  private async proposeSession(
+    key: string,
+    expiresAt: number,
+    sessionDigest: string,
+  ): Promise<SessionProposal> {
+    const previousValue = await this.ctx.storage.get(key);
+    const previous = storedSession(previousValue);
+    if (previousValue !== undefined && previous === undefined) {
+      return { state: "invalid-session-state" };
+    }
+    if (previous?.generation === Number.MAX_SAFE_INTEGER) {
+      return { state: "generation-exhausted" };
+    }
+    return {
+      expected: previous,
+      session: {
+        expiresAt,
+        generation: (previous?.generation ?? 0) + 1,
+        sessionDigest,
+        version: 1,
+      },
+      state: "proposed",
+    };
+  }
+
+  private async promoteSession(
+    key: string,
+    proposal: Extract<SessionProposal, { readonly state: "proposed" }>,
+  ): Promise<SessionPromotion> {
+    return this.ctx.storage.transaction(async (transaction) => {
+      const currentValue = await transaction.get(key);
+      const current = storedSession(currentValue);
+      if (currentValue !== undefined && current === undefined) {
+        return { state: "invalid-session-state" };
+      }
+      const expectedIsCurrent =
+        proposal.expected === undefined
+          ? currentValue === undefined
+          : current !== undefined && sameSession(current, proposal.expected);
+      if (!expectedIsCurrent) return { state: "conflict" };
+      await transaction.put(key, proposal.session);
+      return { state: "promoted" };
+    });
+  }
+
+  private async allocateRevocation(
+    key: string,
+    credential: SessionCredential,
+    sessionDigest: string,
+  ): Promise<SessionRevocation> {
+    return this.ctx.storage.transaction(async (transaction) => {
+      const current = storedSession(await transaction.get(key));
+      if (
+        current === undefined ||
+        current.expiresAt <= Date.now() ||
+        current.generation !== credential.sessionGeneration ||
+        current.sessionDigest !== sessionDigest
+      ) {
+        return { state: "session-invalid" };
+      }
+      if (current.generation === Number.MAX_SAFE_INTEGER) {
+        return { state: "generation-exhausted" };
+      }
+      const revoked: StoredSession = {
+        ...current,
+        generation: current.generation + 1,
+      };
+      await transaction.put(key, revoked);
+      return { state: "revoked" };
+    });
+  }
+
   private async ensureBinding(
     instanceId: string,
     actor: ApplicationActor,
     resumeCapability?: string,
   ): Promise<BoundActivityTable | Response> {
-    const intent: BindingIntent = resumeCapability
-      ? { capability: resumeCapability, kind: "resume" }
+    const resumedTableId = resumeCapability
+      ? tableIdFromCapability(resumeCapability)
+      : undefined;
+    if (resumeCapability && resumedTableId === undefined) {
+      return problemResponse(
+        400,
+        "invalid-resume-capability",
+        "The resume capability is invalid.",
+      );
+    }
+    const intent: StoredBindingIntent = resumeCapability
+      ? {
+          capabilityDigest: await sha256Base64Url(resumeCapability),
+          kind: "resume",
+        }
       : { kind: "create" };
-    const existingValue = await this.ctx.storage.get(BINDING_KEY);
-    const existing = storedBinding(existingValue);
-    if (existingValue !== undefined && existing === undefined) {
+    const candidate: PendingBinding = {
+      actor,
+      deadlineAt: Date.now() + BINDING_DEADLINE_MILLISECONDS,
+      intent,
+      operationId: crypto.randomUUID(),
+      state: "binding",
+      tableId: resumedTableId ?? randomBase64Url(16),
+      version: 1,
+    };
+    const allocation = await this.allocateBinding(candidate);
+    if (allocation.state === "invalid-binding-state") {
       return problemResponse(
         500,
         "invalid-binding-state",
         "The Activity binding state is invalid.",
       );
     }
-    if (existing?.state === "bound") {
+    if (allocation.state === "bound") {
       if (resumeCapability !== undefined) {
         return problemResponse(
           409,
@@ -273,39 +457,16 @@ export class ActivityInstance extends DurableObject<Env> {
           "The Activity instance is already bound.",
         );
       }
-      return existing;
+      return allocation.binding;
     }
-
-    let pending = existing;
-    if (pending !== undefined && !sameIntent(pending.intent, intent)) {
+    if (allocation.state === "conflict") {
       return problemResponse(
         409,
         "binding-in-progress",
         "A different table binding is already in progress.",
       );
     }
-    if (pending === undefined) {
-      const resumedTableId = resumeCapability
-        ? tableIdFromCapability(resumeCapability)
-        : undefined;
-      if (resumeCapability && resumedTableId === undefined) {
-        return problemResponse(
-          400,
-          "invalid-resume-capability",
-          "The resume capability is invalid.",
-        );
-      }
-      pending = {
-        actor,
-        deadlineAt: Date.now() + BINDING_DEADLINE_MILLISECONDS,
-        intent,
-        operationId: crypto.randomUUID(),
-        state: "binding",
-        tableId: resumedTableId ?? randomBase64Url(16),
-        version: 1,
-      };
-      await this.ctx.storage.put(BINDING_KEY, pending);
-    }
+    const pending = allocation.binding;
 
     let response: Response;
     try {
@@ -316,7 +477,9 @@ export class ActivityInstance extends DurableObject<Env> {
             actor: pending.actor,
             deadlineAt: pending.deadlineAt,
             instanceId,
-            intent: pending.intent,
+            intent: resumeCapability
+              ? { capability: resumeCapability, kind: "resume" }
+              : { kind: "create" },
             operationId: pending.operationId,
             version: 1,
           }),
@@ -333,7 +496,7 @@ export class ActivityInstance extends DurableObject<Env> {
     }
     const body = await responseBody(response);
     if (!response.ok) {
-      if ([400, 403, 409, 410].includes(response.status)) {
+      if ([400, 403, 404, 409, 410].includes(response.status)) {
         const current = pendingBinding(await this.ctx.storage.get(BINDING_KEY));
         if (current?.operationId === pending.operationId) {
           await this.ctx.storage.delete(BINDING_KEY);
@@ -355,8 +518,13 @@ export class ActivityInstance extends DurableObject<Env> {
         "The table binding response is invalid.",
       );
     }
-    const current = pendingBinding(await this.ctx.storage.get(BINDING_KEY));
+    const currentValue = await this.ctx.storage.get(BINDING_KEY);
+    const current = pendingBinding(currentValue);
     if (current?.operationId !== pending.operationId) {
+      const currentBound = boundActivityTable(currentValue);
+      if (currentBound !== undefined && sameBinding(currentBound, bound)) {
+        return currentBound;
+      }
       return problemResponse(
         409,
         "binding-changed",
@@ -376,6 +544,7 @@ export class ActivityInstance extends DurableObject<Env> {
   > {
     const credential = validSessionCredential(value);
     if (credential === undefined) return undefined;
+    const sessionDigest = await sha256Base64Url(credential.sessionId);
     const session = storedSession(
       await this.ctx.storage.get(`${SESSION_KEY_PREFIX}${credential.actorId}`),
     );
@@ -383,7 +552,7 @@ export class ActivityInstance extends DurableObject<Env> {
       session === undefined ||
       session.expiresAt <= Date.now() ||
       session.generation !== credential.sessionGeneration ||
-      session.sessionDigest !== (await sha256Base64Url(credential.sessionId))
+      session.sessionDigest !== sessionDigest
     ) {
       return undefined;
     }
@@ -432,7 +601,7 @@ export class ActivityInstance extends DurableObject<Env> {
             key,
           ),
       ) ||
-      !validActor(actor) ||
+      !isValidApplicationActor(actor) ||
       !validInstanceId(instanceId) ||
       !Number.isSafeInteger(expiresAt) ||
       (expiresAt as number) <= Date.now() ||
@@ -455,15 +624,23 @@ export class ActivityInstance extends DurableObject<Env> {
     if (bindingResult instanceof Response) return bindingResult;
 
     const key = `${SESSION_KEY_PREFIX}${actor.id}`;
-    const previous = storedSession(await this.ctx.storage.get(key));
     const sessionId = randomBase64Url(32);
-    const session: StoredSession = {
-      expiresAt: expiresAt as number,
-      generation: (previous?.generation ?? 0) + 1,
-      sessionDigest: await sha256Base64Url(sessionId),
-      version: 1,
-    };
-    await this.ctx.storage.put(key, session);
+    const proposal = await this.proposeSession(
+      key,
+      expiresAt as number,
+      await sha256Base64Url(sessionId),
+    );
+    if (proposal.state === "generation-exhausted") {
+      return this.sessionGenerationExhausted();
+    }
+    if (proposal.state === "invalid-session-state") {
+      return problemResponse(
+        500,
+        "invalid-session-state",
+        "The application session state is invalid.",
+      );
+    }
+    const session = proposal.session;
 
     let activation = await this.activateSession(
       instanceId,
@@ -492,13 +669,48 @@ export class ActivityInstance extends DurableObject<Env> {
           )
         : jsonResponse(activationBody, activation.status);
     }
-    const issued: IssuedInstanceSession = {
-      access: activation.ok ? "member" : "join-required",
-      binding: bindingResult,
-      sessionGeneration: session.generation,
-      sessionId,
-      version: 1,
-    };
+    const role = activation.ok
+      ? tableMemberRole(await responseBody(activation))
+      : undefined;
+    if (activation.ok && role === undefined) {
+      return problemResponse(
+        503,
+        "invalid-table-response",
+        "The table session response is invalid.",
+      );
+    }
+    const promotion = await this.promoteSession(key, proposal);
+    if (promotion.state === "invalid-session-state") {
+      return problemResponse(
+        500,
+        "invalid-session-state",
+        "The application session state is invalid.",
+      );
+    }
+    if (promotion.state === "conflict") {
+      return problemResponse(
+        409,
+        "session-replaced-concurrently",
+        "A concurrent application session replaced this issuance.",
+      );
+    }
+    const issued: IssuedInstanceSession =
+      role === undefined
+        ? {
+            access: "join-required",
+            binding: bindingResult,
+            sessionGeneration: session.generation,
+            sessionId,
+            version: 1,
+          }
+        : {
+            access: "member",
+            binding: bindingResult,
+            role,
+            sessionGeneration: session.generation,
+            sessionId,
+            version: 1,
+          };
     return jsonResponse(issued, 201);
   }
 
@@ -559,11 +771,20 @@ export class ActivityInstance extends DurableObject<Env> {
         "The table is temporarily unavailable.",
       );
     }
-    const result: ValidatedInstanceSession = {
-      binding,
-      valid: true,
-      version: 1,
-    };
+    const role = activation.ok
+      ? tableMemberRole(await responseBody(activation))
+      : undefined;
+    if (activation.ok && role === undefined) {
+      return problemResponse(
+        503,
+        "invalid-table-response",
+        "The table session response is invalid.",
+      );
+    }
+    const result: ValidatedInstanceSession =
+      role === undefined
+        ? { access: "join-required", binding, valid: true, version: 1 }
+        : { access: "member", binding, role, valid: true, version: 1 };
     return jsonResponse(result);
   }
 
@@ -587,18 +808,31 @@ export class ActivityInstance extends DurableObject<Env> {
         "The Activity instance is not bound.",
       );
     }
-    const revokedGeneration = validated.session.generation + 1;
+    if (validated.session.generation === Number.MAX_SAFE_INTEGER) {
+      return this.sessionGenerationExhausted();
+    }
     const activation = await this.activateSession(
       instanceId,
       binding,
       validated.credential.actorId,
-      revokedGeneration,
+      validated.session.generation + 1,
     );
-    if (!activation.ok) return activation;
-    await this.ctx.storage.put(
+    if (!activation.ok && activation.status !== 403) return activation;
+    const revocation = await this.allocateRevocation(
       `${SESSION_KEY_PREFIX}${validated.credential.actorId}`,
-      { ...validated.session, generation: revokedGeneration },
+      validated.credential,
+      await sha256Base64Url(validated.credential.sessionId),
     );
+    if (revocation.state === "session-invalid") {
+      return problemResponse(
+        401,
+        "session-invalid",
+        "The application session is invalid.",
+      );
+    }
+    if (revocation.state === "generation-exhausted") {
+      return this.sessionGenerationExhausted();
+    }
     return new Response(null, { status: 204 });
   }
 
@@ -636,6 +870,7 @@ export class ActivityInstance extends DurableObject<Env> {
             ...extra,
             instanceId,
             now: Date.now(),
+            sessionGeneration: validated.credential.sessionGeneration,
             version: 1,
           }),
           headers: { "Content-Type": "application/json" },
@@ -670,6 +905,18 @@ export class ActivityInstance extends DurableObject<Env> {
         "The request body is invalid.",
       );
     }
+    const objectInstanceId = this.ctx.id.name;
+    if (
+      typeof objectInstanceId !== "string" ||
+      !validInstanceId(objectInstanceId) ||
+      body["instanceId"] !== objectInstanceId
+    ) {
+      return problemResponse(
+        400,
+        "instance-id-mismatch",
+        "The Activity instance identifier does not match this object.",
+      );
+    }
     const path = new URL(request.url).pathname;
     switch (path) {
       case "/internal/sessions/issue":
@@ -698,8 +945,10 @@ export class ActivityInstance extends DurableObject<Env> {
       case "/internal/invitations/redeem": {
         const actor = body["actor"];
         const capability = body["capability"];
+        const credential = validSessionCredential(body);
         if (
-          !validActor(actor) ||
+          !isValidApplicationActor(actor) ||
+          actor.id !== credential?.actorId ||
           typeof capability !== "string" ||
           capability.length > 160
         ) {
@@ -721,7 +970,7 @@ export class ActivityInstance extends DurableObject<Env> {
           );
           if (credential && binding) {
             await this.activateSession(
-              body["instanceId"] as string,
+              body["instanceId"],
               binding,
               credential.actorId,
               credential.sessionGeneration,

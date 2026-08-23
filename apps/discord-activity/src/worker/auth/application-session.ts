@@ -7,6 +7,8 @@ const encoder = new TextEncoder();
 const decoder = new TextDecoder(undefined, { fatal: true, ignoreBOM: false });
 const OPAQUE_IDENTIFIER_PATTERN = /^[A-Za-z0-9_-]{43}$/u;
 const INSTANCE_ID_PATTERN = /^[^\p{Cc}\p{Cf}]{1,128}$/u;
+const ACTOR_ID_PATTERN = /^[^\p{Cc}\p{Cf}]{1,96}$/u;
+const DISPLAY_NAME_PATTERN = /^[^\p{Cc}\p{Cf}]{1,40}$/u;
 
 export interface ApplicationActor {
   readonly id: string;
@@ -86,17 +88,21 @@ async function signingKey(secret: string): Promise<CryptoKey> {
   );
 }
 
-function validActor(value: unknown): value is ApplicationActor {
+export function isValidApplicationDisplayName(value: unknown): value is string {
+  return typeof value === "string" && DISPLAY_NAME_PATTERN.test(value);
+}
+
+export function isValidApplicationActor(
+  value: unknown,
+): value is ApplicationActor {
   if (typeof value !== "object" || value === null || Array.isArray(value))
     return false;
   const actor = value as Record<string, unknown>;
   return (
+    Object.keys(actor).length === 2 &&
     typeof actor["id"] === "string" &&
-    actor["id"].length > 0 &&
-    actor["id"].length <= 96 &&
-    typeof actor["displayName"] === "string" &&
-    actor["displayName"].length > 0 &&
-    actor["displayName"].length <= 40
+    ACTOR_ID_PATTERN.test(actor["id"]) &&
+    isValidApplicationDisplayName(actor["displayName"])
   );
 }
 
@@ -130,7 +136,7 @@ function decodePayload(bytes: Uint8Array): SessionPayload | undefined {
       Object.keys(payload).length !== 10 ||
       payload["version"] !== SESSION_VERSION ||
       (payload["mode"] !== "mock" && payload["mode"] !== "discord") ||
-      !validActor(actor) ||
+      !isValidApplicationActor(actor) ||
       typeof payload["csrfToken"] !== "string" ||
       !OPAQUE_IDENTIFIER_PATTERN.test(payload["csrfToken"]) ||
       typeof payload["instanceId"] !== "string" ||
@@ -205,7 +211,7 @@ export async function createSessionCookie(
   now = Date.now(),
   configuration?: Partial<SessionConfiguration>,
 ): Promise<{ readonly cookie: string; readonly session: ApplicationSession }> {
-  if (!validActor(actor))
+  if (!isValidApplicationActor(actor))
     throw new TypeError("Application session actor is invalid.");
   if (!validSessionScope(scope))
     throw new TypeError("Application session scope is invalid.");
