@@ -51,7 +51,7 @@ describe("public table WebSocket boundary", () => {
   it("reuses mock identity, ignores browser table IDs, and resyncs after eviction", async () => {
     const first = await exports.default.fetch(
       new Request(`${origin}/api/auth/mock`, {
-        body: JSON.stringify({ displayName: "Returning Player" }),
+        body: JSON.stringify({ displayName: "東 Player" }),
         headers: { "Content-Type": "application/json", Origin: origin },
         method: "POST",
       }),
@@ -66,7 +66,7 @@ describe("public table WebSocket boundary", () => {
 
     const refreshed = await exports.default.fetch(
       new Request(`${origin}/api/auth/mock`, {
-        body: JSON.stringify({ displayName: "Returning Player" }),
+        body: JSON.stringify({ displayName: "東 Player" }),
         headers: {
           "Content-Type": "application/json",
           Cookie: cookie ?? "",
@@ -113,7 +113,7 @@ describe("public table WebSocket boundary", () => {
         phase: "lobby",
         tableId: session.tableId,
         viewer: {
-          actor: { displayName: "Returning Player" },
+          actor: { displayName: "東 Player" },
           role: "spectator",
         },
       },

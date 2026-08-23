@@ -373,6 +373,28 @@ function boundedHeader(
     : undefined;
 }
 
+function decodeDisplayNameHeader(
+  value: string | undefined,
+): string | undefined {
+  if (value === undefined || !/^[A-Za-z0-9_-]{1,256}$/u.test(value)) {
+    return undefined;
+  }
+  const standard = value.replaceAll("-", "+").replaceAll("_", "/");
+  const padded = standard.padEnd(Math.ceil(standard.length / 4) * 4, "=");
+  try {
+    const bytes = Uint8Array.from(atob(padded), (character) =>
+      character.charCodeAt(0),
+    );
+    const displayName = new TextDecoder(undefined, {
+      fatal: true,
+      ignoreBOM: false,
+    }).decode(bytes);
+    return isValidApplicationDisplayName(displayName) ? displayName : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
 function connectionAttachment(
   value: unknown,
 ): ConnectionAttachment | undefined {
@@ -1187,7 +1209,9 @@ export class TableRoom extends DurableObject<Env> {
       INTERNAL_CONNECTION_GENERATION,
       64,
     );
-    const displayName = boundedHeader(request, INTERNAL_DISPLAY_NAME, 40);
+    const displayName = decodeDisplayNameHeader(
+      boundedHeader(request, INTERNAL_DISPLAY_NAME, 256),
+    );
     const sessionExpiresAt = Number(
       boundedHeader(request, INTERNAL_SESSION_EXPIRES_AT, 16),
     );
@@ -1206,7 +1230,6 @@ export class TableRoom extends DurableObject<Env> {
       connectionGeneration === undefined ||
       !SHORT_TOKEN_PATTERN.test(connectionGeneration) ||
       displayName === undefined ||
-      !isValidApplicationDisplayName(displayName) ||
       !Number.isSafeInteger(sessionExpiresAt) ||
       sessionExpiresAt <= Date.now() ||
       tableId === undefined ||

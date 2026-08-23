@@ -131,6 +131,17 @@ function nextClose(socket: WebSocket): Promise<CloseEvent> {
   });
 }
 
+function displayNameHeader(value: string): string {
+  let binary = "";
+  for (const byte of new TextEncoder().encode(value)) {
+    binary += String.fromCharCode(byte);
+  }
+  return btoa(binary)
+    .replaceAll("+", "-")
+    .replaceAll("/", "_")
+    .replace(/=+$/u, "");
+}
+
 async function connect(
   stub: DurableObjectStub<TableRoom>,
   binding: Binding,
@@ -146,7 +157,7 @@ async function connect(
         "X-Mahjong-Binding-Generation": String(binding.bindingGeneration),
         "X-Mahjong-Binding-Proof": binding.bindingProof,
         "X-Mahjong-Connection-Generation": crypto.randomUUID(),
-        "X-Mahjong-Display-Name": actor.displayName,
+        "X-Mahjong-Display-Name": displayNameHeader(actor.displayName),
         "X-Mahjong-Instance-Id": instanceId,
         "X-Mahjong-Session-Expires-At": String(Date.now() + 60_000),
         "X-Mahjong-Session-Generation": String(sessionGeneration),

@@ -30,6 +30,17 @@ const MOCK_INSTANCE_ID = "standalone-local-instance";
 const MAX_PUBLIC_JSON_BODY_BYTES = 4_096;
 const textEncoder = new TextEncoder();
 
+function utf8Base64Url(value: string): string {
+  let binary = "";
+  for (const byte of textEncoder.encode(value)) {
+    binary += String.fromCharCode(byte);
+  }
+  return btoa(binary)
+    .replaceAll("+", "-")
+    .replaceAll("/", "_")
+    .replace(/=+$/u, "");
+}
+
 function authenticationMode(env: Env): AuthenticationMode | undefined {
   const value: unknown = env.APP_MODE;
   return value === "mock" || value === "discord" ? value : undefined;
@@ -690,7 +701,10 @@ async function connectTable(request: Request, env: Env): Promise<Response> {
   headers.delete("Authorization");
   headers.delete("Cookie");
   headers.set("X-Mahjong-Actor-Id", session.actor.id);
-  headers.set("X-Mahjong-Display-Name", session.actor.displayName);
+  headers.set(
+    "X-Mahjong-Display-Name",
+    utf8Base64Url(session.actor.displayName),
+  );
   headers.set(
     "X-Mahjong-Binding-Generation",
     String(validated.binding.bindingGeneration),
