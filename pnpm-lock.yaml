@@ -36,6 +36,8 @@ importers:
         specifier: 4.1.11
         version: 4.1.11(@types/node@24.13.3)(vite@8.2.2(@types/node@24.13.3)(jiti@2.6.1))
 
+  packages/game-core: {}
+
 packages:
 
   '@babel/code-frame@7.29.7':

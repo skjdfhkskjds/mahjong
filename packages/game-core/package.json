@@ -1,0 +1,13 @@
+{
+  "name": "@mahjong/game-core",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "sideEffects": false,
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "scripts": {
+    "typecheck": "tsc --project tsconfig.source.json --noEmit && tsc --project tsconfig.json --noEmit"
+  }
+}

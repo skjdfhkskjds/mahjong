@@ -10,14 +10,14 @@
   },
   "scripts": {
     "boundaries": "node tooling/check-import-boundaries.ts",
-    "check": "pnpm format:check && pnpm lint && pnpm typecheck && pnpm boundaries && pnpm exports:check && pnpm test",
+    "check": "corepack pnpm format:check && corepack pnpm lint && corepack pnpm typecheck && corepack pnpm boundaries && corepack pnpm exports:check && corepack pnpm test",
     "exports:check": "node tooling/check-package-exports.ts",
     "format": "prettier --write .",
     "format:check": "prettier --check .",
     "lint": "eslint . --max-warnings 0",
     "test": "vitest run",
     "test:watch": "vitest",
-    "typecheck": "tsc --noEmit"
+    "typecheck": "tsc --noEmit && corepack pnpm --recursive --if-present typecheck"
   },
   "devDependencies": {
     "@commitlint/cli": "21.2.2",

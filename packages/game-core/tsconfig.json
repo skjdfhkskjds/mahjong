@@ -1,0 +1,9 @@
+{
+  "extends": "./tsconfig.source.json",
+  "compilerOptions": {
+    "lib": ["ES2024", "DOM"],
+    "types": ["node"]
+  },
+  "exclude": [],
+  "include": ["src/**/*.ts"]
+}
