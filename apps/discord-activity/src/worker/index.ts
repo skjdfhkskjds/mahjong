@@ -1,6 +1,7 @@
 import type { Env } from "./env.js";
 import { routeRequest } from "./router.js";
 
+export { ActivityInstance } from "./durable-objects/activity-instance.js";
 export { TableRoom } from "./durable-objects/table-room.js";
 export type { AuthenticationMode, Env } from "./env.js";
 

@@ -1,8 +1,16 @@
 import {
   createSessionCookie,
+  hasValidCsrfToken,
   readApplicationSession,
   type ApplicationActor,
+  type ApplicationSession,
 } from "./auth/application-session.js";
+import {
+  activityInstanceTableMutation,
+  issueInstanceSession,
+  revokeInstanceSession,
+  validateInstanceSession,
+} from "./auth/activity-instance-session.js";
 import type { AuthenticationMode, Env } from "./env.js";
 import { hasAllowedOrigin, hasJsonContentType } from "./http/request-policy.js";
 import {
@@ -12,12 +20,13 @@ import {
   problemResponse,
 } from "./http/responses.js";
 import { exchangeDiscordIdentity } from "./integrations/discord/discord-oauth.js";
+import { verifyDiscordActivityInstance } from "./integrations/discord/discord-activity-instance.js";
 
-const TABLE_ID_PATTERN = /^[A-Za-z0-9_-]{1,64}$/u;
 const DISPLAY_NAME_PATTERN = /^[^\p{Cc}\p{Cf}]{1,40}$/u;
 const COOKIE_NAME_PATTERN = /^[!#$%&'*+\-.^_`|~0-9A-Za-z]+$/u;
 const MOCK_ONLY_SIGNING_KEY =
   "mock-mode-only-signing-key-change-before-deployment";
+const MOCK_INSTANCE_ID = "standalone-local-instance";
 const textEncoder = new TextEncoder();
 
 function authenticationMode(env: Env): AuthenticationMode | undefined {
@@ -104,6 +113,7 @@ function mockActor(value: unknown): ApplicationActor | undefined {
 function publicSession(
   mode: AuthenticationMode,
   session: Awaited<ReturnType<typeof readApplicationSession>>,
+  tableId?: string,
 ): object {
   if (session === undefined) {
     return { authenticated: false, mode };
@@ -113,8 +123,65 @@ function publicSession(
     authenticated: true,
     csrfToken: session.csrfToken,
     expiresAt: new Date(session.expiresAt).toISOString(),
+    instanceId: session.instanceId,
     mode,
+    ...(tableId ? { tableId } : {}),
   };
+}
+
+async function signedSession(
+  request: Request,
+  env: Env,
+  mode: AuthenticationMode,
+): Promise<ApplicationSession | undefined> {
+  const configuration = sessionConfiguration(env);
+  if (configuration === undefined) return undefined;
+  const session = await readApplicationSession(
+    request,
+    env.SESSION_SIGNING_KEY,
+    Date.now(),
+    configuration,
+    env.SESSION_SIGNING_KEY_PREVIOUS,
+  );
+  return session?.mode === mode ? session : undefined;
+}
+
+function authenticatedPolicyFailure(
+  request: Request,
+  session: ApplicationSession,
+): Response | undefined {
+  return (
+    originRejected(request) ??
+    jsonRequired(request) ??
+    (hasValidCsrfToken(request, session)
+      ? undefined
+      : problemResponse(
+          403,
+          "csrf-token-invalid",
+          "The CSRF token is invalid.",
+        ))
+  );
+}
+
+async function hasCurrentInstanceMembership(
+  env: Env,
+  session: ApplicationSession,
+): Promise<boolean> {
+  if (session.mode === "mock") return true;
+  const applicationId = env.DISCORD_CLIENT_ID;
+  const botToken = env.DISCORD_BOT_TOKEN;
+  if (!applicationId || !botToken) return false;
+  try {
+    await verifyDiscordActivityInstance({
+      applicationId,
+      botToken,
+      instanceId: session.instanceId,
+      userId: session.actor.id,
+    });
+    return true;
+  } catch {
+    return false;
+  }
 }
 
 function health(request: Request, mode: AuthenticationMode): Response {
@@ -143,15 +210,17 @@ async function getSession(
       "Session configuration is invalid.",
     );
   }
-  const session = await readApplicationSession(
-    request,
-    env.SESSION_SIGNING_KEY,
-    Date.now(),
-    configuration,
-    env.SESSION_SIGNING_KEY_PREVIOUS,
-  );
+  const session = await signedSession(request, env, mode);
+  if (session === undefined) {
+    return jsonResponse(publicSession(mode, undefined));
+  }
+  const validated = await validateInstanceSession(env, session);
   return jsonResponse(
-    publicSession(mode, session?.mode === mode ? session : undefined),
+    publicSession(
+      mode,
+      validated === undefined ? undefined : session,
+      validated?.binding.tableId,
+    ),
   );
 }
 
@@ -190,13 +259,35 @@ async function createMockSession(
       "Session configuration is invalid.",
     );
   }
+  const now = Date.now();
+  const instanceSession = await issueInstanceSession(
+    env,
+    MOCK_INSTANCE_ID,
+    actor,
+    now + configuration.lifetimeSeconds * 1_000,
+  );
+  if (instanceSession === undefined) {
+    return problemResponse(
+      503,
+      "instance-session-unavailable",
+      "The Activity instance session is unavailable.",
+    );
+  }
   const created = await createSessionCookie(
     actor,
+    {
+      instanceId: MOCK_INSTANCE_ID,
+      sessionGeneration: instanceSession.sessionGeneration,
+      sessionId: instanceSession.sessionId,
+    },
     env.SESSION_SIGNING_KEY,
-    Date.now(),
+    now,
     configuration,
   );
-  const response = jsonResponse(publicSession(mode, created.session), 201);
+  const response = jsonResponse(
+    publicSession(mode, created.session, instanceSession.binding.tableId),
+    201,
+  );
   response.headers.append("Set-Cookie", created.cookie);
   return response;
 }
@@ -230,13 +321,19 @@ async function reserveDiscordExchange(
   }
   const fields = body as Record<string, unknown>;
   if (
-    Object.keys(fields).length !== 2 ||
+    Object.keys(fields).some(
+      (key) => !["code", "instanceId", "resumeCapability"].includes(key),
+    ) ||
     typeof fields["code"] !== "string" ||
     fields["code"].length < 1 ||
     fields["code"].length > 1_024 ||
     typeof fields["instanceId"] !== "string" ||
     fields["instanceId"].length < 1 ||
-    fields["instanceId"].length > 128
+    fields["instanceId"].length > 128 ||
+    (fields["resumeCapability"] !== undefined &&
+      (typeof fields["resumeCapability"] !== "string" ||
+        fields["resumeCapability"].length < 1 ||
+        fields["resumeCapability"].length > 160))
   ) {
     return problemResponse(
       400,
@@ -246,12 +343,15 @@ async function reserveDiscordExchange(
   }
   const clientId = env.DISCORD_CLIENT_ID;
   const clientSecret = env.DISCORD_CLIENT_SECRET;
+  const botToken = env.DISCORD_BOT_TOKEN;
   const configuration = sessionConfiguration(env);
   if (
     clientId === undefined ||
     clientId.length < 1 ||
     clientSecret === undefined ||
     clientSecret.length < 1 ||
+    botToken === undefined ||
+    botToken.length < 1 ||
     configuration === undefined
   ) {
     return problemResponse(
@@ -266,15 +366,41 @@ async function reserveDiscordExchange(
       clientId,
       clientSecret,
     );
+    await verifyDiscordActivityInstance({
+      applicationId: clientId,
+      botToken,
+      instanceId: fields["instanceId"],
+      userId: discord.actor.id,
+    });
+    const now = Date.now();
+    const instanceSession = await issueInstanceSession(
+      env,
+      fields["instanceId"],
+      discord.actor,
+      now + configuration.lifetimeSeconds * 1_000,
+      fields["resumeCapability"],
+    );
+    if (instanceSession === undefined) {
+      throw new Error("Activity instance session issuance failed.");
+    }
     const created = await createSessionCookie(
       discord.actor,
+      {
+        instanceId: fields["instanceId"],
+        sessionGeneration: instanceSession.sessionGeneration,
+        sessionId: instanceSession.sessionId,
+      },
       env.SESSION_SIGNING_KEY,
-      Date.now(),
+      now,
       configuration,
     );
     const response = jsonResponse(
       {
-        ...publicSession(mode, created.session),
+        ...publicSession(
+          mode,
+          created.session,
+          instanceSession.binding.tableId,
+        ),
         accessToken: discord.accessToken,
       },
       201,
@@ -288,6 +414,160 @@ async function reserveDiscordExchange(
       "Discord authentication failed.",
     );
   }
+}
+
+async function authenticatedMutationSession(
+  request: Request,
+  env: Env,
+  mode: AuthenticationMode,
+): Promise<ApplicationSession | Response> {
+  const session = await signedSession(request, env, mode);
+  if (
+    session === undefined ||
+    (await validateInstanceSession(env, session)) === undefined
+  ) {
+    return problemResponse(
+      401,
+      "authentication-required",
+      "An application session is required.",
+    );
+  }
+  return authenticatedPolicyFailure(request, session) ?? session;
+}
+
+async function logoutSession(
+  request: Request,
+  env: Env,
+  mode: AuthenticationMode,
+): Promise<Response> {
+  if (request.method !== "POST") return methodNotAllowed(["POST"]);
+  const authenticated = await authenticatedMutationSession(request, env, mode);
+  if (authenticated instanceof Response) return authenticated;
+  const body = await readJson(request);
+  if (
+    typeof body !== "object" ||
+    body === null ||
+    Array.isArray(body) ||
+    Object.keys(body).length !== 0
+  ) {
+    return problemResponse(
+      400,
+      "invalid-request",
+      "The logout body must be empty.",
+    );
+  }
+  if (!(await revokeInstanceSession(env, authenticated))) {
+    return problemResponse(
+      503,
+      "logout-unavailable",
+      "Logout is temporarily unavailable.",
+    );
+  }
+  const attributes =
+    mode === "discord"
+      ? "Secure; HttpOnly; SameSite=None; Partitioned"
+      : "HttpOnly; SameSite=Lax";
+  const response = new Response(null, { status: 204 });
+  response.headers.set(
+    "Set-Cookie",
+    `${env.SESSION_COOKIE_NAME}=; Path=/; Max-Age=0; ${attributes}`,
+  );
+  return response;
+}
+
+async function tableCapabilityMutation(
+  request: Request,
+  env: Env,
+  mode: AuthenticationMode,
+  operation: "create-invitation" | "redeem-invitation" | "create-resume",
+): Promise<Response> {
+  if (request.method !== "POST") return methodNotAllowed(["POST"]);
+  const authenticated = await authenticatedMutationSession(request, env, mode);
+  if (authenticated instanceof Response) return authenticated;
+  if (!(await hasCurrentInstanceMembership(env, authenticated))) {
+    return problemResponse(
+      403,
+      "instance-membership-required",
+      "Current Activity instance membership is required.",
+    );
+  }
+  const value = await readJson(request);
+  if (typeof value !== "object" || value === null || Array.isArray(value)) {
+    return problemResponse(
+      400,
+      "invalid-request",
+      "The table request is invalid.",
+    );
+  }
+  const body = value as Record<string, unknown>;
+  let path:
+    | "/internal/invitations/create"
+    | "/internal/invitations/redeem"
+    | "/internal/resume-capabilities/create";
+  let fields: object;
+  switch (operation) {
+    case "create-invitation": {
+      const invitedActorId = body["invitedActorId"];
+      if (
+        Object.keys(body).length !== 1 ||
+        typeof invitedActorId !== "string" ||
+        invitedActorId.length < 1 ||
+        invitedActorId.length > 96
+      ) {
+        return problemResponse(
+          400,
+          "invalid-request",
+          "The invitation request is invalid.",
+        );
+      }
+      path = "/internal/invitations/create";
+      fields = { invitedActorId };
+      break;
+    }
+    case "redeem-invitation": {
+      const capability = body["capability"];
+      if (
+        Object.keys(body).length !== 1 ||
+        typeof capability !== "string" ||
+        capability.length < 1 ||
+        capability.length > 160
+      ) {
+        return problemResponse(
+          400,
+          "invalid-request",
+          "The invitation request is invalid.",
+        );
+      }
+      path = "/internal/invitations/redeem";
+      fields = { actor: authenticated.actor, capability };
+      break;
+    }
+    case "create-resume":
+      if (Object.keys(body).length !== 0) {
+        return problemResponse(
+          400,
+          "invalid-request",
+          "The resume request body must be empty.",
+        );
+      }
+      path = "/internal/resume-capabilities/create";
+      fields = {};
+      break;
+  }
+  const response = await activityInstanceTableMutation(
+    env,
+    authenticated,
+    path,
+    fields,
+  );
+  return (
+    response ??
+    problemResponse(
+      503,
+      "table-unavailable",
+      "The table is temporarily unavailable.",
+    )
+  );
 }
 
 async function connectTable(request: Request, env: Env): Promise<Response> {
@@ -308,14 +588,6 @@ async function connectTable(request: Request, env: Env): Promise<Response> {
       },
     );
   }
-  const tableId = new URL(request.url).searchParams.get("tableId");
-  if (tableId === null || !TABLE_ID_PATTERN.test(tableId)) {
-    return problemResponse(
-      400,
-      "invalid-table-id",
-      "A valid tableId is required.",
-    );
-  }
   const configuration = sessionConfiguration(env);
   if (configuration === undefined) {
     return problemResponse(
@@ -324,18 +596,27 @@ async function connectTable(request: Request, env: Env): Promise<Response> {
       "Session configuration is invalid.",
     );
   }
-  const session = await readApplicationSession(
-    request,
-    env.SESSION_SIGNING_KEY,
-    Date.now(),
-    configuration,
-    env.SESSION_SIGNING_KEY_PREVIOUS,
-  );
-  if (session?.mode !== env.APP_MODE) {
+  const session = await signedSession(request, env, env.APP_MODE);
+  if (session === undefined) {
     return problemResponse(
       401,
       "authentication-required",
       "An application session is required.",
+    );
+  }
+  const validated = await validateInstanceSession(env, session);
+  if (validated === undefined) {
+    return problemResponse(
+      401,
+      "authentication-required",
+      "An application session is required.",
+    );
+  }
+  if (!(await hasCurrentInstanceMembership(env, session))) {
+    return problemResponse(
+      403,
+      "instance-membership-required",
+      "Current Activity instance membership is required.",
     );
   }
 
@@ -344,10 +625,20 @@ async function connectTable(request: Request, env: Env): Promise<Response> {
   headers.delete("Cookie");
   headers.set("X-Mahjong-Actor-Id", session.actor.id);
   headers.set("X-Mahjong-Display-Name", session.actor.displayName);
+  headers.set(
+    "X-Mahjong-Binding-Generation",
+    String(validated.binding.bindingGeneration),
+  );
+  headers.set("X-Mahjong-Binding-Proof", validated.binding.bindingProof);
   headers.set("X-Mahjong-Connection-Generation", crypto.randomUUID());
+  headers.set("X-Mahjong-Instance-Id", session.instanceId);
   headers.set("X-Mahjong-Session-Expires-At", String(session.expiresAt));
-  headers.set("X-Mahjong-Table-Id", tableId);
-  const stub = env.TABLE_ROOM.getByName(tableId);
+  headers.set(
+    "X-Mahjong-Session-Generation",
+    String(session.sessionGeneration),
+  );
+  headers.set("X-Mahjong-Table-Id", validated.binding.tableId);
+  const stub = env.TABLE_ROOM.getByName(validated.binding.tableId);
   return stub.fetch(
     new Request("https://table-room.internal/connect", {
       headers,
@@ -375,12 +666,20 @@ export async function routeRequest(
       return health(request, mode);
     case "/api/session":
       return getSession(request, env, mode);
+    case "/api/session/logout":
+      return logoutSession(request, env, mode);
     case "/api/auth/mock":
       return createMockSession(request, env, mode);
     case "/api/auth/discord/exchange":
       return reserveDiscordExchange(request, env, mode);
     case "/api/table/socket":
       return connectTable(request, env);
+    case "/api/table/invitations":
+      return tableCapabilityMutation(request, env, mode, "create-invitation");
+    case "/api/table/invitations/redeem":
+      return tableCapabilityMutation(request, env, mode, "redeem-invitation");
+    case "/api/table/resume-capabilities":
+      return tableCapabilityMutation(request, env, mode, "create-resume");
     default:
       if (url.pathname === "/api" || url.pathname.startsWith("/api/")) {
         return problemResponse(

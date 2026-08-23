@@ -3,7 +3,6 @@ import { evictDurableObject } from "cloudflare:test";
 import { describe, expect, it } from "vitest";
 
 const origin = "https://activity.example";
-const tableId = "public-boundary-test";
 
 interface SnapshotMessage {
   readonly protocolVersion: 1;
@@ -51,9 +50,11 @@ describe("public table WebSocket boundary", () => {
     expect(sessionResponse.status).toBe(201);
     const cookie = sessionResponse.headers.get("Set-Cookie");
     expect(cookie).not.toBeNull();
+    const session = await sessionResponse.json<{ readonly tableId: string }>();
+    expect(session.tableId).toMatch(/^[A-Za-z0-9_-]{22}$/u);
 
     const upgradeResponse = await exports.default.fetch(
-      new Request(`${origin}/api/table/socket?tableId=${tableId}`, {
+      new Request(`${origin}/api/table/socket?tableId=browser-chosen-decoy`, {
         headers: {
           Cookie: cookie ?? "",
           Origin: origin,
@@ -76,7 +77,7 @@ describe("public table WebSocket boundary", () => {
       type: "table/snapshot",
       view: {
         phase: "lobby",
-        tableId,
+        tableId: session.tableId,
         viewer: {
           actor: { displayName: "Boundary Player" },
           role: "spectator",
@@ -84,7 +85,7 @@ describe("public table WebSocket boundary", () => {
       },
     });
 
-    const room = env.TABLE_ROOM.getByName(tableId);
+    const room = env.TABLE_ROOM.getByName(session.tableId);
     await evictDurableObject(room);
     const resyncMessage = nextMessage(socket);
     socket.send(

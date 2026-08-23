@@ -117,7 +117,6 @@ export function createTableSocketUrl(
   const base = apiBaseUrl === "" ? location.origin : apiBaseUrl;
   const url = new URL("/api/table/socket", base);
   url.protocol = url.protocol === "https:" ? "wss:" : "ws:";
-  url.searchParams.set("tableId", "walking-skeleton");
   return url.toString();
 }
 

@@ -11,12 +11,20 @@
   "durable_objects": {
     "bindings": [
       {
+        "name": "ACTIVITY_INSTANCE",
+        "class_name": "ActivityInstance",
+      },
+      {
         "name": "TABLE_ROOM",
         "class_name": "TableRoom",
       },
     ],
   },
   "exports": {
+    "ActivityInstance": {
+      "type": "durable-object",
+      "storage": "sqlite",
+    },
     "TableRoom": {
       "type": "durable-object",
       "storage": "sqlite",
@@ -32,6 +40,10 @@
     "production": {
       "durable_objects": {
         "bindings": [
+          {
+            "name": "ACTIVITY_INSTANCE",
+            "class_name": "ActivityInstance",
+          },
           {
             "name": "TABLE_ROOM",
             "class_name": "TableRoom",

@@ -1,6 +1,7 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 import {
+  createTableSocketUrl,
   parseTableSnapshot,
   ReconnectingSocketStatusMonitor,
 } from "./table-socket-status.js";
@@ -55,6 +56,12 @@ afterEach(() => {
 });
 
 describe("viewer-safe table snapshots", () => {
+  it("builds a server-resolved table socket URL without a table locator", () => {
+    expect(
+      createTableSocketUrl("", { origin: "https://activity.example" }),
+    ).toBe("wss://activity.example/api/table/socket");
+  });
+
   it("parses the walking-skeleton lobby projection", () => {
     expect(parseTableSnapshot(snapshot)).toEqual({
       type: "table/snapshot",

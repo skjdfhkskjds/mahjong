@@ -4,9 +4,56 @@ import type { Env } from "../../src/worker/env.js";
 import { routeRequest } from "../../src/worker/router.js";
 
 const origin = "https://activity.example";
+const tableId = "dGVzdC10YWJsZS1pZC0xNg";
+const bindingProof = "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA";
+const sessionId = "c2Vzc2lvbi1pZC13aXRoLWV4YWN0bHktMzItYnl0ZXM";
+
+function activityInstances(): DurableObjectNamespace {
+  return {
+    getByName: () =>
+      ({
+        fetch: (request: Request | string) => {
+          const path = new URL(
+            typeof request === "string" ? request : request.url,
+          ).pathname;
+          if (path === "/internal/sessions/issue") {
+            return Promise.resolve(
+              Response.json({
+                access: "member",
+                binding: {
+                  bindingGeneration: 1,
+                  bindingProof,
+                  state: "bound",
+                  tableId,
+                  version: 1,
+                },
+                sessionGeneration: 1,
+                sessionId,
+                version: 1,
+              }),
+            );
+          }
+          return Promise.resolve(
+            Response.json({
+              binding: {
+                bindingGeneration: 1,
+                bindingProof,
+                state: "bound",
+                tableId,
+                version: 1,
+              },
+              valid: true,
+              version: 1,
+            }),
+          );
+        },
+      }) as DurableObjectStub,
+  } as unknown as DurableObjectNamespace;
+}
 
 function testEnv(overrides: Partial<Env> = {}): Env {
   return {
+    ACTIVITY_INSTANCE: activityInstances(),
     APP_MODE: "mock",
     ASSETS: {
       fetch: () => Promise.resolve(new Response("asset")),
