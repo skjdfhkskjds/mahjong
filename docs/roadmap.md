@@ -75,7 +75,7 @@ Evidence:
 
 ## Milestone 1 — Deployed walking skeleton
 
-Status: not started
+Status: in progress — implementation and local evidence complete; Discord-proxied deployment evidence pending
 
 This deliberately precedes substantial engine work because Discord proxy, iframe cookie, OAuth, CSP, WebSocket, and hibernation behavior are high-risk integration points.
 
@@ -97,6 +97,22 @@ Exit criteria:
 - Discord SDK authentication completes with the exchanged short-lived access token without treating that token as the long-lived app session.
 - A WebSocket reconnects and resynchronizes after simulated hibernation/eviction.
 - Mock mode works without Discord credentials.
+
+Local evidence:
+
+- `apps/discord-activity` builds the React SPA and Worker as one Cloudflare Vite deployment with static-asset fallback and `/api/*` Worker-first routing.
+- Strict runtime configuration selects either the real Embedded App SDK bridge or the standalone mock bridge.
+- The Worker implements health, mock authentication, Discord OAuth code exchange, signed application sessions, exact-origin request policy, and authenticated table WebSocket routing.
+- The session boundary is recorded in ADR 0009. Production configuration fails closed on mock keys, invalid cookie settings, undersized current/previous keys, or a missing `__Host-` cookie prefix.
+- `TableRoom` uses hibernatable WebSockets and bounded serialized attachments. A Workers-runtime integration test creates a session through the public Worker route, upgrades the socket, receives a viewer-safe snapshot, forces Durable Object eviction, and resynchronizes the same connection.
+- The automated suite passes 64 domain tests, 17 client tests, and 16 Worker/Durable Object tests. CI also builds a Discord-mode production bundle.
+- The documented standalone workflow and a live local HTTP check validate the mock session path without credentials.
+
+Completion evidence still required:
+
+- Deploy to a real Cloudflare/Discord Activity origin with protected Discord and signing credentials.
+- Verify OAuth plus `discordSdk.commands.authenticate`, the partitioned application cookie, exact proxy `Origin`, and WebSocket upgrade through Discord's proxy.
+- Record smoke evidence for Discord desktop/web and at least one mobile client. These external checks are intentionally not inferred from the local runtime tests.
 
 ## Milestone 2 — Identity, table access, and instance binding
 
@@ -292,4 +308,4 @@ Every completed milestone must link to automated tests or recorded manual eviden
 - Cloudflare recommends the Hibernation WebSocket API and SQLite-backed Durable Objects; one alarm per object requires a persisted deadline queue.
 - The current Workers test integration package is `@cloudflare/vitest-plugin` (renamed from `@cloudflare/vitest-pool-workers` in August 2026).
 
-Re-check these claims against primary documentation when Milestone 1 begins because platform behavior and package APIs can change.
+Re-check these claims against primary documentation at each platform milestone because platform behavior and package APIs can change.

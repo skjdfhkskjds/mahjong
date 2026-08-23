@@ -46,7 +46,7 @@ Discord has two adjacent authentication concerns that must not be conflated:
 
 The Activity Instance REST check requires a Discord bot credential. The product still has no companion-bot UX, commands, or continuously connected Gateway process, but the bot token is a required backend secret under the current Discord API.
 
-The session design remains an explicit Milestone 1 decision: either a short-lived authenticated/encrypted cookie with key rotation and limited revocation, or an opaque cookie backed by durable server-side session storage. Both designs must specify expiry, revocation, OAuth token disposal/retention, CSRF defense, socket-origin validation, and revalidation after hibernation.
+ADR 0009 selects a versioned, one-hour maximum HMAC-SHA256 application session cookie with current/previous key rotation. Discord mode uses a host-only `__Host-` cookie with `Secure`, `HttpOnly`, `SameSite=None`, and `Partitioned`; local mock mode uses `HttpOnly` and `SameSite=Lax`. The OAuth access token is returned once for `discordSdk.commands.authenticate` and retained only in client memory, never as the application API credential. Exact-origin checks cover state-changing HTTP and WebSocket upgrades, and session expiry is rechecked on each WebSocket message after hibernation. See [Session and request security](session-and-request-security.md).
 
 ## Runtime-free domain boundary
 
