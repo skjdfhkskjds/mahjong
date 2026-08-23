@@ -4,7 +4,7 @@ A four-player Hong Kong Mahjong Discord Activity, built as a TypeScript monorepo
 
 ## Status
 
-The project is in planning. No application code has been scaffolded yet.
+Milestone 0B is complete: the strict TypeScript workspace, CI quality gates, pure `game-core` contract, and executable provisional `hong-kong/v1` setup profile are implemented. No Discord/Cloudflare runtime application has been scaffolded yet.
 
 The first production-shaped milestone is four authenticated Discord users joining one persistent table, choosing seats, receiving distinct private hands, playing several draw/discard turns, reconnecting, and surviving Durable Object eviction.
 
@@ -13,6 +13,7 @@ The first production-shaped milestone is four authenticated Discord users joinin
 - [Implementation roadmap](docs/roadmap.md)
 - [Technical baseline](docs/architecture/technical-baseline.md)
 - [Hong Kong v1 rules decision register](docs/rules/hong-kong-v1/decision-register.md)
+- [Provisional Hong Kong v1 profile](docs/rules/hong-kong-v1/README.md)
 - [Testing strategy](docs/testing-strategy.md)
 - [Risk register](docs/risk-register.md)
 - [Open technical and product decisions](docs/open-questions.md)

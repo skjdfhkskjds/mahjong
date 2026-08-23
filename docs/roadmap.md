@@ -27,7 +27,7 @@ Japanese Mahjong is a future rules package. No Japanese package or universal cro
 
 ## Milestone 0A — Planning and decision inventory
 
-Status: in progress
+Status: complete
 
 Deliverables:
 
@@ -40,13 +40,13 @@ Deliverables:
 Exit criteria:
 
 - Every known rules decision axis is recorded.
-- Decisions needed for the next milestone are accepted; later decisions may remain open with a required-by gate.
+- Decisions needed for the next milestone are selected with an explicit provisional or accepted status; later decisions may remain open with a required-by gate.
 - No planned behavior relies on an undocumented default.
 - Major technical risks have a mitigation and trigger.
 
 ## Milestone 0B — Repository and pure-domain contract
 
-Status: not started
+Status: complete
 
 Deliverables:
 
@@ -63,7 +63,15 @@ Exit criteria:
 - No platform imports exist in pure packages.
 - Core types do not encode unresolved bonus, meld, or Japanese-specific behavior.
 - A persisted history has a defined replay root: either genesis events or a versioned genesis snapshot.
-- One worked example covers setup, deal, bonus replacement, draw/discard, and wall exhaustion under accepted rules.
+- One worked example covers setup, deal, bonus replacement, draw/discard, and wall exhaustion under the selected provisional foundational rules.
+
+Evidence:
+
+- Root checks run formatting, typed lint, strict source/test typechecks, import boundaries, package exports, and tests.
+- Pure package source typechecks without Node, DOM, React, Discord, Cloudflare, or Workers ambient types.
+- `game-core` tests cover opaque identities, physical tile IDs, seat order, JSON-safe persistence, snapshot decoding, and event-tail replay.
+- `rules-hong-kong` tests cover strict profile validation, canonical 144-tile inventory, stable boundary IDs, and the 53-tile initial deal.
+- The worked lifecycle and rule-to-test traceability are documented under `docs/rules/hong-kong-v1`.
 
 ## Milestone 1 — Deployed walking skeleton
 

@@ -2,7 +2,7 @@
 
 `hong-kong/v1` is the Mahjong Activity project's explicitly selected friend-group profile. It is not presented as the single canonical form of Hong Kong Mahjong.
 
-No game behavior may be implemented from an undocumented default. Each accepted decision must cite its rationale or source and gain worked examples plus traceable fixtures before affected code is complete.
+No game behavior may be implemented from an undocumented default. Each selected decision must cite its rationale or source and gain worked examples plus traceable fixtures before affected code is complete.
 
 ## Status and change policy
 
@@ -21,7 +21,26 @@ rationale/provenance, compatibility impact, worked examples, fixture IDs
 
 ## Decision inventory
 
-All selections are currently open. Milestone gates indicate when each must become accepted.
+Foundational setup and draw/discard selections are provisional. Claim, kong, scoring, payment, and match decisions remain open. Milestone gates indicate when provisional choices must become accepted compatibility promises.
+
+### Provisional foundational selections
+
+| ID     | Selection                                                                                                                                   | Rationale/provenance                                                                          | Compatibility impact |
+| ------ | ------------------------------------------------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------- | -------------------- |
+| HK-001 | 144 tiles: 108 suited, 28 honors, four seasons, four flowers                                                                                | Common full Hong Kong set; intentionally chooses bonuses over the also-common 136-tile option | Tile inventory       |
+| HK-002 | IDs 0–107 suits, 108–123 winds, 124–135 dragons, 136–139 seasons, 140–143 flowers; four-copy kinds order copy 0–3                           | Engineering convention required for deterministic vectors                                     | Encoding/shuffle     |
+| HK-003 | Three East/South/West/North four-tile packet rounds, then East, East, South, West, North                                                    | Preserves the common packet deal and East's 14-tile opening hand in a linear digital wall     | Deal/replay          |
+| HK-004 | Fully shuffled linear wall; no simulated dice, physical sides, break, or jump pickup                                                        | Physical randomization rituals are redundant after a committed deterministic shuffle          | Replay/UI            |
+| HK-005 | No fixed dead wall; ordinary draws consume the head and bonus replacements consume the tail                                                 | Chooses modern draw-to-the-end play rather than older reserved-dead-wall conventions          | Wall/exhaustion      |
+| HK-006 | Head passing tail means no future draw; exhaustion occurs when play requires an unavailable ordinary or bonus-replacement draw              | Makes two-ended consumption precise and preserves a successful final structural draw          | Hand lifecycle       |
+| HK-007 | Initial replacement order East/South/West/North; within a seat use deal-acquisition order and complete each recursive chain before the next | Selects one documented table convention where replacement ordering varies                     | Deal/projection      |
+| HK-008 | East opens with a discard; ordinary turns draw at head, recursively replace bonuses at tail, then discard exactly one structural tile       | Defines the minimal playable cycle while leaving claims and wins gated                        | Turn engine          |
+| HK-009 | Choose an occupied table position uniformly for the initial dealer, assign it East, then assign South/West/North counter-clockwise          | Keeps stable room position distinct from rotating seat wind                                   | Match setup          |
+| HK-010 | All eight bonus tiles enabled                                                                                                               | Makes v1 concrete; a no-bonus game would be a distinct preset/version                         | Tile inventory       |
+| HK-011 | Number/seat mapping is East=1, South=2, West=3, North=4 for both seasons and flowers; whether a match scores remains open                   | Common mapping used to give the unique bonus tiles stable semantic identity                   | Tile identity        |
+| HK-013 | Expose bonuses immediately and recursively replace them from the tail; matching-seat and replacement-win scoring remain unresolved until M6 | Common Hong Kong handling; deliberately separates lifecycle from later scoring                | Hand/scoring         |
+
+Traceability is recorded in [traceability.md](traceability.md), with the complete provisional behavior in the [profile README](README.md).
 
 ### Tile set, setup, and wall
 
@@ -34,15 +53,17 @@ All selections are currently open. Milestone gates indicate when each must becom
 | HK-005 | Live/dead/replacement wall | Whether a dead wall exists; draw directions and counts             | M4          |
 | HK-006 | Exhaustion boundary        | Exact point at which no normal or replacement draw remains         | M4          |
 | HK-007 | Initial bonus replacement  | Seat order, within-seat ordering, chaining, and exhaustion         | M4          |
+| HK-008 | Ordinary draw/discard      | Draw source, bonus recursion, discard count, and seat advance      | M0B         |
+| HK-009 | Initial dealer/seats       | Dealer selection and stable-position-to-seat assignment            | M0B         |
 
 ### Flowers and seasons
 
-| ID     | Question            | Candidate choices to evaluate                                         | Required by |
-| ------ | ------------------- | --------------------------------------------------------------------- | ----------- |
-| HK-010 | Bonus tiles enabled | Always enabled; configurable table profile                            | M0B         |
-| HK-011 | Seat matching       | Mapping of flower/season numbers to seats and whether matching scores | M6          |
-| HK-012 | Bonus scoring       | Own bonus, no bonuses, complete flower/season set, all eight          | M6          |
-| HK-013 | Bonus timing        | Immediate exposure/replacement and any win-on-replacement effects     | M4/M6       |
+| ID     | Question            | Candidate choices to evaluate                                            | Required by |
+| ------ | ------------------- | ------------------------------------------------------------------------ | ----------- |
+| HK-010 | Bonus tiles enabled | Always enabled; configurable table profile                               | M0B         |
+| HK-011 | Seat matching       | Mapping of flower/season numbers to seats                                | M0B         |
+| HK-012 | Bonus scoring       | Whether matching scores; own bonus, no bonuses, complete sets, all eight | M6          |
+| HK-013 | Bonus timing        | Immediate exposure/replacement and any win-on-replacement effects        | M4/M6       |
 
 ### Winning structures and eligibility
 
