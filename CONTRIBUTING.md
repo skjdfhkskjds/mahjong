@@ -43,4 +43,3 @@ A rules-semantic change must update the Hong Kong decision register, worked exam
 - Persist before broadcasting.
 - Never send canonical state or canonical domain events to clients.
 - Never add a rule based on an undocumented assumption.
-

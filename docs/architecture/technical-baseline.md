@@ -80,14 +80,14 @@ Reaction submissions need an explicit sequencing design before implementation. A
 
 ## Version semantics to decide before Milestone 3
 
-| Version | Meaning | Compatibility rule |
-| --- | --- | --- |
-| `protocolVersion` | HTTP/WebSocket wire compatibility | Reject unsupported major versions; define a deployment overlap window |
-| `rulesetVersion` | Exact semantic profile, such as `hong-kong/v1` | Historical matches remain pinned; semantic changes require a new version |
-| `stateVersion` | Monotonic canonical aggregate transition position | Define whether it increments per event or atomic command before persistence ships |
-| `viewVersion` | Optional viewer stream position if projected deltas are used | Must not expose or depend on hidden-only transitions |
-| `storageSchemaVersion` | SQLite and serialized payload schema | Forward migrations are transactional and tested from permanent fixtures |
-| `encodingVersion` | Canonical bytes used for hashes/commitments | Never reinterpret already committed bytes under new encoding rules |
+| Version                | Meaning                                                      | Compatibility rule                                                                |
+| ---------------------- | ------------------------------------------------------------ | --------------------------------------------------------------------------------- |
+| `protocolVersion`      | HTTP/WebSocket wire compatibility                            | Reject unsupported major versions; define a deployment overlap window             |
+| `rulesetVersion`       | Exact semantic profile, such as `hong-kong/v1`               | Historical matches remain pinned; semantic changes require a new version          |
+| `stateVersion`         | Monotonic canonical aggregate transition position            | Define whether it increments per event or atomic command before persistence ships |
+| `viewVersion`          | Optional viewer stream position if projected deltas are used | Must not expose or depend on hidden-only transitions                              |
+| `storageSchemaVersion` | SQLite and serialized payload schema                         | Forward migrations are transactional and tested from permanent fixtures           |
+| `encodingVersion`      | Canonical bytes used for hashes/commitments                  | Never reinterpret already committed bytes under new encoding rules                |
 
 Editorial clarification that does not change fixture outcomes does not require a new ruleset version. Any semantic fixture change does.
 

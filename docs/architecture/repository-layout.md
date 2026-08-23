@@ -43,4 +43,3 @@ The `TableRoom` implementation keeps room lifecycle separate from the rules-owne
 - `testkit`: fixture DSL, builders, scripted/replayed games, and seeded simulations. Production packages never depend on it.
 
 Each package exposes deliberate root or documented subpath exports. Deep internal imports are rejected mechanically.
-

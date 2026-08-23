@@ -50,4 +50,3 @@ Projection tests compare all viewer classes and assert an allowlist of fields. A
 - Dependency, license, secret, and vulnerability scanning.
 
 Cloudflare's Workers test package was renamed to `@cloudflare/vitest-plugin` in August 2026. Confirm its current API before scaffolding because this integration is actively evolving.
-

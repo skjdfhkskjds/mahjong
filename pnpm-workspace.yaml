@@ -1,0 +1,15 @@
+packages:
+  - "apps/*"
+  - "packages/*"
+
+minimumReleaseAge: 1440
+
+minimumReleaseAgeExclude:
+  - "@mahjong/*"
+
+engineStrict: true
+
+strictPeerDependencies: true
+
+onlyBuiltDependencies:
+  - esbuild
