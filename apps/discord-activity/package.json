@@ -1,0 +1,30 @@
+{
+  "name": "@mahjong/discord-activity",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "build": "vite build",
+    "deploy": "node tooling/validate-production-deploy.ts && vite build --mode production && wrangler deploy --env production",
+    "dev": "vite",
+    "preview": "vite build && vite preview",
+    "test": "vitest run --config vitest.client.config.ts && vitest run --config vitest.worker.config.ts",
+    "types:worker": "wrangler types src/worker/worker-configuration.d.ts",
+    "typecheck": "tsc --project tsconfig.client.json --noEmit && tsc --project tsconfig.worker.json --noEmit && tsc --project tsconfig.tests.json --noEmit && tsc --project tsconfig.tools.json --noEmit"
+  },
+  "dependencies": {
+    "@discord/embedded-app-sdk": "2.5.0",
+    "react": "19.2.8",
+    "react-dom": "19.2.8"
+  },
+  "devDependencies": {
+    "@cloudflare/vite-plugin": "1.53.1",
+    "@cloudflare/vitest-plugin": "1.0.0",
+    "@types/react": "19.2.18",
+    "@types/react-dom": "19.2.4",
+    "@vitejs/plugin-react": "6.1.0",
+    "vite": "8.2.2",
+    "vitest": "4.1.11",
+    "wrangler": "4.125.0"
+  }
+}

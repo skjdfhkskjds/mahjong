@@ -9,13 +9,16 @@
     "pnpm": ">=11.22.0 <12"
   },
   "scripts": {
+    "app:build": "corepack pnpm --filter @mahjong/discord-activity build",
+    "app:dev": "corepack pnpm --filter @mahjong/discord-activity dev",
+    "app:preview": "corepack pnpm --filter @mahjong/discord-activity preview",
     "boundaries": "node tooling/check-import-boundaries.ts",
     "check": "corepack pnpm format:check && corepack pnpm lint && corepack pnpm typecheck && corepack pnpm boundaries && corepack pnpm exports:check && corepack pnpm test",
     "exports:check": "node tooling/check-package-exports.ts",
     "format": "prettier --write .",
     "format:check": "prettier --check .",
     "lint": "eslint . --max-warnings 0",
-    "test": "vitest run",
+    "test": "vitest run && corepack pnpm --recursive --if-present test",
     "test:watch": "vitest",
     "typecheck": "tsc --noEmit && corepack pnpm --recursive --if-present typecheck"
   },

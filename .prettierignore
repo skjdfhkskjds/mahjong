@@ -2,3 +2,4 @@ node_modules/
 dist/
 coverage/
 pnpm-lock.yaml
+apps/discord-activity/src/worker/worker-configuration.d.ts

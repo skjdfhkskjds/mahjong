@@ -11,5 +11,6 @@ engineStrict: true
 
 strictPeerDependencies: true
 
-onlyBuiltDependencies:
-  - esbuild
+allowBuilds:
+  esbuild: true
+  workerd: true

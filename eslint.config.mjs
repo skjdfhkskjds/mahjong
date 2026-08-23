@@ -12,7 +12,14 @@ const platformImports = [
 
 export default tseslint.config(
   {
-    ignores: ["coverage/**", "dist/**", "node_modules/**"],
+    ignores: [
+      "**/coverage/**",
+      "**/dist/**",
+      "**/node_modules/**",
+      "apps/discord-activity/src/worker/worker-configuration.d.ts",
+    ],
+  },
+  {
     linterOptions: {
       reportUnusedDisableDirectives: "error",
     },
@@ -21,7 +28,7 @@ export default tseslint.config(
   ...tseslint.configs.strictTypeChecked,
   ...tseslint.configs.stylisticTypeChecked,
   {
-    files: ["**/*.ts"],
+    files: ["**/*.{ts,tsx}"],
     languageOptions: {
       parserOptions: {
         projectService: true,

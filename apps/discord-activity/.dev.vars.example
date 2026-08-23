@@ -1,0 +1,7 @@
+# Copy to .dev.vars for real Discord mode. Never commit populated secrets.
+APP_MODE=discord
+DISCORD_CLIENT_ID=
+DISCORD_CLIENT_SECRET=
+DISCORD_BOT_TOKEN=
+SESSION_SIGNING_KEY=
+SESSION_SIGNING_KEY_PREVIOUS=

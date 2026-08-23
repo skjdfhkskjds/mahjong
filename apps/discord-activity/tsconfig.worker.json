@@ -1,0 +1,7 @@
+{
+  "extends": "../../tsconfig.base.json",
+  "compilerOptions": {
+    "moduleDetection": "auto"
+  },
+  "include": ["src/worker/**/*.ts", "src/worker/worker-configuration.d.ts"]
+}

@@ -1,0 +1,48 @@
+{
+  "$schema": "./node_modules/wrangler/config-schema.json",
+  "name": "mahjong-discord-activity",
+  "main": "src/worker/index.ts",
+  "compatibility_date": "2026-08-23",
+  "assets": {
+    "binding": "ASSETS",
+    "not_found_handling": "single-page-application",
+    "run_worker_first": ["/api/*"],
+  },
+  "durable_objects": {
+    "bindings": [
+      {
+        "name": "TABLE_ROOM",
+        "class_name": "TableRoom",
+      },
+    ],
+  },
+  "exports": {
+    "TableRoom": {
+      "type": "durable-object",
+      "storage": "sqlite",
+    },
+  },
+  "vars": {
+    "APP_MODE": "mock",
+    "SESSION_COOKIE_NAME": "mahjong_session",
+    "SESSION_SIGNING_KEY": "mock-mode-only-signing-key-change-before-deployment",
+    "SESSION_TTL_SECONDS": "3600",
+  },
+  "env": {
+    "production": {
+      "durable_objects": {
+        "bindings": [
+          {
+            "name": "TABLE_ROOM",
+            "class_name": "TableRoom",
+          },
+        ],
+      },
+      "vars": {
+        "APP_MODE": "discord",
+        "SESSION_COOKIE_NAME": "__Host-mahjong_session",
+        "SESSION_TTL_SECONDS": "3600",
+      },
+    },
+  },
+}

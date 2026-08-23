@@ -1,0 +1,14 @@
+{
+  "extends": "../../tsconfig.base.json",
+  "compilerOptions": {
+    "lib": ["ES2024", "DOM"],
+    "skipLibCheck": true,
+    "types": ["node"]
+  },
+  "include": [
+    "tooling/**/*.ts",
+    "vite.config.ts",
+    "vitest.client.config.ts",
+    "vitest.worker.config.ts"
+  ]
+}
