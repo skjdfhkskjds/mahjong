@@ -26,6 +26,11 @@ jobs:
           cache: pnpm
       - run: pnpm install --frozen-lockfile
       - run: pnpm check
+      - name: Build Discord production bundle
+        env:
+          VITE_ACTIVITY_MODE: discord
+          VITE_DISCORD_CLIENT_ID: "123456789012345678"
+        run: pnpm app:build
       - name: Validate latest commit
         if: github.event_name == 'push'
         run: git log -1 --pretty=%B | pnpm exec commitlint
