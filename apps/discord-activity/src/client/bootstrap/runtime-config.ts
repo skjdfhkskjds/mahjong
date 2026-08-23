@@ -11,11 +11,11 @@ export interface RuntimeConfig {
 }
 
 export interface RuntimeEnvironment {
-  readonly VITE_ACTIVITY_MODE?: string;
-  readonly VITE_API_BASE_URL?: string;
-  readonly VITE_DISCORD_CLIENT_ID?: string;
-  readonly VITE_MOCK_ACTOR_ID?: string;
-  readonly VITE_MOCK_DISPLAY_NAME?: string;
+  readonly VITE_ACTIVITY_MODE?: string | undefined;
+  readonly VITE_API_BASE_URL?: string | undefined;
+  readonly VITE_DISCORD_CLIENT_ID?: string | undefined;
+  readonly VITE_MOCK_ACTOR_ID?: string | undefined;
+  readonly VITE_MOCK_DISPLAY_NAME?: string | undefined;
 }
 
 export class RuntimeConfigurationError extends Error {
@@ -83,9 +83,13 @@ export function readRuntimeConfig(
 }
 
 export function readBrowserRuntimeConfig(): RuntimeConfig {
-  const meta = import.meta as ImportMeta & {
-    readonly env?: RuntimeEnvironment;
+  const environment: RuntimeEnvironment = {
+    VITE_ACTIVITY_MODE: import.meta.env.VITE_ACTIVITY_MODE,
+    VITE_API_BASE_URL: import.meta.env.VITE_API_BASE_URL,
+    VITE_DISCORD_CLIENT_ID: import.meta.env.VITE_DISCORD_CLIENT_ID,
+    VITE_MOCK_ACTOR_ID: import.meta.env.VITE_MOCK_ACTOR_ID,
+    VITE_MOCK_DISPLAY_NAME: import.meta.env.VITE_MOCK_DISPLAY_NAME,
   };
 
-  return readRuntimeConfig(window.location.search, meta.env);
+  return readRuntimeConfig(window.location.search, environment);
 }

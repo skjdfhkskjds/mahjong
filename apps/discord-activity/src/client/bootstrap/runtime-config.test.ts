@@ -1,6 +1,7 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 
 import {
+  readBrowserRuntimeConfig,
   readRuntimeConfig,
   RuntimeConfigurationError,
 } from "./runtime-config.js";
@@ -12,6 +13,15 @@ describe("runtime configuration", () => {
       apiBaseUrl: "",
       mockActor: { id: "mock-player-1", displayName: "Local Player" },
     });
+  });
+
+  it("reads Vite's browser environment without aliasing import.meta", () => {
+    vi.stubGlobal("window", { location: { search: "" } });
+    try {
+      expect(readBrowserRuntimeConfig()).toMatchObject({ mode: "mock" });
+    } finally {
+      vi.unstubAllGlobals();
+    }
   });
 
   it("allows the query string to select Discord mode", () => {
