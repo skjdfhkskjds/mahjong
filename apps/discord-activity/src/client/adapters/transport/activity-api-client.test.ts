@@ -1,4 +1,4 @@
-import { describe, expect, it, vi } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 
 import {
   HttpActivityApi,
@@ -22,6 +22,10 @@ const authenticatedSession = {
 const invitationCapability = `v1.${authenticatedSession.tableId}.${"A".repeat(22)}.${"B".repeat(43)}`;
 const resumeCapability = `v1.${authenticatedSession.tableId}.${"C".repeat(22)}.${"D".repeat(43)}`;
 
+afterEach(() => {
+  vi.unstubAllGlobals();
+});
+
 describe("Activity API response parsing", () => {
   it("parses the health contract", () => {
     expect(
@@ -35,6 +39,28 @@ describe("Activity API response parsing", () => {
       mode: "mock",
       now: "2026-08-23T12:00:00.000Z",
     });
+  });
+
+  it("calls the default browser fetch with its required global receiver", async () => {
+    const receiverFetch = vi.fn(function (this: unknown) {
+      if (this !== globalThis) {
+        return Promise.reject(new Error("Fetch receiver was lost."));
+      }
+      return Promise.resolve(
+        Response.json({
+          status: "ok",
+          mode: "mock",
+          now: "2026-08-23T12:00:00.000Z",
+        }),
+      );
+    });
+    vi.stubGlobal("fetch", receiverFetch);
+    const api = new HttpActivityApi("");
+
+    await expect(
+      api.getHealth(new AbortController().signal),
+    ).resolves.toMatchObject({ status: "ok", mode: "mock" });
+    expect(receiverFetch).toHaveBeenCalledOnce();
   });
 
   it("requires actor details for an authenticated session", () => {

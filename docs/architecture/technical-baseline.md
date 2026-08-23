@@ -78,16 +78,18 @@ Reaction submissions need an explicit sequencing design before implementation. A
 
 `RoomState` owns access, membership, seats, lobby readiness, and table lifecycle. Rules-owned `GameState` begins only when a configured hand or match starts. Their event and revision relationship must be explicit; lobby concerns do not become Hong Kong rules events merely because both live in one Durable Object.
 
-## Version semantics to decide before Milestone 3
+## Version semantics
 
-| Version                | Meaning                                                      | Compatibility rule                                                                |
-| ---------------------- | ------------------------------------------------------------ | --------------------------------------------------------------------------------- |
-| `protocolVersion`      | HTTP/WebSocket wire compatibility                            | Reject unsupported major versions; define a deployment overlap window             |
-| `rulesetVersion`       | Exact semantic profile, such as `hong-kong/v1`               | Historical matches remain pinned; semantic changes require a new version          |
-| `stateVersion`         | Monotonic canonical aggregate transition position            | Define whether it increments per event or atomic command before persistence ships |
-| `viewVersion`          | Optional viewer stream position if projected deltas are used | Must not expose or depend on hidden-only transitions                              |
-| `storageSchemaVersion` | SQLite and serialized payload schema                         | Forward migrations are transactional and tested from permanent fixtures           |
-| `encodingVersion`      | Canonical bytes used for hashes/commitments                  | Never reinterpret already committed bytes under new encoding rules                |
+The concrete Milestone 3 choices are recorded in [ADR 0011](../decisions/0011-version-room-state-and-lobby-protocol.md).
+
+| Version                | Meaning                                                      | Compatibility rule                                                        |
+| ---------------------- | ------------------------------------------------------------ | ------------------------------------------------------------------------- |
+| `protocolVersion`      | HTTP/WebSocket wire compatibility                            | Reject unsupported major versions; define a deployment overlap window     |
+| `rulesetVersion`       | Exact semantic profile, such as `hong-kong/v1`               | Historical matches remain pinned; semantic changes require a new version  |
+| `stateVersion`         | Monotonic viewer-visible room aggregate transition position  | Increment once per accepted atomic room transition; reject stale commands |
+| `viewVersion`          | Optional viewer stream position if projected deltas are used | Must not expose or depend on hidden-only transitions                      |
+| `storageSchemaVersion` | SQLite and serialized payload schema                         | Forward migrations are transactional and tested from permanent fixtures   |
+| `encodingVersion`      | Canonical bytes used for hashes/commitments                  | Never reinterpret already committed bytes under new encoding rules        |
 
 Editorial clarification that does not change fixture outcomes does not require a new ruleset version. Any semantic fixture change does.
 

@@ -3,6 +3,7 @@ import { evictDurableObject, runInDurableObject } from "cloudflare:test";
 import { describe, expect, it } from "vitest";
 
 import type { TableRoom } from "../../src/worker/durable-objects/table-room.js";
+import { tableRoomV1Schema } from "../fixtures/table-room-v1-schema.js";
 
 interface Binding {
   readonly bindingGeneration: number;
@@ -24,10 +25,33 @@ interface SnapshotMessage {
   readonly type: string;
   readonly view: {
     readonly tableId: string;
+    readonly seats: readonly {
+      readonly occupant: {
+        readonly displayName: string;
+        readonly id: string;
+      } | null;
+      readonly ready: boolean;
+      readonly seat: string;
+    }[];
+    readonly spectators: readonly {
+      readonly displayName: string;
+      readonly id: string;
+    }[];
     readonly viewer: {
       readonly actor: { readonly displayName: string; readonly id: string };
+      readonly role: "player" | "spectator";
+      readonly seat?: string;
     };
   };
+}
+
+interface ReceiptMessage {
+  readonly commandId: string;
+  readonly error?: { readonly code: string; readonly message: string };
+  readonly outcome: "applied" | "rejected";
+  readonly protocolVersion: 1;
+  readonly stateVersion: number;
+  readonly type: "table/receipt";
 }
 
 const owner = { displayName: "Table Owner", id: "discord:owner" } as const;
@@ -105,13 +129,13 @@ async function activateSession(
   });
 }
 
-function nextMessage(socket: WebSocket): Promise<SnapshotMessage> {
+function nextMessage<T = SnapshotMessage>(socket: WebSocket): Promise<T> {
   return new Promise((resolve, reject) => {
     socket.addEventListener(
       "message",
       (event) => {
         try {
-          resolve(JSON.parse(String(event.data)) as SnapshotMessage);
+          resolve(JSON.parse(String(event.data)) as T);
         } catch (error) {
           reject(
             error instanceof Error
@@ -125,9 +149,81 @@ function nextMessage(socket: WebSocket): Promise<SnapshotMessage> {
   });
 }
 
+function sendCommand(
+  socket: WebSocket,
+  commandId: string,
+  expectedStateVersion: number,
+  command: object,
+): Promise<ReceiptMessage> {
+  const receipt = nextMessage<ReceiptMessage>(socket);
+  socket.send(commandMessage(commandId, expectedStateVersion, command));
+  return receipt;
+}
+
 function nextClose(socket: WebSocket): Promise<CloseEvent> {
   return new Promise((resolve) => {
     socket.addEventListener("close", resolve, { once: true });
+  });
+}
+
+function nextMessages<T>(socket: WebSocket, count: number): Promise<T[]> {
+  return new Promise((resolve, reject) => {
+    const messages: T[] = [];
+    const listener = (event: MessageEvent) => {
+      try {
+        messages.push(JSON.parse(String(event.data)) as T);
+        if (messages.length === count) {
+          socket.removeEventListener("message", listener);
+          resolve(messages);
+        }
+      } catch (error) {
+        socket.removeEventListener("message", listener);
+        reject(
+          error instanceof Error
+            ? error
+            : new Error("Table message parsing failed."),
+        );
+      }
+    };
+    socket.addEventListener("message", listener);
+  });
+}
+
+function nextReceipt(socket: WebSocket): Promise<ReceiptMessage> {
+  return new Promise((resolve, reject) => {
+    const listener = (event: MessageEvent) => {
+      try {
+        const value = JSON.parse(String(event.data)) as {
+          readonly type?: unknown;
+        };
+        if (value.type === "table/receipt") {
+          socket.removeEventListener("message", listener);
+          resolve(value as ReceiptMessage);
+        }
+      } catch (error) {
+        socket.removeEventListener("message", listener);
+        reject(
+          error instanceof Error
+            ? error
+            : new Error("Table receipt parsing failed."),
+        );
+      }
+    };
+    socket.addEventListener("message", listener);
+  });
+}
+
+function commandMessage(
+  commandId: string,
+  expectedStateVersion: number,
+  command: object,
+): string {
+  return JSON.stringify({
+    type: "table/command",
+    protocolVersion: 1,
+    commandId,
+    expectedStateVersion,
+    command,
   });
 }
 
@@ -146,7 +242,7 @@ async function connect(
   stub: DurableObjectStub<TableRoom>,
   binding: Binding,
   sessionGeneration: number,
-  actor = owner,
+  actor: { readonly displayName: string; readonly id: string } = owner,
   instanceId = "instance-original",
 ): Promise<Response> {
   return stub.fetch(
@@ -165,6 +261,57 @@ async function connect(
       },
     }),
   );
+}
+
+async function openSocket(
+  stub: DurableObjectStub<TableRoom>,
+  binding: Binding,
+  sessionGeneration: number,
+  actor: { readonly displayName: string; readonly id: string } = owner,
+): Promise<{ readonly initial: SnapshotMessage; readonly socket: WebSocket }> {
+  const upgrade = await connect(stub, binding, sessionGeneration, actor);
+  expect(upgrade.status).toBe(101);
+  const socket = upgrade.webSocket;
+  if (socket === null) throw new Error("WebSocket upgrade returned no socket.");
+  const initial = nextMessage(socket);
+  socket.accept();
+  return { initial: await initial, socket };
+}
+
+async function addMember(
+  stub: DurableObjectStub<TableRoom>,
+  binding: Binding,
+  actor: { readonly displayName: string; readonly id: string },
+  sessionGeneration = 1,
+): Promise<void> {
+  const invitationResponse = await post(stub, "/internal/invitations/create", {
+    version: 1,
+    ...bindingAuthorization(binding),
+    actorId: owner.id,
+    invitedActorId: actor.id,
+    now: Date.now(),
+    sessionGeneration: 1,
+  });
+  expect(invitationResponse.status).toBe(200);
+  const invitation = await invitationResponse.json<Capability>();
+  const activation = await activateSession(
+    stub,
+    binding,
+    actor.id,
+    sessionGeneration,
+  );
+  expect(activation.status).toBe(403);
+  await activation.body?.cancel();
+  const redemption = await post(stub, "/internal/invitations/redeem", {
+    version: 1,
+    ...bindingAuthorization(binding),
+    actor,
+    capability: invitation.capability,
+    now: Date.now(),
+    sessionGeneration,
+  });
+  expect(redemption.status).toBe(200);
+  await redemption.body?.cancel();
 }
 
 describe("TableRoom authority", () => {
@@ -743,12 +890,545 @@ describe("TableRoom authority", () => {
     });
   });
 
+  it("persists exclusive seats, ready state, and viewer-specific spectator roles", async () => {
+    const tableId = `lobby-${crypto.randomUUID()}`;
+    const stub = tableRoom(tableId);
+    const { binding } = await createTable(stub, tableId);
+    const ownerActivation = await activateSession(stub, binding, owner.id, 1);
+    expect(ownerActivation.status).toBe(200);
+    await ownerActivation.body?.cancel();
+
+    const ownerConnection = await openSocket(stub, binding, 1);
+    expect(ownerConnection.initial).toMatchObject({
+      stateVersion: 0,
+      view: {
+        spectators: [owner],
+        viewer: { actor: owner, role: "spectator" },
+      },
+    });
+    expect(Object.keys(ownerConnection.initial).sort()).toEqual([
+      "protocolVersion",
+      "stateVersion",
+      "type",
+      "view",
+    ]);
+    expect(Object.keys(ownerConnection.initial.view).sort()).toEqual([
+      "phase",
+      "seats",
+      "spectators",
+      "tableId",
+      "viewer",
+    ]);
+    for (const seat of ownerConnection.initial.view.seats) {
+      expect(Object.keys(seat).sort()).toEqual(["occupant", "ready", "seat"]);
+    }
+    expect(JSON.stringify(ownerConnection.initial)).not.toMatch(
+      /bindingProof|command|domainEvent|sessionGeneration|storage/u,
+    );
+    const attachment = await runInDurableObject(
+      stub,
+      (_instance, state) =>
+        state.getWebSockets()[0]?.deserializeAttachment() as unknown,
+    );
+    expect(attachment).toMatchObject({
+      actorId: owner.id,
+      version: 2,
+    });
+    if (typeof attachment !== "object" || attachment === null) {
+      throw new Error("Expected a serialized socket attachment.");
+    }
+    expect(Object.keys(attachment).sort()).toEqual([
+      "actorId",
+      "connectionGeneration",
+      "connectionId",
+      "sessionExpiresAt",
+      "version",
+    ]);
+    expect(JSON.stringify(attachment).length).toBeLessThan(512);
+    const claimMessages = nextMessages<ReceiptMessage | SnapshotMessage>(
+      ownerConnection.socket,
+      2,
+    );
+    ownerConnection.socket.send(
+      commandMessage("owner-east", 0, {
+        type: "lobby/claim-seat",
+        seat: "east",
+      }),
+    );
+    const [claimReceipt, ownerPlayerView] = await claimMessages;
+    expect(claimReceipt).toMatchObject({
+      type: "table/receipt",
+      commandId: "owner-east",
+      outcome: "applied",
+      stateVersion: 1,
+    });
+    expect(ownerPlayerView).toMatchObject({
+      type: "table/snapshot",
+      stateVersion: 1,
+      view: { spectators: [], viewer: { role: "player", seat: "east" } },
+    });
+
+    const addedSnapshot = nextMessage(ownerConnection.socket);
+    await addMember(stub, binding, member);
+    expect(await addedSnapshot).toMatchObject({
+      stateVersion: 2,
+      view: { spectators: [member] },
+    });
+    const memberActivation = await activateSession(stub, binding, member.id, 1);
+    expect(memberActivation.status).toBe(200);
+    await memberActivation.body?.cancel();
+    const memberConnection = await openSocket(stub, binding, 1, member);
+    expect(memberConnection.initial).toMatchObject({
+      stateVersion: 2,
+      view: {
+        seats: [
+          { occupant: owner, ready: false, seat: "east" },
+          { occupant: null, ready: false, seat: "south" },
+          { occupant: null, ready: false, seat: "west" },
+          { occupant: null, ready: false, seat: "north" },
+        ],
+        spectators: [member],
+        viewer: { actor: member, role: "spectator" },
+      },
+    });
+
+    const unavailable = await sendCommand(
+      memberConnection.socket,
+      "member-east",
+      2,
+      { type: "lobby/claim-seat", seat: "east" },
+    );
+    expect(unavailable).toMatchObject({
+      outcome: "rejected",
+      stateVersion: 2,
+      error: { code: "seat-unavailable" },
+    });
+    const memberClaimMessages = nextMessages<ReceiptMessage | SnapshotMessage>(
+      memberConnection.socket,
+      2,
+    );
+    memberConnection.socket.send(
+      commandMessage("member-south", 2, {
+        type: "lobby/claim-seat",
+        seat: "south",
+      }),
+    );
+    const [memberClaimReceipt, memberPlayerView] = await memberClaimMessages;
+    expect(memberClaimReceipt).toMatchObject({
+      outcome: "applied",
+      stateVersion: 3,
+    });
+    expect(memberPlayerView).toMatchObject({
+      stateVersion: 3,
+      view: { spectators: [], viewer: { role: "player", seat: "south" } },
+    });
+
+    const readyMessages = nextMessages<ReceiptMessage | SnapshotMessage>(
+      memberConnection.socket,
+      2,
+    );
+    memberConnection.socket.send(
+      commandMessage("member-ready", 3, {
+        type: "lobby/set-ready",
+        ready: true,
+      }),
+    );
+    const [readyReceipt, readyView] = await readyMessages;
+    expect(readyReceipt).toMatchObject({ outcome: "applied", stateVersion: 4 });
+    if (readyView?.type !== "table/snapshot") {
+      throw new Error("Expected the ready-state snapshot.");
+    }
+    expect(readyView).toMatchObject({
+      stateVersion: 4,
+    });
+    expect(readyView.view.seats).toContainEqual({
+      occupant: member,
+      ready: true,
+      seat: "south",
+    });
+
+    memberConnection.socket.close(1000, "reconnect test");
+    await evictDurableObject(stub);
+    const reconnected = await openSocket(stub, binding, 1, member);
+    expect(reconnected.initial).toMatchObject({
+      stateVersion: 4,
+      view: {
+        viewer: { role: "player", seat: "south" },
+      },
+    });
+    expect(reconnected.initial.view.seats).toContainEqual({
+      occupant: member,
+      ready: true,
+      seat: "south",
+    });
+    const leaveMessages = nextMessages<ReceiptMessage | SnapshotMessage>(
+      reconnected.socket,
+      2,
+    );
+    reconnected.socket.send(
+      commandMessage("member-leave", 4, { type: "lobby/leave-seat" }),
+    );
+    const [leaveReceipt, spectatorView] = await leaveMessages;
+    expect(leaveReceipt).toMatchObject({ outcome: "applied", stateVersion: 5 });
+    if (spectatorView?.type !== "table/snapshot") {
+      throw new Error("Expected the post-leave snapshot.");
+    }
+    expect(spectatorView).toMatchObject({
+      stateVersion: 5,
+      view: {
+        spectators: [member],
+        viewer: { role: "spectator" },
+      },
+    });
+    expect(spectatorView.view.seats).toContainEqual({
+      occupant: null,
+      ready: false,
+      seat: "south",
+    });
+    reconnected.socket.close(1000, "test complete");
+    ownerConnection.socket.close(1000, "test complete");
+  });
+
+  it("fills all four seats while additional members remain spectators", async () => {
+    const tableId = `full-lobby-${crypto.randomUUID()}`;
+    const stub = tableRoom(tableId);
+    const { binding } = await createTable(stub, tableId);
+    const ownerActivation = await activateSession(stub, binding, owner.id, 1);
+    expect(ownerActivation.status).toBe(200);
+    await ownerActivation.body?.cancel();
+
+    const actors = [
+      owner,
+      { id: "discord:south", displayName: "South Player" },
+      { id: "discord:west", displayName: "West Player" },
+      { id: "discord:north", displayName: "North Player" },
+      { id: "discord:fifth", displayName: "Fifth Member" },
+    ] as const;
+    for (const actor of actors.slice(1)) {
+      await addMember(stub, binding, actor);
+      const activation = await activateSession(stub, binding, actor.id, 1);
+      expect(activation.status).toBe(200);
+      await activation.body?.cancel();
+    }
+
+    const seats = ["east", "south", "west", "north"] as const;
+    for (const [index, seat] of seats.entries()) {
+      const actor = actors[index];
+      if (actor === undefined) throw new Error("Missing test actor.");
+      const connection = await openSocket(stub, binding, 1, actor);
+      const expectedVersion = 4 + index;
+      const messages = nextMessages<ReceiptMessage | SnapshotMessage>(
+        connection.socket,
+        2,
+      );
+      connection.socket.send(
+        commandMessage(`claim-${seat}`, expectedVersion, {
+          type: "lobby/claim-seat",
+          seat,
+        }),
+      );
+      const [receipt, snapshot] = await messages;
+      expect(receipt).toMatchObject({
+        outcome: "applied",
+        stateVersion: expectedVersion + 1,
+      });
+      expect(snapshot).toMatchObject({
+        stateVersion: expectedVersion + 1,
+        view: { viewer: { actor, role: "player", seat } },
+      });
+      connection.socket.close(1000, "seat reserved");
+    }
+
+    await evictDurableObject(stub);
+    const fifth = await openSocket(stub, binding, 1, actors[4]);
+    expect(fifth.initial).toMatchObject({
+      stateVersion: 8,
+      view: {
+        seats: seats.map((seat, index) => ({
+          occupant: actors[index],
+          ready: false,
+          seat,
+        })),
+        spectators: [actors[4]],
+        viewer: { actor: actors[4], role: "spectator" },
+      },
+    });
+    fifth.socket.close(1000, "test complete");
+  });
+
+  it("stores actor-scoped receipts and handles replay, collision, and stale state safely", async () => {
+    const tableId = `receipt-${crypto.randomUUID()}`;
+    const stub = tableRoom(tableId);
+    const { binding } = await createTable(stub, tableId);
+    const activation = await activateSession(stub, binding, owner.id, 1);
+    expect(activation.status).toBe(200);
+    await activation.body?.cancel();
+    const { socket } = await openSocket(stub, binding, 1);
+
+    const appliedMessages = nextMessages<ReceiptMessage | SnapshotMessage>(
+      socket,
+      2,
+    );
+    const request = commandMessage("stable-command", 0, {
+      type: "lobby/claim-seat",
+      seat: "west",
+    });
+    socket.send(request);
+    const [applied] = await appliedMessages;
+    expect(applied).toMatchObject({ outcome: "applied", stateVersion: 1 });
+
+    await evictDurableObject(stub);
+    const replay = nextMessage<ReceiptMessage>(socket);
+    socket.send(request);
+    expect(await replay).toEqual(applied);
+
+    const collision = await sendCommand(socket, "stable-command", 1, {
+      type: "lobby/leave-seat",
+    });
+    expect(collision).toMatchObject({
+      outcome: "rejected",
+      error: {
+        code: "command-id-collision",
+        message: "The command identifier was already used.",
+      },
+    });
+    expect(JSON.stringify(collision)).not.toContain("west");
+
+    const staleMessages = nextMessages<ReceiptMessage | SnapshotMessage>(
+      socket,
+      2,
+    );
+    socket.send(
+      commandMessage("stale-command", 0, {
+        type: "lobby/set-ready",
+        ready: true,
+      }),
+    );
+    const [stale, fresh] = await staleMessages;
+    expect(stale).toMatchObject({
+      type: "table/receipt",
+      outcome: "rejected",
+      stateVersion: 1,
+      error: { code: "stale-state-version" },
+    });
+    expect(fresh).toMatchObject({ type: "table/snapshot", stateVersion: 1 });
+
+    await addMember(stub, binding, member);
+    const memberActivation = await activateSession(stub, binding, member.id, 1);
+    expect(memberActivation.status).toBe(200);
+    await memberActivation.body?.cancel();
+    const memberConnection = await openSocket(stub, binding, 1, member);
+    const crossActorCollision = await sendCommand(
+      memberConnection.socket,
+      "stable-command",
+      2,
+      { type: "lobby/claim-seat", seat: "north" },
+    );
+    expect(crossActorCollision).toMatchObject({
+      outcome: "rejected",
+      stateVersion: 2,
+      error: {
+        code: "command-id-collision",
+        message: "The command identifier was already used.",
+      },
+    });
+    expect(JSON.stringify(crossActorCollision)).not.toContain(owner.id);
+
+    await expect(
+      runInDurableObject(
+        stub,
+        (_instance, state) =>
+          state.storage.sql
+            .exec<{ count: number }>(
+              "SELECT count(*) AS count FROM lobby_command_receipts",
+            )
+            .one().count,
+      ),
+    ).resolves.toBe(2);
+    memberConnection.socket.close(1000, "test complete");
+    socket.close(1000, "test complete");
+  });
+
+  it("applies one actor's simultaneous duplicate command only once", async () => {
+    const tableId = `duplicate-${crypto.randomUUID()}`;
+    const stub = tableRoom(tableId);
+    const { binding } = await createTable(stub, tableId);
+    const activation = await activateSession(stub, binding, owner.id, 1);
+    expect(activation.status).toBe(200);
+    await activation.body?.cancel();
+    const first = await openSocket(stub, binding, 1);
+    const second = await openSocket(stub, binding, 1);
+    const firstReceipt = nextReceipt(first.socket);
+    const secondReceipt = nextReceipt(second.socket);
+    const duplicate = commandMessage("same-actor-duplicate", 0, {
+      type: "lobby/claim-seat",
+      seat: "north",
+    });
+
+    first.socket.send(duplicate);
+    second.socket.send(duplicate);
+
+    await expect(firstReceipt).resolves.toMatchObject({
+      outcome: "applied",
+      stateVersion: 1,
+    });
+    await expect(secondReceipt).resolves.toMatchObject({
+      outcome: "applied",
+      stateVersion: 1,
+    });
+    await expect(
+      runInDurableObject(stub, (_instance, state) => ({
+        receipts: state.storage.sql
+          .exec<{ count: number }>(
+            "SELECT count(*) AS count FROM lobby_command_receipts",
+          )
+          .one().count,
+        seats: state.storage.sql
+          .exec<{ count: number }>("SELECT count(*) AS count FROM lobby_seats")
+          .one().count,
+        stateVersion: state.storage.sql
+          .exec<{ state_version: number }>(
+            "SELECT state_version FROM lobby_state WHERE singleton = 1",
+          )
+          .one().state_version,
+      })),
+    ).resolves.toEqual({ receipts: 1, seats: 1, stateVersion: 1 });
+    first.socket.close(1000, "test complete");
+    second.socket.close(1000, "test complete");
+  });
+
+  it("migrates persisted v1 storage to v2 without losing milestone 2 data", async () => {
+    const tableId = `migration-${crypto.randomUUID()}`;
+    const stub = tableRoom(tableId);
+    const binding: Binding = {
+      bindingGeneration: 3,
+      bindingProof: "B".repeat(43),
+      role: "owner",
+      tableId,
+      version: 1,
+    };
+    await runInDurableObject(stub, (_instance, state) => {
+      for (const table of [
+        "lobby_command_receipts",
+        "lobby_seats",
+        "lobby_state",
+        "connection_grants",
+        "actor_sessions",
+        "capabilities",
+        "binding_receipts",
+        "members",
+        "table_record",
+        "storage_metadata",
+      ]) {
+        state.storage.sql.exec(`DROP TABLE IF EXISTS ${table}`);
+      }
+      for (const statement of tableRoomV1Schema) {
+        state.storage.sql.exec(statement);
+      }
+      state.storage.sql.exec(
+        "INSERT INTO storage_metadata (singleton, schema_version) VALUES (1, 1)",
+      );
+      state.storage.sql.exec(
+        "INSERT INTO table_record (singleton, table_id, owner_actor_id, created_at, instance_id, binding_generation, binding_proof, binding_operation_id) VALUES (1, ?, ?, 100, 'instance-original', ?, ?, 'fixture-binding')",
+        tableId,
+        owner.id,
+        binding.bindingGeneration,
+        binding.bindingProof,
+      );
+      state.storage.sql.exec(
+        "INSERT INTO members (actor_id, display_name, role, joined_at) VALUES (?, ?, 'owner', 100), (?, ?, 'member', 101)",
+        owner.id,
+        owner.displayName,
+        member.id,
+        member.displayName,
+      );
+      state.storage.sql.exec(
+        "INSERT INTO binding_receipts (operation_id, request_json, status, response_json, http_status, created_at, updated_at) VALUES ('fixture-binding', '{}', 'applied', '{}', 200, 100, 100)",
+      );
+      state.storage.sql.exec(
+        "INSERT INTO capabilities (capability_id, kind, subject_actor_id, secret_hash, expected_binding_generation, expires_at, consumed_actor_id, consumed_operation_id) VALUES (?, 'resume', ?, ?, 3, 9999999999999, NULL, NULL)",
+        "C".repeat(22),
+        owner.id,
+        "S".repeat(43),
+      );
+      state.storage.sql.exec(
+        "INSERT INTO actor_sessions (actor_id, session_generation, activated_at) VALUES (?, 7, 100)",
+        owner.id,
+      );
+      state.storage.sql.exec(
+        "INSERT INTO connection_grants (connection_generation, actor_id, display_name, instance_id, table_id, binding_generation, binding_proof, session_generation, expires_at) VALUES ('fixture-connection', ?, ?, 'instance-original', ?, 3, ?, 7, 9999999999999)",
+        owner.id,
+        owner.displayName,
+        tableId,
+        binding.bindingProof,
+      );
+    });
+    await evictDurableObject(stub);
+
+    const migratedActivation = await activateSession(
+      stub,
+      binding,
+      owner.id,
+      7,
+    );
+    expect(migratedActivation.status).toBe(200);
+    await migratedActivation.body?.cancel();
+    await expect(
+      runInDurableObject(stub, (_instance, state) => ({
+        actorSession: state.storage.sql
+          .exec<{ session_generation: number }>(
+            "SELECT session_generation FROM actor_sessions WHERE actor_id = ?",
+            owner.id,
+          )
+          .one().session_generation,
+        bindingReceipts: state.storage.sql
+          .exec<{ count: number }>(
+            "SELECT count(*) AS count FROM binding_receipts",
+          )
+          .one().count,
+        capabilities: state.storage.sql
+          .exec<{ count: number }>("SELECT count(*) AS count FROM capabilities")
+          .one().count,
+        connectionGrant: state.storage.sql
+          .exec<{ connection_generation: string }>(
+            "SELECT connection_generation FROM connection_grants",
+          )
+          .one().connection_generation,
+        members: state.storage.sql
+          .exec<{ count: number }>("SELECT count(*) AS count FROM members")
+          .one().count,
+        schemaVersion: state.storage.sql
+          .exec<{ schema_version: number }>(
+            "SELECT schema_version FROM storage_metadata WHERE singleton = 1",
+          )
+          .one().schema_version,
+        stateVersion: state.storage.sql
+          .exec<{ state_version: number }>(
+            "SELECT state_version FROM lobby_state WHERE singleton = 1",
+          )
+          .one().state_version,
+        tables: state.storage.sql
+          .exec<{ count: number }>("SELECT count(*) AS count FROM table_record")
+          .one().count,
+      })),
+    ).resolves.toEqual({
+      actorSession: 7,
+      bindingReceipts: 1,
+      capabilities: 1,
+      connectionGrant: "fixture-connection",
+      members: 2,
+      schemaVersion: 2,
+      stateVersion: 0,
+      tables: 1,
+    });
+  });
+
   it("refuses to open an unsupported persisted schema version", async () => {
     const tableId = `schema-${crypto.randomUUID()}`;
     const stub = tableRoom(tableId);
     await runInDurableObject(stub, (_instance, state) => {
       state.storage.sql.exec(
-        "UPDATE storage_metadata SET schema_version = 2 WHERE singleton = 1",
+        "UPDATE storage_metadata SET schema_version = 999 WHERE singleton = 1",
       );
     });
     await evictDurableObject(stub);
@@ -762,6 +1442,29 @@ describe("TableRoom authority", () => {
         intent: { kind: "create" },
       }),
     ).rejects.toThrow(/Unsupported TableRoom storage schema version/u);
+  });
+
+  it("fails closed instead of recreating missing current-schema state", async () => {
+    for (const missingTable of ["lobby_seats", "members"] as const) {
+      const tableId = `corrupt-${missingTable}-${crypto.randomUUID()}`;
+      const stub = tableRoom(tableId);
+      await createTable(stub, tableId);
+      await runInDurableObject(stub, (_instance, state) => {
+        state.storage.sql.exec(`DROP TABLE ${missingTable}`);
+      });
+      await evictDurableObject(stub);
+
+      await expect(
+        post(stub, "/internal/bindings/apply", {
+          version: 1,
+          operationId: crypto.randomUUID(),
+          instanceId: "instance-original",
+          actor: owner,
+          deadlineAt: Date.now() + 60_000,
+          intent: { kind: "create" },
+        }),
+      ).rejects.toThrow(new RegExp(`${missingTable}|no such table`, "u"));
+    }
   });
 
   it("checks active session generation on connect and every socket message", async () => {
@@ -827,7 +1530,11 @@ describe("TableRoom authority", () => {
     await evictDurableObject(stub);
     const resyncMessage = nextMessage(currentSocket);
     currentSocket.send(
-      JSON.stringify({ lastSeenStateVersion: 0, type: "table/resync" }),
+      JSON.stringify({
+        lastSeenStateVersion: 0,
+        protocolVersion: 1,
+        type: "table/resync",
+      }),
     );
     expect(await resyncMessage).toEqual(currentInitial);
     currentSocket.close(1000, "test complete");

@@ -5,6 +5,9 @@ import { HttpActivityApi } from "../adapters/transport/activity-api-client.js";
 import {
   createTableSocketUrl,
   ReconnectingSocketStatusMonitor,
+  type TableCommandEnvelope,
+  type TableReceipt,
+  type ViewerSafeTableSnapshot,
 } from "../adapters/transport/table-socket-status.js";
 import type { RuntimeConfig } from "../bootstrap/runtime-config.js";
 import {
@@ -58,8 +61,131 @@ function formatExpiry(value: string | undefined): string {
       }).format(date);
 }
 
+function LobbyPanel({
+  connected,
+  latestReceipt,
+  onCommand,
+  snapshot,
+}: {
+  readonly connected: boolean;
+  readonly latestReceipt: TableReceipt | undefined;
+  readonly onCommand: (command: TableCommandEnvelope["command"]) => void;
+  readonly snapshot: ViewerSafeTableSnapshot | undefined;
+}) {
+  const viewer = snapshot?.view.viewer;
+  const rejected = latestReceipt?.outcome === "rejected" ? latestReceipt : null;
+
+  return (
+    <section aria-labelledby="lobby-title" className="panel lobby-panel">
+      <div className="panel__heading lobby-heading">
+        <div>
+          <p className="section-kicker">Persistent lobby</p>
+          <h2 id="lobby-title">Choose a seat and get ready</h2>
+        </div>
+        <p className="lobby-connection" role="status">
+          {connected && snapshot
+            ? `Connected · state ${String(snapshot.stateVersion)}`
+            : "Controls unavailable while reconnecting"}
+        </p>
+      </div>
+
+      {snapshot ? (
+        <>
+          {rejected ? (
+            <p className="command-error" role="alert">
+              {rejected.error?.message ?? "The table rejected that action."}
+            </p>
+          ) : null}
+
+          <ul className="seat-grid" aria-label="Table seats">
+            {snapshot.view.seats.map((seat) => {
+              const isViewerSeat =
+                viewer?.role === "player" && viewer.seat === seat.seat;
+              return (
+                <li className="seat-card" key={seat.seat}>
+                  <div className="seat-card__heading">
+                    <h3>{seat.seat}</h3>
+                    <span
+                      className={`ready-chip ${seat.ready ? "ready-chip--ready" : ""}`}
+                    >
+                      {seat.occupant
+                        ? seat.ready
+                          ? "Ready"
+                          : "Not ready"
+                        : "Vacant"}
+                    </span>
+                  </div>
+                  <p>{seat.occupant?.displayName ?? "Open seat"}</p>
+                  {viewer && !seat.occupant ? (
+                    <button
+                      className="lobby-button"
+                      disabled={!connected}
+                      onClick={() => {
+                        onCommand({
+                          type: "lobby/claim-seat",
+                          seat: seat.seat,
+                        });
+                      }}
+                    >
+                      {viewer.role === "player" ? "Move to" : "Claim"}{" "}
+                      {seat.seat} seat
+                    </button>
+                  ) : null}
+                  {isViewerSeat ? (
+                    <div className="seat-actions">
+                      <button
+                        className="lobby-button"
+                        disabled={!connected}
+                        onClick={() => {
+                          onCommand({
+                            type: "lobby/set-ready",
+                            ready: !seat.ready,
+                          });
+                        }}
+                      >
+                        {seat.ready ? "Mark not ready" : "Mark ready"}
+                      </button>
+                      <button
+                        className="lobby-button lobby-button--quiet"
+                        disabled={!connected}
+                        onClick={() => {
+                          onCommand({ type: "lobby/leave-seat" });
+                        }}
+                      >
+                        Leave {seat.seat} seat
+                      </button>
+                    </div>
+                  ) : null}
+                </li>
+              );
+            })}
+          </ul>
+
+          <div className="spectator-list">
+            <h3>Spectators ({snapshot.view.spectators.length})</h3>
+            {snapshot.view.spectators.length > 0 ? (
+              <ul>
+                {snapshot.view.spectators.map((spectator) => (
+                  <li key={spectator.id}>{spectator.displayName}</li>
+                ))}
+              </ul>
+            ) : (
+              <p>No spectators</p>
+            )}
+          </div>
+        </>
+      ) : (
+        <p className="lobby-placeholder" role="status">
+          The lobby will appear after the table sends a viewer-safe snapshot.
+        </p>
+      )}
+    </section>
+  );
+}
+
 export function App({ config }: AppProps) {
   const [attempt, setAttempt] = useState(0);
+  const [commandFailure, setCommandFailure] = useState<string>();
   const [status, setStatus] = useState<ClientStartupStatus>(
     createInitialStartupStatus,
   );
@@ -86,6 +212,28 @@ export function App({ config }: AppProps) {
     status.session,
     status.socket,
   ].some((check) => check.state === "failed");
+  const snapshot = status.tableSnapshot;
+  const lobbyConnected = status.complete && snapshot !== undefined;
+
+  const sendLobbyCommand = (command: TableCommandEnvelope["command"]): void => {
+    if (!lobbyConnected) {
+      return;
+    }
+    try {
+      dependencies.socket.sendCommand({
+        type: "table/command",
+        protocolVersion: 1,
+        commandId: crypto.randomUUID(),
+        expectedStateVersion: snapshot.stateVersion,
+        command,
+      } as TableCommandEnvelope);
+      setCommandFailure(undefined);
+    } catch (error) {
+      setCommandFailure(
+        error instanceof Error ? error.message : "Unable to send table action.",
+      );
+    }
+  };
 
   return (
     <div className="app-shell">
@@ -94,8 +242,8 @@ export function App({ config }: AppProps) {
           <p className="eyebrow">Hong Kong Mahjong · private alpha</p>
           <h1>Your table is taking shape.</h1>
           <p className="hero__copy">
-            This walking skeleton verifies the Activity, Worker, session, and
-            real-time connection before gameplay is added.
+            Pick a wind, gather four players, and ready up. Your lobby survives
+            reconnects while the table keeps every viewer projection private.
           </p>
         </div>
         <div className="mode-chip" aria-label={`Runtime mode: ${config.mode}`}>
@@ -105,13 +253,24 @@ export function App({ config }: AppProps) {
       </header>
 
       <main>
+        <LobbyPanel
+          connected={lobbyConnected}
+          latestReceipt={status.latestReceipt}
+          onCommand={sendLobbyCommand}
+          snapshot={snapshot}
+        />
+        {commandFailure ? (
+          <p className="command-error command-error--page" role="alert">
+            {commandFailure}
+          </p>
+        ) : null}
         <section aria-labelledby="startup-title" className="panel">
           <div className="panel__heading">
             <div>
               <p className="section-kicker">Connection check</p>
               <h2 id="startup-title">
                 {status.complete
-                  ? "Ready for the next milestone"
+                  ? "Lobby connection ready"
                   : hasFailure
                     ? "Startup needs attention"
                     : "Preparing your table"}
@@ -173,7 +332,7 @@ export function App({ config }: AppProps) {
               </dd>
             </div>
             <div>
-              <dt>Mock table</dt>
+              <dt>Table</dt>
               <dd className="technical-value">
                 {status.tableSnapshot?.view.tableId ?? "Waiting…"}
               </dd>
@@ -196,8 +355,8 @@ export function App({ config }: AppProps) {
       </main>
 
       <footer>
-        <span aria-hidden="true">🀄</span> No game state is created by this
-        shell.
+        <span aria-hidden="true">🀄</span> Seats, spectators, and ready state
+        persist with this table.
       </footer>
     </div>
   );

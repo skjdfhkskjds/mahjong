@@ -13,7 +13,6 @@ import {
 } from "../http/responses.js";
 
 const PROTOCOL_VERSION = 1;
-const STATE_VERSION = 0;
 const MAX_MESSAGE_BYTES = 2_048;
 const MAX_INTERNAL_BODY_BYTES = 4_096;
 const CAPABILITY_LIFETIME_MS = 15 * 60 * 1_000;
@@ -34,6 +33,9 @@ const INTERNAL_SESSION_GENERATION = "X-Mahjong-Session-Generation";
 const INTERNAL_TABLE_ID = "X-Mahjong-Table-Id";
 
 type Actor = ApplicationActor;
+type Seat = "east" | "south" | "west" | "north";
+
+const SEATS: readonly Seat[] = ["east", "south", "west", "north"];
 
 interface BindingAuthorization {
   readonly bindingGeneration: number;
@@ -133,6 +135,98 @@ interface ParsedCapability {
   readonly secret: string;
   readonly tableId: string;
 }
+
+interface LobbyCommandEnvelope {
+  readonly commandId: string;
+  readonly expectedStateVersion: number;
+  readonly command:
+    | { readonly type: "lobby/claim-seat"; readonly seat: Seat }
+    | { readonly type: "lobby/leave-seat" }
+    | { readonly type: "lobby/set-ready"; readonly ready: boolean };
+}
+
+interface LobbySeatRow {
+  readonly [key: string]: SqlStorageValue;
+  readonly actor_id: string;
+  readonly display_name: string;
+  readonly ready: number;
+  readonly seat: Seat;
+}
+
+interface LobbyReceiptRow {
+  readonly [key: string]: SqlStorageValue;
+  readonly actor_id: string;
+  readonly request_json: string;
+  readonly response_json: string;
+}
+
+type RoomDomainEvent =
+  | {
+      readonly type: "room/seat-claimed";
+      readonly actorId: string;
+      readonly seat: Seat;
+    }
+  | {
+      readonly type: "room/seat-moved";
+      readonly actorId: string;
+      readonly fromSeat: Seat;
+      readonly toSeat: Seat;
+    }
+  | {
+      readonly type: "room/seat-left";
+      readonly actorId: string;
+      readonly seat: Seat;
+    }
+  | {
+      readonly type: "room/readiness-changed";
+      readonly actorId: string;
+      readonly ready: boolean;
+    };
+
+interface ViewerSafeActor {
+  readonly displayName: string;
+  readonly id: string;
+}
+
+interface ViewerSafeTableSnapshot {
+  readonly type: "table/snapshot";
+  readonly protocolVersion: 1;
+  readonly stateVersion: number;
+  readonly view: {
+    readonly phase: "lobby";
+    readonly seats: readonly {
+      readonly occupant: ViewerSafeActor | null;
+      readonly ready: boolean;
+      readonly seat: Seat;
+    }[];
+    readonly spectators: readonly ViewerSafeActor[];
+    readonly tableId: string;
+    readonly viewer:
+      | {
+          readonly actor: ViewerSafeActor;
+          readonly role: "player";
+          readonly seat: Seat;
+        }
+      | { readonly actor: ViewerSafeActor; readonly role: "spectator" };
+  };
+}
+
+interface ViewerSafeTableReceipt {
+  readonly type: "table/receipt";
+  readonly protocolVersion: 1;
+  readonly commandId: string;
+  readonly outcome: "applied" | "rejected";
+  readonly stateVersion: number;
+  readonly error?: { readonly code: string; readonly message: string };
+}
+
+interface ViewerSafeSessionReplaced {
+  readonly type: "session/replaced";
+  readonly protocolVersion: 1;
+}
+
+type ViewerSafeServerMessage =
+  ViewerSafeTableSnapshot | ViewerSafeTableReceipt | ViewerSafeSessionReplaced;
 
 class AtomicMutationConflict extends Error {}
 
@@ -421,46 +515,116 @@ function connectionAttachment(
   return value as unknown as ConnectionAttachment;
 }
 
-function snapshot(
-  attachment: ConnectionAttachment,
-  grant: ConnectionGrantRow,
-): string {
-  return JSON.stringify({
-    type: "table/snapshot",
-    protocolVersion: PROTOCOL_VERSION,
-    stateVersion: STATE_VERSION,
-    view: {
-      phase: "lobby",
-      seats: [
-        { occupant: null, seat: "east" },
-        { occupant: null, seat: "south" },
-        { occupant: null, seat: "west" },
-        { occupant: null, seat: "north" },
-      ],
-      tableId: grant.table_id,
-      viewer: {
-        actor: { displayName: grant.display_name, id: attachment.actorId },
-        role: "spectator",
-      },
-    },
-  });
-}
-
 function isResyncMessage(message: string): boolean {
   try {
     const value = JSON.parse(message) as unknown;
     return (
       isRecord(value) &&
-      Object.keys(value).every(
-        (key) => key === "type" || key === "lastSeenStateVersion",
-      ) &&
+      hasExactKeys(value, [
+        "type",
+        "protocolVersion",
+        "lastSeenStateVersion",
+      ]) &&
       value["type"] === "table/resync" &&
+      value["protocolVersion"] === PROTOCOL_VERSION &&
       Number.isSafeInteger(value["lastSeenStateVersion"]) &&
       (value["lastSeenStateVersion"] as number) >= 0
     );
   } catch {
     return false;
   }
+}
+
+function parseLobbyCommand(message: string): LobbyCommandEnvelope | undefined {
+  try {
+    const value = JSON.parse(message) as unknown;
+    if (
+      !isRecord(value) ||
+      !hasExactKeys(value, [
+        "type",
+        "protocolVersion",
+        "commandId",
+        "expectedStateVersion",
+        "command",
+      ]) ||
+      value["type"] !== "table/command" ||
+      value["protocolVersion"] !== PROTOCOL_VERSION ||
+      typeof value["commandId"] !== "string" ||
+      !SHORT_TOKEN_PATTERN.test(value["commandId"]) ||
+      !Number.isSafeInteger(value["expectedStateVersion"]) ||
+      (value["expectedStateVersion"] as number) < 0 ||
+      !isRecord(value["command"])
+    ) {
+      return undefined;
+    }
+    const command = value["command"];
+    if (
+      command["type"] === "lobby/claim-seat" &&
+      hasExactKeys(command, ["type", "seat"]) &&
+      SEATS.includes(command["seat"] as Seat)
+    ) {
+      return {
+        commandId: value["commandId"],
+        expectedStateVersion: value["expectedStateVersion"] as number,
+        command: { type: "lobby/claim-seat", seat: command["seat"] as Seat },
+      };
+    }
+    if (
+      command["type"] === "lobby/leave-seat" &&
+      hasExactKeys(command, ["type"])
+    ) {
+      return {
+        commandId: value["commandId"],
+        expectedStateVersion: value["expectedStateVersion"] as number,
+        command: { type: "lobby/leave-seat" },
+      };
+    }
+    if (
+      command["type"] === "lobby/set-ready" &&
+      hasExactKeys(command, ["type", "ready"]) &&
+      typeof command["ready"] === "boolean"
+    ) {
+      return {
+        commandId: value["commandId"],
+        expectedStateVersion: value["expectedStateVersion"] as number,
+        command: { type: "lobby/set-ready", ready: command["ready"] },
+      };
+    }
+    return undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+function canonicalLobbyRequest(envelope: LobbyCommandEnvelope): string {
+  return JSON.stringify({
+    command: envelope.command,
+    commandId: envelope.commandId,
+    expectedStateVersion: envelope.expectedStateVersion,
+    protocolVersion: PROTOCOL_VERSION,
+    type: "table/command",
+  });
+}
+
+function lobbyReceipt(
+  commandId: string,
+  outcome: "applied" | "rejected",
+  stateVersion: number,
+  error?: { readonly code: string; readonly message: string },
+): string {
+  const message: ViewerSafeTableReceipt = {
+    type: "table/receipt",
+    protocolVersion: PROTOCOL_VERSION,
+    commandId,
+    outcome,
+    stateVersion,
+    ...(error === undefined ? {} : { error }),
+  };
+  return serializeViewerMessage(message);
+}
+
+function serializeViewerMessage(message: ViewerSafeServerMessage): string {
+  return JSON.stringify(message);
 }
 
 function base64Url(bytes: Uint8Array): string {
@@ -518,38 +682,103 @@ export class TableRoom extends DurableObject<Env> {
   public constructor(ctx: DurableObjectState, env: Env) {
     super(ctx, env);
     const sql = this.ctx.storage.sql;
-    sql.exec(
-      "CREATE TABLE IF NOT EXISTS storage_metadata (singleton INTEGER PRIMARY KEY CHECK (singleton = 1), schema_version INTEGER NOT NULL)",
-    );
-    sql.exec(
-      "INSERT OR IGNORE INTO storage_metadata (singleton, schema_version) VALUES (1, 1)",
-    );
+    const knownTables = sql
+      .exec<{ name: string }>(
+        "SELECT name FROM sqlite_master WHERE type = 'table' AND name IN ('storage_metadata', 'table_record', 'members', 'binding_receipts', 'capabilities', 'actor_sessions', 'connection_grants', 'lobby_state', 'lobby_seats', 'lobby_command_receipts')",
+      )
+      .toArray();
+    const freshStorage = knownTables.length === 0;
+    if (
+      !freshStorage &&
+      !knownTables.some(({ name }) => name === "storage_metadata")
+    ) {
+      throw new Error("TableRoom storage metadata is missing.");
+    }
+    if (freshStorage) {
+      this.ctx.storage.transactionSync(() => {
+        sql.exec(
+          "CREATE TABLE storage_metadata (singleton INTEGER PRIMARY KEY CHECK (singleton = 1), schema_version INTEGER NOT NULL)",
+        );
+        sql.exec(
+          "INSERT INTO storage_metadata (singleton, schema_version) VALUES (1, 1)",
+        );
+        sql.exec(
+          "CREATE TABLE table_record (singleton INTEGER PRIMARY KEY CHECK (singleton = 1), table_id TEXT NOT NULL UNIQUE, owner_actor_id TEXT NOT NULL, created_at INTEGER NOT NULL, instance_id TEXT NOT NULL, binding_generation INTEGER NOT NULL, binding_proof TEXT NOT NULL, binding_operation_id TEXT NOT NULL)",
+        );
+        sql.exec(
+          "CREATE TABLE members (actor_id TEXT PRIMARY KEY, display_name TEXT NOT NULL, role TEXT NOT NULL CHECK (role IN ('owner', 'member')), joined_at INTEGER NOT NULL)",
+        );
+        sql.exec(
+          "CREATE TABLE binding_receipts (operation_id TEXT PRIMARY KEY, request_json TEXT NOT NULL, status TEXT NOT NULL CHECK (status IN ('pending', 'applied', 'rejected')), response_json TEXT, http_status INTEGER NOT NULL, created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL)",
+        );
+        sql.exec(
+          "CREATE TABLE capabilities (capability_id TEXT PRIMARY KEY, kind TEXT NOT NULL CHECK (kind IN ('invitation', 'resume')), subject_actor_id TEXT NOT NULL, secret_hash TEXT NOT NULL, expected_binding_generation INTEGER NOT NULL, expires_at INTEGER NOT NULL, consumed_actor_id TEXT, consumed_operation_id TEXT)",
+        );
+        sql.exec(
+          "CREATE TABLE actor_sessions (actor_id TEXT PRIMARY KEY, session_generation INTEGER NOT NULL, activated_at INTEGER NOT NULL)",
+        );
+        sql.exec(
+          "CREATE TABLE connection_grants (connection_generation TEXT PRIMARY KEY, actor_id TEXT NOT NULL, display_name TEXT NOT NULL, instance_id TEXT NOT NULL, table_id TEXT NOT NULL, binding_generation INTEGER NOT NULL, binding_proof TEXT NOT NULL, session_generation INTEGER NOT NULL, expires_at INTEGER NOT NULL)",
+        );
+      });
+    }
     const metadata = sql
       .exec<{ schema_version: number }>(
         "SELECT schema_version FROM storage_metadata WHERE singleton = 1",
       )
       .one();
-    if (metadata.schema_version !== 1) {
+    if (metadata.schema_version !== 1 && metadata.schema_version !== 2) {
       throw new Error("Unsupported TableRoom storage schema version.");
     }
     sql.exec(
-      "CREATE TABLE IF NOT EXISTS table_record (singleton INTEGER PRIMARY KEY CHECK (singleton = 1), table_id TEXT NOT NULL UNIQUE, owner_actor_id TEXT NOT NULL, created_at INTEGER NOT NULL, instance_id TEXT NOT NULL, binding_generation INTEGER NOT NULL, binding_proof TEXT NOT NULL, binding_operation_id TEXT NOT NULL)",
+      "SELECT table_id, owner_actor_id, created_at, instance_id, binding_generation, binding_proof, binding_operation_id FROM table_record LIMIT 0",
     );
     sql.exec(
-      "CREATE TABLE IF NOT EXISTS members (actor_id TEXT PRIMARY KEY, display_name TEXT NOT NULL, role TEXT NOT NULL CHECK (role IN ('owner', 'member')), joined_at INTEGER NOT NULL)",
+      "SELECT actor_id, display_name, role, joined_at FROM members LIMIT 0",
     );
     sql.exec(
-      "CREATE TABLE IF NOT EXISTS binding_receipts (operation_id TEXT PRIMARY KEY, request_json TEXT NOT NULL, status TEXT NOT NULL CHECK (status IN ('pending', 'applied', 'rejected')), response_json TEXT, http_status INTEGER NOT NULL, created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL)",
+      "SELECT operation_id, request_json, status, response_json, http_status, created_at, updated_at FROM binding_receipts LIMIT 0",
     );
     sql.exec(
-      "CREATE TABLE IF NOT EXISTS capabilities (capability_id TEXT PRIMARY KEY, kind TEXT NOT NULL CHECK (kind IN ('invitation', 'resume')), subject_actor_id TEXT NOT NULL, secret_hash TEXT NOT NULL, expected_binding_generation INTEGER NOT NULL, expires_at INTEGER NOT NULL, consumed_actor_id TEXT, consumed_operation_id TEXT)",
+      "SELECT capability_id, kind, subject_actor_id, secret_hash, expected_binding_generation, expires_at, consumed_actor_id, consumed_operation_id FROM capabilities LIMIT 0",
     );
     sql.exec(
-      "CREATE TABLE IF NOT EXISTS actor_sessions (actor_id TEXT PRIMARY KEY, session_generation INTEGER NOT NULL, activated_at INTEGER NOT NULL)",
+      "SELECT actor_id, session_generation, activated_at FROM actor_sessions LIMIT 0",
     );
     sql.exec(
-      "CREATE TABLE IF NOT EXISTS connection_grants (connection_generation TEXT PRIMARY KEY, actor_id TEXT NOT NULL, display_name TEXT NOT NULL, instance_id TEXT NOT NULL, table_id TEXT NOT NULL, binding_generation INTEGER NOT NULL, binding_proof TEXT NOT NULL, session_generation INTEGER NOT NULL, expires_at INTEGER NOT NULL)",
+      "SELECT connection_generation, actor_id, display_name, instance_id, table_id, binding_generation, binding_proof, session_generation, expires_at FROM connection_grants LIMIT 0",
     );
+    if (metadata.schema_version === 1) {
+      this.ctx.storage.transactionSync(() => {
+        sql.exec(
+          "CREATE TABLE lobby_state (singleton INTEGER PRIMARY KEY CHECK (singleton = 1), state_version INTEGER NOT NULL CHECK (state_version >= 0))",
+        );
+        sql.exec(
+          "INSERT INTO lobby_state (singleton, state_version) VALUES (1, 0)",
+        );
+        sql.exec(
+          "CREATE TABLE lobby_seats (seat TEXT PRIMARY KEY CHECK (seat IN ('east', 'south', 'west', 'north')), actor_id TEXT NOT NULL UNIQUE, display_name TEXT NOT NULL, ready INTEGER NOT NULL CHECK (ready IN (0, 1)))",
+        );
+        sql.exec(
+          "CREATE TABLE lobby_command_receipts (command_id TEXT PRIMARY KEY, actor_id TEXT NOT NULL, request_json TEXT NOT NULL, response_json TEXT NOT NULL, created_at INTEGER NOT NULL)",
+        );
+        sql.exec(
+          "UPDATE storage_metadata SET schema_version = 2 WHERE singleton = 1",
+        );
+      });
+    } else {
+      sql
+        .exec<{ state_version: number }>(
+          "SELECT state_version FROM lobby_state WHERE singleton = 1",
+        )
+        .one();
+      sql.exec(
+        "SELECT seat, actor_id, display_name, ready FROM lobby_seats LIMIT 0",
+      );
+      sql.exec(
+        "SELECT command_id, actor_id, request_json, response_json, created_at FROM lobby_command_receipts LIMIT 0",
+      );
+    }
   }
 
   public override async fetch(request: Request): Promise<Response> {
@@ -628,6 +857,290 @@ export class TableRoom extends DurableObject<Env> {
         "SELECT table_id, owner_actor_id, instance_id, binding_generation, binding_proof, binding_operation_id FROM table_record WHERE singleton = 1",
       )
       .toArray()[0];
+  }
+
+  private stateVersion(): number {
+    return this.ctx.storage.sql
+      .exec<{ state_version: number }>(
+        "SELECT state_version FROM lobby_state WHERE singleton = 1",
+      )
+      .one().state_version;
+  }
+
+  private snapshot(
+    attachment: ConnectionAttachment,
+    grant: ConnectionGrantRow,
+  ): string {
+    const seats = this.ctx.storage.sql
+      .exec<LobbySeatRow>(
+        "SELECT seat, actor_id, display_name, ready FROM lobby_seats",
+      )
+      .toArray();
+    const seatsByName = new Map(seats.map((seat) => [seat.seat, seat]));
+    const viewerSeat = seats.find(
+      ({ actor_id }) => actor_id === attachment.actorId,
+    );
+    const viewer = this.ctx.storage.sql
+      .exec<{ actor_id: string; display_name: string }>(
+        "SELECT actor_id, display_name FROM members WHERE actor_id = ?",
+        attachment.actorId,
+      )
+      .one();
+    const spectators = this.ctx.storage.sql
+      .exec<{ actor_id: string; display_name: string }>(
+        "SELECT members.actor_id, members.display_name FROM members LEFT JOIN lobby_seats ON lobby_seats.actor_id = members.actor_id WHERE lobby_seats.actor_id IS NULL ORDER BY members.joined_at, members.actor_id",
+      )
+      .toArray()
+      .map(({ actor_id, display_name }) => ({
+        displayName: display_name,
+        id: actor_id,
+      }));
+    const message: ViewerSafeTableSnapshot = {
+      type: "table/snapshot",
+      protocolVersion: PROTOCOL_VERSION,
+      stateVersion: this.stateVersion(),
+      view: {
+        phase: "lobby",
+        seats: SEATS.map((seat) => {
+          const row = seatsByName.get(seat);
+          return {
+            occupant:
+              row === undefined
+                ? null
+                : { displayName: row.display_name, id: row.actor_id },
+            ready: row?.ready === 1,
+            seat,
+          };
+        }),
+        spectators,
+        tableId: grant.table_id,
+        viewer: {
+          actor: { displayName: viewer.display_name, id: viewer.actor_id },
+          ...(viewerSeat === undefined
+            ? { role: "spectator" as const }
+            : { role: "player" as const, seat: viewerSeat.seat }),
+        },
+      },
+    };
+    return serializeViewerMessage(message);
+  }
+
+  private broadcastSnapshots(): void {
+    for (const socket of this.ctx.getWebSockets()) {
+      const attachment = connectionAttachment(socket.deserializeAttachment());
+      const grant =
+        attachment === undefined ? undefined : this.connectionGrant(attachment);
+      if (
+        attachment === undefined ||
+        grant === undefined ||
+        !this.grantIsCurrent(grant)
+      ) {
+        socket.close(1008, "Session expired, replaced, or invalid");
+        continue;
+      }
+      socket.send(this.snapshot(attachment, grant));
+    }
+  }
+
+  private applyLobbyCommand(
+    actorId: string,
+    envelope: LobbyCommandEnvelope,
+  ): {
+    readonly applied: boolean;
+    readonly event?: RoomDomainEvent;
+    readonly response: string;
+    readonly stale: boolean;
+  } {
+    const requestJson = canonicalLobbyRequest(envelope);
+    return this.ctx.storage.transactionSync(() => {
+      const existing = this.ctx.storage.sql
+        .exec<LobbyReceiptRow>(
+          "SELECT actor_id, request_json, response_json FROM lobby_command_receipts WHERE command_id = ?",
+          envelope.commandId,
+        )
+        .toArray()[0];
+      if (existing !== undefined) {
+        if (
+          existing.actor_id === actorId &&
+          existing.request_json === requestJson
+        ) {
+          const replay = JSON.parse(existing.response_json) as unknown;
+          const stale =
+            isRecord(replay) &&
+            isRecord(replay["error"]) &&
+            replay["error"]["code"] === "stale-state-version";
+          return { applied: false, response: existing.response_json, stale };
+        }
+        return {
+          applied: false,
+          response: lobbyReceipt(
+            envelope.commandId,
+            "rejected",
+            this.stateVersion(),
+            {
+              code: "command-id-collision",
+              message: "The command identifier was already used.",
+            },
+          ),
+          stale: false,
+        };
+      }
+
+      const currentVersion = this.stateVersion();
+      let applied = false;
+      let event: RoomDomainEvent | undefined;
+      let stale = false;
+      let rejection:
+        { readonly code: string; readonly message: string } | undefined;
+      if (envelope.expectedStateVersion !== currentVersion) {
+        stale = true;
+        rejection = {
+          code: "stale-state-version",
+          message: "The table state changed; resynchronize and retry.",
+        };
+      } else if (envelope.command.type === "lobby/claim-seat") {
+        const occupied = this.ctx.storage.sql
+          .exec<{ actor_id: string }>(
+            "SELECT actor_id FROM lobby_seats WHERE seat = ?",
+            envelope.command.seat,
+          )
+          .toArray()[0];
+        const currentSeat = this.ctx.storage.sql
+          .exec<{ seat: Seat }>(
+            "SELECT seat FROM lobby_seats WHERE actor_id = ?",
+            actorId,
+          )
+          .toArray()[0];
+        if (occupied !== undefined && occupied.actor_id !== actorId) {
+          rejection = {
+            code: "seat-unavailable",
+            message: "That seat is already occupied.",
+          };
+        } else if (currentSeat?.seat === envelope.command.seat) {
+          rejection = {
+            code: "no-state-change",
+            message: "The actor already occupies that seat.",
+          };
+        } else {
+          const member = this.ctx.storage.sql
+            .exec<{ display_name: string }>(
+              "SELECT display_name FROM members WHERE actor_id = ?",
+              actorId,
+            )
+            .one();
+          if (currentSeat === undefined) {
+            this.ctx.storage.sql.exec(
+              "INSERT INTO lobby_seats (seat, actor_id, display_name, ready) VALUES (?, ?, ?, 0)",
+              envelope.command.seat,
+              actorId,
+              member.display_name,
+            );
+            event = {
+              type: "room/seat-claimed",
+              actorId,
+              seat: envelope.command.seat,
+            };
+          } else {
+            this.ctx.storage.sql.exec(
+              "UPDATE lobby_seats SET seat = ?, display_name = ?, ready = 0 WHERE actor_id = ?",
+              envelope.command.seat,
+              member.display_name,
+              actorId,
+            );
+            event = {
+              type: "room/seat-moved",
+              actorId,
+              fromSeat: currentSeat.seat,
+              toSeat: envelope.command.seat,
+            };
+          }
+          applied = true;
+        }
+      } else if (envelope.command.type === "lobby/leave-seat") {
+        const currentSeat = this.ctx.storage.sql
+          .exec<{ seat: Seat }>(
+            "SELECT seat FROM lobby_seats WHERE actor_id = ?",
+            actorId,
+          )
+          .toArray()[0];
+        const removed = this.ctx.storage.sql.exec(
+          "DELETE FROM lobby_seats WHERE actor_id = ?",
+          actorId,
+        );
+        if (removed.rowsWritten === 1 && currentSeat !== undefined) {
+          applied = true;
+          event = {
+            type: "room/seat-left",
+            actorId,
+            seat: currentSeat.seat,
+          };
+        } else {
+          rejection = {
+            code: "not-seated",
+            message: "The actor does not occupy a seat.",
+          };
+        }
+      } else {
+        const seated = this.ctx.storage.sql
+          .exec<{ ready: number }>(
+            "SELECT ready FROM lobby_seats WHERE actor_id = ?",
+            actorId,
+          )
+          .toArray()[0];
+        if (seated === undefined) {
+          rejection = {
+            code: "not-seated",
+            message: "Only a seated player can change ready state.",
+          };
+        } else if (seated.ready === Number(envelope.command.ready)) {
+          rejection = {
+            code: "no-state-change",
+            message: "The requested ready state is already current.",
+          };
+        } else {
+          this.ctx.storage.sql.exec(
+            "UPDATE lobby_seats SET ready = ? WHERE actor_id = ?",
+            Number(envelope.command.ready),
+            actorId,
+          );
+          applied = true;
+          event = {
+            type: "room/readiness-changed",
+            actorId,
+            ready: envelope.command.ready,
+          };
+        }
+      }
+
+      let resultVersion = currentVersion;
+      if (applied) {
+        resultVersion += 1;
+        this.ctx.storage.sql.exec(
+          "UPDATE lobby_state SET state_version = ? WHERE singleton = 1",
+          resultVersion,
+        );
+      }
+      const response = lobbyReceipt(
+        envelope.commandId,
+        applied ? "applied" : "rejected",
+        resultVersion,
+        rejection,
+      );
+      this.ctx.storage.sql.exec(
+        "INSERT INTO lobby_command_receipts (command_id, actor_id, request_json, response_json, created_at) VALUES (?, ?, ?, ?, ?)",
+        envelope.commandId,
+        actorId,
+        requestJson,
+        response,
+        Date.now(),
+      );
+      return {
+        applied,
+        response,
+        stale,
+        ...(event === undefined ? {} : { event }),
+      };
+    });
   }
 
   private bindingAuthorized(
@@ -1047,6 +1560,7 @@ export class TableRoom extends DurableObject<Env> {
       );
     }
     const secretHash = await sha256(capability.secret);
+    const stateVersionBefore = this.stateVersion();
     const result = this.ctx.storage.transactionSync<StoredResult>(() => {
       const table = this.table();
       if (!this.bindingAuthorized(body, table)) {
@@ -1110,17 +1624,29 @@ export class TableRoom extends DurableObject<Env> {
       if (capabilityUpdate.rowsWritten !== 1) {
         throw new AtomicMutationConflict();
       }
+      const existingMember = this.ctx.storage.sql
+        .exec<{ actor_id: string }>(
+          "SELECT actor_id FROM members WHERE actor_id = ?",
+          body.actor.id,
+        )
+        .toArray()[0];
       this.ctx.storage.sql.exec(
         "INSERT OR IGNORE INTO members (actor_id, display_name, role, joined_at) VALUES (?, ?, 'member', ?)",
         body.actor.id,
         body.actor.displayName,
         Date.now(),
       );
+      if (existingMember === undefined) {
+        this.ctx.storage.sql.exec(
+          "UPDATE lobby_state SET state_version = state_version + 1 WHERE singleton = 1",
+        );
+      }
       return {
         body: { version: 1, tableId: table.table_id, role: "member" },
         status: 200,
       };
     });
+    if (this.stateVersion() !== stateVersionBefore) this.broadcastSnapshots();
     return storedResponse(result);
   }
 
@@ -1171,7 +1697,10 @@ export class TableRoom extends DurableObject<Env> {
         const attachment = connectionAttachment(socket.deserializeAttachment());
         if (attachment?.actorId === body.actorId) {
           socket.send(
-            JSON.stringify({ type: "session/replaced", protocolVersion: 1 }),
+            serializeViewerMessage({
+              type: "session/replaced",
+              protocolVersion: 1,
+            }),
           );
           socket.close(4001, "Session replaced");
         }
@@ -1289,7 +1818,7 @@ export class TableRoom extends DurableObject<Env> {
     const server = pair[1];
     server.serializeAttachment(attachment);
     this.ctx.acceptWebSocket(server);
-    server.send(snapshot(attachment, grant));
+    server.send(this.snapshot(attachment, grant));
     return new Response(null, { status: 101, webSocket: client });
   }
 
@@ -1366,11 +1895,19 @@ export class TableRoom extends DurableObject<Env> {
       socket.close(1009, "Message too large");
       return;
     }
-    if (!isResyncMessage(message)) {
+    if (isResyncMessage(message)) {
+      socket.send(this.snapshot(attachment, grant));
+      return;
+    }
+    const command = parseLobbyCommand(message);
+    if (command === undefined) {
       socket.close(1008, "Unsupported message");
       return;
     }
-    socket.send(snapshot(attachment, grant));
+    const result = this.applyLobbyCommand(attachment.actorId, command);
+    socket.send(result.response);
+    if (result.event !== undefined) this.broadcastSnapshots();
+    else if (result.stale) socket.send(this.snapshot(attachment, grant));
   }
 
   public override webSocketError(socket: WebSocket, error: unknown): void {

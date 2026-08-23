@@ -11,6 +11,7 @@ import type {
 import type {
   SocketStatus,
   SocketStatusMonitor,
+  TableReceipt,
   ViewerSafeTableSnapshot,
 } from "../../adapters/transport/table-socket-status.js";
 
@@ -32,6 +33,7 @@ export interface ClientStartupStatus {
   readonly instanceId?: string;
   readonly healthResponse?: HealthResponse;
   readonly tableSnapshot?: ViewerSafeTableSnapshot | undefined;
+  readonly latestReceipt?: TableReceipt | undefined;
   readonly sessionResponse?: AuthenticatedSession;
 }
 
@@ -228,9 +230,12 @@ export function startClientStartup({
             socketStatus.state === "connected" &&
             socketStatus.snapshot !== undefined,
           ...(terminalSession
-            ? { tableSnapshot: undefined }
+            ? { tableSnapshot: undefined, latestReceipt: undefined }
             : socketStatus.snapshot
-              ? { tableSnapshot: socketStatus.snapshot }
+              ? {
+                  tableSnapshot: socketStatus.snapshot,
+                  latestReceipt: socketStatus.latestReceipt,
+                }
               : {}),
           ...(terminalSession
             ? {

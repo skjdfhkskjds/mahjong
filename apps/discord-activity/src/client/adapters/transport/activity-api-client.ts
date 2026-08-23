@@ -287,7 +287,7 @@ export class HttpActivityApi implements ActivityApi {
 
   public constructor(
     apiBaseUrl: string,
-    fetchImplementation: Fetch = globalThis.fetch,
+    fetchImplementation: Fetch = (input, init) => globalThis.fetch(input, init),
   ) {
     this.apiBaseUrl = apiBaseUrl;
     this.fetchImplementation = fetchImplementation;

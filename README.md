@@ -4,7 +4,7 @@ A four-player Hong Kong Mahjong Discord Activity, built as a TypeScript monorepo
 
 ## Status
 
-Milestone 2 is complete locally. Discord authentication now verifies trusted user membership in the supplied Activity instance, application sessions support targeted replacement and revocation, each Activity instance persistently resolves to one unpredictable table, and `TableRoom` enforces owner/member ACLs with actor-bound invitations and owner-only resume/rebinding capabilities. Cross-object binding and socket authority survive forced Durable Object eviction.
+Milestone 3 is complete locally. Authenticated table members can occupy four exclusive persistent seats, leave or move seats, toggle readiness, and reconnect without losing their reservations. Additional members remain spectators. The SQLite-backed room revision, actor-scoped command receipts, stale-client resynchronization, viewer-specific snapshots, and schema migration all survive forced Durable Object eviction.
 
 Milestone 1 still requires credentialed deployment smoke evidence through Discord's proxy on desktop/web and mobile; that external evidence is tracked separately from the completed local implementation.
 

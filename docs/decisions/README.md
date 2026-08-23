@@ -14,5 +14,6 @@ Accepted baseline decisions:
 | [0008](0008-json-genesis-snapshot.md)                   | Start replay from a JSON-safe versioned genesis snapshot             | accepted |
 | [0009](0009-short-lived-signed-activity-session.md)     | Use a short-lived signed Activity session                            | accepted |
 | [0010](0010-table-access-and-instance-binding.md)       | Keep table access separate from Activity instance binding            | accepted |
+| [0011](0011-version-room-state-and-lobby-protocol.md)   | Version persistent room state and viewer-safe lobby messages         | accepted |
 
 New ADRs use `NNNN-short-title.md` and contain context, decision, consequences, status, and date. Superseded ADRs remain in history and link to their replacement.

@@ -10,12 +10,33 @@ interface SnapshotMessage {
   readonly type: "table/snapshot";
   readonly view: {
     readonly phase: "lobby";
+    readonly seats: readonly {
+      readonly occupant: {
+        readonly displayName: string;
+        readonly id: string;
+      } | null;
+      readonly ready: boolean;
+      readonly seat: string;
+    }[];
+    readonly spectators: readonly {
+      readonly displayName: string;
+      readonly id: string;
+    }[];
     readonly tableId: string;
     readonly viewer: {
       readonly actor: { readonly displayName: string; readonly id: string };
-      readonly role: "spectator";
+      readonly role: "player" | "spectator";
+      readonly seat?: string;
     };
   };
+}
+
+interface ReceiptMessage {
+  readonly commandId: string;
+  readonly outcome: "applied" | "rejected";
+  readonly protocolVersion: 1;
+  readonly stateVersion: number;
+  readonly type: "table/receipt";
 }
 
 interface AuthenticatedSession {
@@ -44,6 +65,29 @@ function nextMessage(socket: WebSocket): Promise<SnapshotMessage> {
       },
       { once: true },
     );
+  });
+}
+
+function nextMessages<T>(socket: WebSocket, count: number): Promise<T[]> {
+  return new Promise((resolve, reject) => {
+    const messages: T[] = [];
+    const listener = (event: MessageEvent) => {
+      try {
+        messages.push(JSON.parse(String(event.data)) as T);
+        if (messages.length === count) {
+          socket.removeEventListener("message", listener);
+          resolve(messages);
+        }
+      } catch (error) {
+        socket.removeEventListener("message", listener);
+        reject(
+          error instanceof Error
+            ? error
+            : new Error("Table message parsing failed."),
+        );
+      }
+    };
+    socket.addEventListener("message", listener);
   });
 }
 
@@ -119,13 +163,53 @@ describe("public table WebSocket boundary", () => {
       },
     });
 
+    const commandMessages = nextMessages<ReceiptMessage | SnapshotMessage>(
+      socket,
+      2,
+    );
+    socket.send(
+      JSON.stringify({
+        type: "table/command",
+        protocolVersion: 1,
+        commandId: "public-owner-east",
+        expectedStateVersion: 0,
+        command: { type: "lobby/claim-seat", seat: "east" },
+      }),
+    );
+    const [claimReceipt, claimedSnapshot] = await commandMessages;
+    expect(claimReceipt).toMatchObject({
+      type: "table/receipt",
+      commandId: "public-owner-east",
+      outcome: "applied",
+      stateVersion: 1,
+    });
+    if (claimedSnapshot?.type !== "table/snapshot") {
+      throw new Error("Expected the claimed table snapshot.");
+    }
+    expect(claimedSnapshot).toMatchObject({
+      type: "table/snapshot",
+      stateVersion: 1,
+      view: {
+        viewer: { role: "player", seat: "east" },
+      },
+    });
+    expect(claimedSnapshot.view.seats).toContainEqual({
+      occupant: { displayName: "東 Player", id: session.actor.id },
+      ready: false,
+      seat: "east",
+    });
+
     const room = env.TABLE_ROOM.getByName(session.tableId);
     await evictDurableObject(room);
     const resyncMessage = nextMessage(socket);
     socket.send(
-      JSON.stringify({ lastSeenStateVersion: 0, type: "table/resync" }),
+      JSON.stringify({
+        lastSeenStateVersion: 1,
+        protocolVersion: 1,
+        type: "table/resync",
+      }),
     );
-    expect(await resyncMessage).toEqual(initial);
+    expect(await resyncMessage).toEqual(claimedSnapshot);
     socket.close(1000, "test complete");
 
     const candidateResponse = await exports.default.fetch(
