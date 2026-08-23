@@ -61,7 +61,7 @@ project(state, viewer)                   -> viewer-safe view
 assertInvariants(state)                  -> invariant violations
 ```
 
-Genesis semantics must be resolved before persistence: either creation emits replayable genesis events or a versioned genesis snapshot is an explicit replay root.
+Genesis is a runtime-validated, JSON-safe snapshot at event sequence zero. Every later canonical domain event is replayed in stored order through `evolve`. Rules packages must validate their state and configuration payloads more narrowly than the generic JSON envelope before use.
 
 ## Canonical events are not protocol messages
 
