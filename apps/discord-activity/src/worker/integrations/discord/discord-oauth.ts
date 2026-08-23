@@ -1,6 +1,7 @@
 import type { ApplicationActor } from "../../auth/application-session.js";
 
 const DISCORD_API = "https://discord.com/api/v10";
+const MAX_RESPONSE_BYTES = 64 * 1_024;
 
 function record(value: unknown): Record<string, unknown> | undefined {
   return typeof value === "object" && value !== null && !Array.isArray(value)
@@ -10,7 +11,15 @@ function record(value: unknown): Record<string, unknown> | undefined {
 
 async function responseJson(response: Response): Promise<unknown> {
   try {
-    return await response.json();
+    const contentLength = Number(response.headers.get("Content-Length"));
+    if (Number.isFinite(contentLength) && contentLength > MAX_RESPONSE_BYTES) {
+      return undefined;
+    }
+    const text = await response.text();
+    if (new TextEncoder().encode(text).byteLength > MAX_RESPONSE_BYTES) {
+      return undefined;
+    }
+    return JSON.parse(text) as unknown;
   } catch {
     return undefined;
   }
@@ -30,6 +39,7 @@ export async function exchangeDiscordIdentity(
     }),
     headers: { "Content-Type": "application/x-www-form-urlencoded" },
     method: "POST",
+    redirect: "error",
   });
   const token = record(await responseJson(tokenResponse));
   const accessToken = token?.["access_token"];
@@ -44,6 +54,7 @@ export async function exchangeDiscordIdentity(
 
   const userResponse = await fetch(`${DISCORD_API}/users/@me`, {
     headers: { Authorization: `Bearer ${accessToken}` },
+    redirect: "error",
   });
   const user = record(await responseJson(userResponse));
   const id = user?.["id"];

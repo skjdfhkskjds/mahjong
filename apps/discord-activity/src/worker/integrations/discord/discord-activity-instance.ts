@@ -1,6 +1,7 @@
 const DISCORD_API = "https://discord.com/api/v10";
 const DISCORD_SNOWFLAKE = /^\d{1,32}$/u;
 const VERIFICATION_ERROR = "Discord Activity instance verification failed.";
+const MAX_RESPONSE_BYTES = 64 * 1_024;
 
 export interface DiscordActivityInstanceVerification {
   readonly applicationId: string;
@@ -23,6 +24,18 @@ function record(value: unknown): Record<string, unknown> | undefined {
 
 function verificationError(): Error {
   return new Error(VERIFICATION_ERROR);
+}
+
+async function boundedJson(response: Response): Promise<unknown> {
+  const contentLength = Number(response.headers.get("Content-Length"));
+  if (Number.isFinite(contentLength) && contentLength > MAX_RESPONSE_BYTES) {
+    throw verificationError();
+  }
+  const text = await response.text();
+  if (new TextEncoder().encode(text).byteLength > MAX_RESPONSE_BYTES) {
+    throw verificationError();
+  }
+  return JSON.parse(text) as unknown;
 }
 
 function validRequest(request: DiscordActivityInstanceVerification): boolean {
@@ -77,13 +90,17 @@ export async function verifyDiscordActivityInstance(
       {
         headers: { Authorization: `Bot ${request.botToken}` },
         method: "GET",
+        redirect: "error",
       },
     );
     if (!response.ok) {
       throw verificationError();
     }
 
-    const verified = parseVerifiedInstance(await response.json(), request);
+    const verified = parseVerifiedInstance(
+      await boundedJson(response),
+      request,
+    );
     if (verified === undefined) {
       throw verificationError();
     }

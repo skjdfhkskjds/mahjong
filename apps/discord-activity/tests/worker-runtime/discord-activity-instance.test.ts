@@ -49,6 +49,7 @@ describe("Discord Activity instance verification", () => {
       {
         headers: { Authorization: "Bot discord-bot-token" },
         method: "GET",
+        redirect: "error",
       },
     );
   });
@@ -73,6 +74,16 @@ describe("Discord Activity instance verification", () => {
       new Response("{", {
         headers: { "Content-Type": "application/json" },
       }),
+    );
+
+    await expect(verifyDiscordActivityInstance(request)).rejects.toThrow(
+      "Discord Activity instance verification failed.",
+    );
+  });
+
+  it("rejects an oversized response", async () => {
+    stubDiscord(
+      Response.json({ ...validInstance, padding: "x".repeat(65_536) }),
     );
 
     await expect(verifyDiscordActivityInstance(request)).rejects.toThrow(

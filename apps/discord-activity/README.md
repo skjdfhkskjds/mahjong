@@ -17,7 +17,7 @@ From the repository root:
 corepack pnpm app:dev
 ```
 
-The committed Wrangler variables run the Worker in mock mode with a development-only signing key. Open the printed localhost URL. The client creates a server-assigned mock identity, receives the application session cookie, and connects to the walking-skeleton table socket. No Discord or Cloudflare credentials are required.
+The committed Wrangler variables run the Worker in mock mode with a development-only signing key. Open the printed localhost URL. The client creates a server-assigned mock identity, receives an instance-scoped application session, resolves an unpredictable persistent table through `ActivityInstance`, and connects without supplying a table ID. No Discord or Cloudflare credentials are required.
 
 Optional browser configuration belongs in an ignored `.env.local` copied from `.env.example`.
 
@@ -40,7 +40,19 @@ Set `VITE_ACTIVITY_MODE=mock` in `.env.local`. A mock cookie must not use the `_
 6. Expose the printed local origin with `cloudflared tunnel --url <local-origin>` and configure that HTTPS target in the Discord Developer Portal URL mapping.
 7. Launch the Activity through Discord and verify SDK authentication, the partitioned cookie, and WebSocket behavior on desktop/web and mobile.
 
-Never commit `.env.local`, `.dev.vars`, the client secret, bot token, or signing keys. The Discord bot credential is reserved for Activity Instance verification in Milestone 2; there is no Gateway process or companion-bot UX.
+Never commit `.env.local`, `.dev.vars`, the client secret, bot token, or signing keys. The Discord bot credential is used only for backend Activity Instance verification; there is no Gateway process or companion-bot UX.
+
+## Table access API
+
+The first verified actor in a new Activity instance becomes the table owner. A verified instance discovers a table but does not make every participant a table member.
+
+- `POST /api/table/invitations` accepts an `invitedActorId` and returns an owner-created, actor-bound invitation once.
+- `POST /api/table/invitations/redeem` consumes that invitation for the signed-in actor.
+- `POST /api/table/resume-capabilities` returns an owner-only, short-lived capability once.
+- A fresh Discord exchange may include that value as `resumeCapability`; the server verifies the new instance before rebinding the existing table.
+- `POST /api/session/logout` advances the actor's server-side session generation and clears the cookie.
+
+All mutations require exact origin, JSON, and the current session's `X-CSRF-Token`. Table and capability identifiers are never authorization on their own.
 
 ## Verification
 
@@ -66,6 +78,7 @@ Provision Worker secrets before the first deployment:
 ```text
 corepack pnpm --filter @mahjong/discord-activity exec wrangler secret put DISCORD_CLIENT_ID --env production
 corepack pnpm --filter @mahjong/discord-activity exec wrangler secret put DISCORD_CLIENT_SECRET --env production
+corepack pnpm --filter @mahjong/discord-activity exec wrangler secret put DISCORD_BOT_TOKEN --env production
 corepack pnpm --filter @mahjong/discord-activity exec wrangler secret put SESSION_SIGNING_KEY --env production
 ```
 

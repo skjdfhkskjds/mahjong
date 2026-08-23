@@ -147,6 +147,29 @@ describe("Worker router", () => {
     expect(response.status).toBe(404);
   });
 
+  it("fails closed when Discord instance verification credentials are missing", async () => {
+    const response = await routeRequest(
+      new Request(`${origin}/api/auth/discord/exchange`, {
+        body: JSON.stringify({ code: "code", instanceId: "instance" }),
+        headers: {
+          "Content-Type": "application/json",
+          Origin: origin,
+        },
+        method: "POST",
+      }),
+      testEnv({
+        APP_MODE: "discord",
+        DISCORD_CLIENT_ID: "123",
+        DISCORD_CLIENT_SECRET: "secret",
+        SESSION_COOKIE_NAME: "__Host-mahjong_session",
+      }),
+    );
+    expect(response.status).toBe(503);
+    await expect(response.json()).resolves.toMatchObject({
+      error: { code: "invalid-configuration" },
+    });
+  });
+
   it.each([
     ["an invalid cookie name", { SESSION_COOKIE_NAME: "bad name" }],
     ["a short current key", { SESSION_SIGNING_KEY: "too-short" }],

@@ -24,8 +24,8 @@ Standalone mock mode uses a localhost-compatible cookie without weakening Discor
 
 State-changing HTTP requests require JSON where applicable, an exact same-origin `Origin`, and the CSRF value bound into the signed session. CORS is not enabled. WebSocket upgrades require the exact origin and application cookie; the Durable Object attachment stores only bounded connection identity, actor identity, expiry, and generation. Expiry is rechecked on every delivered WebSocket message after wake.
 
-The walking skeleton has expiry but no server-side revocation list. A future threat-model change requiring immediate global revocation introduces server-side session generations without changing the cookie's role as the browser credential.
+Milestone 1 initially shipped with expiry but no server-side revocation list. Milestone 2 adds the per-actor, per-instance session identifier and generation selected in [ADR 0010](0010-table-access-and-instance-binding.md) without changing the cookie's role as the browser credential.
 
 ## Consequences
 
-Milestone 1 has no central session store and can exercise iframe cookies, authenticated HTTP, and hibernation recovery. Compromise of a current signing key requires rotation and waiting at most one session lifetime for already issued stateless sessions to expire, unless server-side generations are added. The Activity Instance membership check, bot-token authorization, table ACL, and one-use socket tickets remain Milestone 2/3 concerns.
+The Milestone 1 walking skeleton could exercise iframe cookies, authenticated HTTP, and hibernation recovery without central session state. As of Milestone 2, `ActivityInstance` adds targeted session replacement and revocation while current/previous signing keys continue to support credential rotation. Activity Instance membership, bot-token authorization, and table ACL enforcement are now implemented by ADR 0010.
