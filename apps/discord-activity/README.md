@@ -21,12 +21,21 @@ The committed Wrangler variables run the Worker in mock mode with a development-
 
 Optional browser configuration belongs in an ignored `.env.local` copied from `.env.example`.
 
+The client and Worker modes must match. If a `.dev.vars` file exists from Discord-proxy development, either remove it for the committed mock defaults or set these non-secret values while working on localhost:
+
+```text
+APP_MODE=mock
+SESSION_COOKIE_NAME=mahjong_session
+```
+
+Set `VITE_ACTIVITY_MODE=mock` in `.env.local`. A mock cookie must not use the `__Host-` name because mock mode deliberately serves it without the production-only `Secure` attribute.
+
 ## Discord-proxied development
 
 1. Create a Discord application and enable Activities.
 2. Put the public client ID in `.env.local` and set `VITE_ACTIVITY_MODE=discord`.
-3. Copy `.dev.vars.example` to the ignored `.dev.vars` and provide the Discord client secret, bot token, and at least 32 random bytes for the current session signing key.
-4. Change the non-secret `APP_MODE` Wrangler variable to `discord` for that environment and use `__Host-mahjong_session` as the cookie name.
+3. Copy `.dev.vars.example` to the ignored `.dev.vars` and provide the Discord client secret, bot token, and at least 32 random bytes for the current session signing key. The example already selects Discord mode, the required `__Host-mahjong_session` cookie name, and the one-hour maximum session lifetime.
+4. Confirm `.env.local` uses `VITE_ACTIVITY_MODE=discord`; it must match `APP_MODE=discord` in `.dev.vars`.
 5. Run `corepack pnpm app:dev`.
 6. Expose the printed local origin with `cloudflared tunnel --url <local-origin>` and configure that HTTPS target in the Discord Developer Portal URL mapping.
 7. Launch the Activity through Discord and verify SDK authentication, the partitioned cookie, and WebSocket behavior on desktop/web and mobile.
