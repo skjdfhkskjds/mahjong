@@ -2,6 +2,12 @@
 
 <!-- Lead with the user-visible or architectural outcome. -->
 
+## Issues
+
+<!-- Required: replace ISSUE_NUMBER with a narrow associated issue. Use one bullet per outcome. -->
+
+- closes #ISSUE_NUMBER
+
 ## Roadmap
 
 - Milestone:

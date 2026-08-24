@@ -37,4 +37,4 @@ Keep the server authoritative, validate all external/persisted data, persist bef
 - Also run `corepack pnpm app:build` for client, Worker, dependency, or build-configuration changes.
 - Report commands run and any checks skipped or failing.
 
-Use Conventional Commits if asked to commit. PRs follow [the repository template](.github/pull_request_template.md).
+Use Conventional Commits if asked to commit. PRs follow [the repository template](.github/pull_request_template.md); create or identify at least one narrow issue per outcome and list each as `- closes #<issue-number>` in the PR description.
