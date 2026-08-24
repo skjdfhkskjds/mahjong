@@ -21,9 +21,9 @@ rationale/provenance, compatibility impact, worked examples, fixture IDs
 
 ## Decision inventory
 
-Foundational setup and draw/discard selections are provisional. Claim, kong, scoring, payment, and match decisions remain open. Milestone gates indicate when provisional choices must become accepted compatibility promises.
+Foundational setup and draw/discard selections are accepted for `hong-kong/v1`. Claim, kong, scoring, payment, and match decisions remain open.
 
-### Provisional foundational selections
+### Accepted foundational selections
 
 | ID     | Selection                                                                                                                                   | Rationale/provenance                                                                          | Compatibility impact |
 | ------ | ------------------------------------------------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------- | -------------------- |
@@ -40,7 +40,12 @@ Foundational setup and draw/discard selections are provisional. Claim, kong, sco
 | HK-011 | Number/seat mapping is East=1, South=2, West=3, North=4 for both seasons and flowers; whether a match scores remains open                   | Common mapping used to give the unique bonus tiles stable semantic identity                   | Tile identity        |
 | HK-013 | Expose bonuses immediately and recursively replace them from the tail; matching-seat and replacement-win scoring remain unresolved until M6 | Common Hong Kong handling; deliberately separates lifecycle from later scoring                | Hand/scoring         |
 
-Traceability is recorded in [traceability.md](traceability.md), with the complete provisional behavior in the [profile README](README.md).
+All selections in this table have status `accepted` as of Milestone 4. Lobby
+seats are stable table positions; HK-009 is applied when a hand starts by
+uniformly selecting one position as East and rotating the remaining positions
+onto South, West, and North in table order.
+
+Traceability is recorded in [traceability.md](traceability.md), with the complete accepted behavior in the [profile README](README.md).
 
 ### Tile set, setup, and wall
 

@@ -161,6 +161,21 @@ function LobbyPanel({
             })}
           </ul>
 
+          {viewer?.role === "player" &&
+          snapshot.view.seats.every(
+            ({ occupant, ready }) => occupant !== null && ready,
+          ) ? (
+            <button
+              className="lobby-button game-start-button"
+              disabled={!connected}
+              onClick={() => {
+                onCommand({ type: "game/start" });
+              }}
+            >
+              Start hand
+            </button>
+          ) : null}
+
           <div className="spectator-list">
             <h3>Spectators ({snapshot.view.spectators.length})</h3>
             {snapshot.view.spectators.length > 0 ? (
@@ -177,6 +192,130 @@ function LobbyPanel({
       ) : (
         <p className="lobby-placeholder" role="status">
           The lobby will appear after the table sends a viewer-safe snapshot.
+        </p>
+      )}
+    </section>
+  );
+}
+
+function tileLabel(tile: {
+  readonly id: number;
+  readonly kind: Readonly<Record<string, unknown>>;
+}): string {
+  const kind = tile.kind;
+  if (kind["type"] === "suited") {
+    return `${String(kind["rank"])} ${String(kind["suit"])}`;
+  }
+  if (kind["type"] === "wind") return `${String(kind["wind"])} wind`;
+  if (kind["type"] === "dragon") return `${String(kind["dragon"])} dragon`;
+  const name = kind["name"];
+  return typeof name === "string" ? name : "bonus";
+}
+
+export function GamePanel({
+  connected,
+  latestReceipt,
+  onCommand,
+  snapshot,
+}: {
+  readonly connected: boolean;
+  readonly latestReceipt: TableReceipt | undefined;
+  readonly onCommand: (command: TableCommandEnvelope["command"]) => void;
+  readonly snapshot: ViewerSafeTableSnapshot;
+}) {
+  const game = snapshot.view.game;
+  if (game === undefined) return null;
+  const viewer = snapshot.view.viewer;
+  const isTurn = viewer.role === "player" && viewer.seat === game.turn;
+  const canDraw = isTurn && game.phase === "awaiting-draw";
+  const canDiscard =
+    isTurn &&
+    (game.phase === "awaiting-discard" ||
+      game.phase === "awaiting-dealer-discard");
+  const rejected = latestReceipt?.outcome === "rejected" ? latestReceipt : null;
+  return (
+    <section aria-labelledby="game-title" className="panel game-panel">
+      <div className="panel__heading">
+        <div>
+          <p className="section-kicker">
+            Live hand · wall {game.wallRemaining}
+          </p>
+          <h2 id="game-title">
+            {game.phase === "exhausted"
+              ? "The wall is exhausted"
+              : `${game.turn} to ${game.phase === "awaiting-draw" ? "draw" : "discard"}`}
+          </h2>
+        </div>
+        {canDraw ? (
+          <button
+            className="lobby-button draw-button"
+            disabled={!connected}
+            onClick={() => {
+              onCommand({ type: "game/draw" });
+            }}
+          >
+            Draw tile
+          </button>
+        ) : null}
+      </div>
+      {rejected ? (
+        <p className="command-error" role="alert">
+          {rejected.error?.message ?? "The table rejected that game action."}
+        </p>
+      ) : null}
+      <ol className="game-players" aria-label="Public table state">
+        {game.players.map((player) => (
+          <li key={player.seat}>
+            <strong>{player.seat}</strong>
+            <span>{player.concealedCount} concealed</span>
+            <span>{player.bonuses.length} bonuses</span>
+            <span>{player.discards.length} discards</span>
+            {player.bonuses.length > 0 ? (
+              <ul
+                className="public-tiles"
+                aria-label={`${player.seat} exposed bonuses`}
+              >
+                {player.bonuses.map((tile) => (
+                  <li key={tile.id}>{tileLabel(tile)}</li>
+                ))}
+              </ul>
+            ) : null}
+            {player.discards.length > 0 ? (
+              <ul
+                className="public-tiles"
+                aria-label={`${player.seat} discards`}
+              >
+                {player.discards.map((tile) => (
+                  <li key={tile.id}>{tileLabel(tile)}</li>
+                ))}
+              </ul>
+            ) : null}
+          </li>
+        ))}
+      </ol>
+      {game.viewerHand ? (
+        <div className="private-hand">
+          <h3>Your private hand</h3>
+          <ul aria-label="Your concealed tiles">
+            {game.viewerHand.map((tile) => (
+              <li key={tile.id}>
+                <button
+                  aria-label={`Discard ${tileLabel(tile)}`}
+                  disabled={!connected || !canDiscard}
+                  onClick={() => {
+                    onCommand({ type: "game/discard", tileId: tile.id });
+                  }}
+                >
+                  <span>{tileLabel(tile)}</span>
+                  <small>#{tile.id}</small>
+                </button>
+              </li>
+            ))}
+          </ul>
+        </div>
+      ) : (
+        <p className="privacy-note">
+          Spectators receive public tiles and concealed counts only.
         </p>
       )}
     </section>
@@ -253,12 +392,28 @@ export function App({ config }: AppProps) {
       </header>
 
       <main>
-        <LobbyPanel
-          connected={lobbyConnected}
-          latestReceipt={status.latestReceipt}
-          onCommand={sendLobbyCommand}
-          snapshot={snapshot}
-        />
+        {snapshot?.view.phase === "lobby" ? (
+          <LobbyPanel
+            connected={lobbyConnected}
+            latestReceipt={status.latestReceipt}
+            onCommand={sendLobbyCommand}
+            snapshot={snapshot}
+          />
+        ) : snapshot ? (
+          <GamePanel
+            connected={lobbyConnected}
+            latestReceipt={status.latestReceipt}
+            onCommand={sendLobbyCommand}
+            snapshot={snapshot}
+          />
+        ) : (
+          <LobbyPanel
+            connected={lobbyConnected}
+            latestReceipt={status.latestReceipt}
+            onCommand={sendLobbyCommand}
+            snapshot={snapshot}
+          />
+        )}
         {commandFailure ? (
           <p className="command-error command-error--page" role="alert">
             {commandFailure}

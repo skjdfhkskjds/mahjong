@@ -6,7 +6,7 @@ import { parseHongKongProfile } from "./hong-kong-profile.js";
 import { hongKongV1Profile } from "./hong-kong-v1.js";
 
 describe("hong-kong/v1 profile", () => {
-  it("round-trips as a complete JSON-safe provisional contract", () => {
+  it("round-trips as a complete JSON-safe accepted contract", () => {
     expect(
       parseHongKongProfile(
         JSON.parse(JSON.stringify(hongKongV1Profile)) as unknown,

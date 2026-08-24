@@ -135,6 +135,132 @@ describe("viewer-safe table snapshots", () => {
     ).toEqual({ actor, role: "player", seat: "east" });
   });
 
+  it("strictly parses a private gameplay projection", () => {
+    const actors = [
+      { id: "mock:east", displayName: "East Player" },
+      { id: "mock:south", displayName: "South Player" },
+      { id: "mock:west", displayName: "West Player" },
+      { id: "mock:north", displayName: "North Player" },
+    ] as const;
+    const gameSnapshot = {
+      ...snapshot,
+      stateVersion: 12,
+      view: {
+        ...snapshot.view,
+        phase: "playing",
+        game: {
+          phase: "awaiting-dealer-discard",
+          players: ["east", "south", "west", "north"].map((seat, index) => ({
+            bonuses: [],
+            concealedCount: index === 0 ? 1 : 13,
+            discards: [],
+            seat,
+          })),
+          turn: "east",
+          viewerHand: [
+            {
+              id: 0,
+              kind: { type: "suited", suit: "characters", rank: 1 },
+            },
+          ],
+          wallRemaining: 87,
+        },
+        seats: ["east", "south", "west", "north"].map((seat, index) => ({
+          seat,
+          occupant: actors[index],
+          ready: true,
+        })),
+        spectators: [],
+        viewer: { actor: actors[0], role: "player", seat: "east" },
+      },
+    };
+    expect(parseTableSnapshot(gameSnapshot).view.game).toMatchObject({
+      phase: "awaiting-dealer-discard",
+      turn: "east",
+      viewerHand: [{ id: 0 }],
+      wallRemaining: 87,
+    });
+    expect(() =>
+      parseTableSnapshot({
+        ...gameSnapshot,
+        view: {
+          ...gameSnapshot.view,
+          game: { ...gameSnapshot.view.game, wall: { order: [1, 2, 3] } },
+        },
+      }),
+    ).toThrow("game view");
+    expect(() =>
+      parseTableSnapshot({
+        ...gameSnapshot,
+        view: {
+          ...gameSnapshot.view,
+          game: {
+            ...gameSnapshot.view.game,
+            viewerHand: [
+              {
+                id: 0,
+                kind: {
+                  type: "suited",
+                  suit: "characters",
+                  rank: 1,
+                  canonicalCopy: 0,
+                },
+              },
+            ],
+          },
+        },
+      }),
+    ).toThrow("public tile");
+    expect(() =>
+      parseTableSnapshot({
+        ...gameSnapshot,
+        view: {
+          ...gameSnapshot.view,
+          game: {
+            ...gameSnapshot.view.game,
+            viewerHand: [
+              {
+                id: 0,
+                kind: { type: "suited", suit: "characters", rank: 2 },
+              },
+            ],
+          },
+        },
+      }),
+    ).toThrow("does not match");
+    const spectator = { id: "mock:viewer", displayName: "Spectator" };
+    const spectatorSnapshot = {
+      ...gameSnapshot,
+      view: {
+        ...gameSnapshot.view,
+        game: { ...gameSnapshot.view.game, viewerHand: undefined },
+        spectators: [spectator],
+        viewer: { actor: spectator, role: "spectator" },
+      },
+    };
+    expect(parseTableSnapshot(spectatorSnapshot).view.game).not.toHaveProperty(
+      "viewerHand",
+    );
+    expect(() =>
+      parseTableSnapshot({
+        ...spectatorSnapshot,
+        view: {
+          ...spectatorSnapshot.view,
+          game: {
+            ...spectatorSnapshot.view.game,
+            viewerHand: gameSnapshot.view.game.viewerHand,
+          },
+        },
+      }),
+    ).toThrow("private hand");
+    expect(() =>
+      parseTableSnapshot({
+        ...gameSnapshot,
+        view: { ...gameSnapshot.view, phase: "exhausted" },
+      }),
+    ).toThrow("phase");
+  });
+
   it.each([
     ["hidden root field", { ...snapshot, hand: { tiles: [] } }],
     [
@@ -271,6 +397,13 @@ describe("viewer-safe table snapshots", () => {
       expectedStateVersion: 2,
       command: { type: "lobby/leave-seat" },
     });
+    monitor.sendCommand({
+      type: "table/command",
+      protocolVersion: 1,
+      commandId: "discard-1",
+      expectedStateVersion: 3,
+      command: { type: "game/discard", tileId: 42 },
+    });
 
     expect(socket.sent).toEqual([
       JSON.stringify({
@@ -293,6 +426,13 @@ describe("viewer-safe table snapshots", () => {
         commandId: "leave-1",
         expectedStateVersion: 2,
         command: { type: "lobby/leave-seat" },
+      }),
+      JSON.stringify({
+        type: "table/command",
+        protocolVersion: 1,
+        commandId: "discard-1",
+        expectedStateVersion: 3,
+        command: { type: "game/discard", tileId: 42 },
       }),
     ]);
   });

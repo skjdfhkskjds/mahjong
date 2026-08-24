@@ -5,7 +5,7 @@ export const hongKongV1Profile = parseHongKongProfile({
   ruleset: {
     id: "hong-kong",
     version: 1,
-    status: "provisional",
+    status: "accepted",
   },
   decisions: [
     "HK-001",

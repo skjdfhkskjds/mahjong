@@ -25,7 +25,8 @@ export interface ViewerSafeTableSnapshot {
   readonly protocolVersion: 1;
   readonly stateVersion: number;
   readonly view: {
-    readonly phase: "lobby";
+    readonly phase: "lobby" | "playing" | "exhausted";
+    readonly game?: GameView;
     readonly tableId: string;
     readonly seats: readonly TableSeatView[];
     readonly spectators: readonly TableActor[];
@@ -37,6 +38,28 @@ export interface ViewerSafeTableSnapshot {
         }
       | { readonly actor: TableActor; readonly role: "spectator" };
   };
+}
+
+export interface PublicTileView {
+  readonly id: number;
+  readonly kind: Readonly<Record<string, unknown>>;
+}
+
+export interface GameView {
+  readonly phase:
+    | "awaiting-dealer-discard"
+    | "awaiting-draw"
+    | "awaiting-discard"
+    | "exhausted";
+  readonly players: readonly {
+    readonly bonuses: readonly PublicTileView[];
+    readonly concealedCount: number;
+    readonly discards: readonly PublicTileView[];
+    readonly seat: TableSeat;
+  }[];
+  readonly turn: TableSeat;
+  readonly viewerHand?: readonly PublicTileView[];
+  readonly wallRemaining: number;
 }
 
 export interface TableReceipt {
@@ -79,6 +102,23 @@ export type TableCommandEnvelope =
       readonly command: {
         readonly type: "lobby/set-ready";
         readonly ready: boolean;
+      };
+    }
+  | {
+      readonly type: "table/command";
+      readonly protocolVersion: 1;
+      readonly commandId: string;
+      readonly expectedStateVersion: number;
+      readonly command: { readonly type: "game/start" | "game/draw" };
+    }
+  | {
+      readonly type: "table/command";
+      readonly protocolVersion: 1;
+      readonly commandId: string;
+      readonly expectedStateVersion: number;
+      readonly command: {
+        readonly type: "game/discard";
+        readonly tileId: number;
       };
     };
 
@@ -149,6 +189,162 @@ function actorsEqual(left: TableActor, right: TableActor): boolean {
   return left.id === right.id && left.displayName === right.displayName;
 }
 
+function parsePublicTile(value: unknown): PublicTileView {
+  const kind = isRecord(value) ? value["kind"] : undefined;
+  const validKind =
+    isRecord(kind) &&
+    ((kind["type"] === "suited" &&
+      hasExactKeys(kind, ["type", "suit", "rank"]) &&
+      ["characters", "circles", "bamboo"].includes(kind["suit"] as string) &&
+      Number.isSafeInteger(kind["rank"]) &&
+      (kind["rank"] as number) >= 1 &&
+      (kind["rank"] as number) <= 9) ||
+      (kind["type"] === "wind" &&
+        hasExactKeys(kind, ["type", "wind"]) &&
+        isTableSeat(kind["wind"])) ||
+      (kind["type"] === "dragon" &&
+        hasExactKeys(kind, ["type", "dragon"]) &&
+        ["red", "green", "white"].includes(kind["dragon"] as string)) ||
+      (kind["type"] === "bonus" &&
+        hasExactKeys(kind, [
+          "type",
+          "family",
+          "name",
+          "number",
+          "matchingSeat",
+        ]) &&
+        (kind["family"] === "season" || kind["family"] === "flower") &&
+        nonEmptyString(kind["name"]) &&
+        Number.isSafeInteger(kind["number"]) &&
+        (kind["number"] as number) >= 1 &&
+        (kind["number"] as number) <= 4 &&
+        isTableSeat(kind["matchingSeat"])));
+  if (
+    !isRecord(value) ||
+    !hasExactKeys(value, ["id", "kind"]) ||
+    !Number.isSafeInteger(value["id"]) ||
+    (value["id"] as number) < 0 ||
+    (value["id"] as number) >= 144 ||
+    !validKind
+  ) {
+    throw new Error("Table game view has an invalid public tile.");
+  }
+  const tile = { id: value["id"] as number, kind };
+  if (!tileKindMatchesId(tile)) {
+    throw new Error(
+      "Table game view tile kind does not match its physical ID.",
+    );
+  }
+  return tile;
+}
+
+function tileKindMatchesId(tile: PublicTileView): boolean {
+  const { id, kind } = tile;
+  if (id < 108) {
+    const suits = ["characters", "circles", "bamboo"] as const;
+    return (
+      kind["type"] === "suited" &&
+      kind["suit"] === suits[Math.floor(id / 36)] &&
+      kind["rank"] === Math.floor((id % 36) / 4) + 1
+    );
+  }
+  if (id < 124) {
+    const winds = ["east", "south", "west", "north"] as const;
+    return (
+      kind["type"] === "wind" &&
+      kind["wind"] === winds[Math.floor((id - 108) / 4)]
+    );
+  }
+  if (id < 136) {
+    const dragons = ["red", "green", "white"] as const;
+    return (
+      kind["type"] === "dragon" &&
+      kind["dragon"] === dragons[Math.floor((id - 124) / 4)]
+    );
+  }
+  const number = ((id - 136) % 4) + 1;
+  const bonusNames = [
+    "spring",
+    "summer",
+    "autumn",
+    "winter",
+    "plum",
+    "orchid",
+    "chrysanthemum",
+    "bamboo",
+  ] as const;
+  const matchingSeats = ["east", "south", "west", "north"] as const;
+  return (
+    kind["type"] === "bonus" &&
+    kind["family"] === (id < 140 ? "season" : "flower") &&
+    kind["name"] === bonusNames[id - 136] &&
+    kind["number"] === number &&
+    kind["matchingSeat"] === matchingSeats[number - 1]
+  );
+}
+
+function parseGameView(value: unknown): GameView {
+  if (
+    !isRecord(value) ||
+    !hasExactKeys(
+      value,
+      ["phase", "players", "turn", "wallRemaining"],
+      ["viewerHand"],
+    ) ||
+    ![
+      "awaiting-dealer-discard",
+      "awaiting-draw",
+      "awaiting-discard",
+      "exhausted",
+    ].includes(value["phase"] as string) ||
+    !isTableSeat(value["turn"]) ||
+    !nonNegativeInteger(value["wallRemaining"]) ||
+    !Array.isArray(value["players"]) ||
+    value["players"].length !== 4
+  ) {
+    throw new Error("Table snapshot has an invalid game view.");
+  }
+  const players = value["players"].map((player, index) => {
+    if (
+      !isRecord(player) ||
+      !hasExactKeys(player, [
+        "bonuses",
+        "concealedCount",
+        "discards",
+        "seat",
+      ]) ||
+      player["seat"] !== tableSeats[index] ||
+      !isTableSeat(player["seat"]) ||
+      !nonNegativeInteger(player["concealedCount"]) ||
+      !Array.isArray(player["bonuses"]) ||
+      !Array.isArray(player["discards"])
+    ) {
+      throw new Error("Table snapshot has an invalid game player view.");
+    }
+    return {
+      bonuses: player["bonuses"].map(parsePublicTile),
+      concealedCount: player["concealedCount"],
+      discards: player["discards"].map(parsePublicTile),
+      seat: player["seat"],
+    };
+  });
+  if (
+    value["viewerHand"] !== undefined &&
+    !Array.isArray(value["viewerHand"])
+  ) {
+    throw new Error("Table snapshot has an invalid private hand.");
+  }
+  return {
+    phase: value["phase"] as GameView["phase"],
+    players,
+    turn: value["turn"],
+    ...(value["viewerHand"] === undefined
+      ? {}
+      : { viewerHand: value["viewerHand"].map(parsePublicTile) }),
+    wallRemaining: value["wallRemaining"],
+  };
+}
+
 export function parseTableSnapshot(value: unknown): ViewerSafeTableSnapshot {
   if (
     !isRecord(value) ||
@@ -158,10 +354,17 @@ export function parseTableSnapshot(value: unknown): ViewerSafeTableSnapshot {
     throw new Error("Table socket message is not a canonical snapshot.");
   }
   const view = value["view"];
+  const phase = isRecord(view) ? view["phase"] : undefined;
   if (
     !isRecord(view) ||
-    view["phase"] !== "lobby" ||
-    !hasExactKeys(view, ["phase", "tableId", "seats", "spectators", "viewer"])
+    (phase !== "lobby" && phase !== "playing" && phase !== "exhausted") ||
+    !hasExactKeys(
+      view,
+      ["phase", "tableId", "seats", "spectators", "viewer"],
+      ["game"],
+    ) ||
+    (phase === "lobby" && view["game"] !== undefined) ||
+    (phase !== "lobby" && view["game"] === undefined)
   ) {
     throw new Error("Table snapshot has an invalid view.");
   }
@@ -242,12 +445,42 @@ export function parseTableSnapshot(value: unknown): ViewerSafeTableSnapshot {
     throw new Error("Table snapshot has an invalid viewer role or seat.");
   }
 
+  const game = phase === "lobby" ? undefined : parseGameView(view["game"]);
+  if (game !== undefined) {
+    if (
+      (phase === "exhausted") !== (game.phase === "exhausted") ||
+      (viewer.role === "spectator" && game.viewerHand !== undefined) ||
+      (viewer.role === "player" && game.viewerHand === undefined)
+    ) {
+      throw new Error(
+        "Table snapshot game phase or private hand is incoherent.",
+      );
+    }
+    if (viewer.role === "player") {
+      const own = game.players.find(({ seat }) => seat === viewer.seat);
+      if (own === undefined || game.viewerHand?.length !== own.concealedCount) {
+        throw new Error("Table snapshot private hand count is incoherent.");
+      }
+    }
+    const visibleIds = [
+      ...game.players.flatMap(({ bonuses, discards }) => [
+        ...bonuses.map(({ id }) => id),
+        ...discards.map(({ id }) => id),
+      ]),
+      ...(game.viewerHand?.map(({ id }) => id) ?? []),
+    ];
+    if (new Set(visibleIds).size !== visibleIds.length) {
+      throw new Error("Table snapshot repeats a visible physical tile ID.");
+    }
+  }
+
   return {
     type: "table/snapshot",
     protocolVersion: 1,
     stateVersion: value["stateVersion"],
     view: {
-      phase: "lobby",
+      phase,
+      ...(game === undefined ? {} : { game }),
       tableId: view["tableId"],
       seats,
       spectators,
@@ -357,7 +590,14 @@ function validateCommand(envelope: unknown): void {
     (body["type"] === "lobby/leave-seat" && hasExactKeys(body, ["type"])) ||
     (body["type"] === "lobby/set-ready" &&
       hasExactKeys(body, ["type", "ready"]) &&
-      typeof body["ready"] === "boolean");
+      typeof body["ready"] === "boolean") ||
+    ((body["type"] === "game/start" || body["type"] === "game/draw") &&
+      hasExactKeys(body, ["type"])) ||
+    (body["type"] === "game/discard" &&
+      hasExactKeys(body, ["type", "tileId"]) &&
+      Number.isSafeInteger(body["tileId"]) &&
+      (body["tileId"] as number) >= 0 &&
+      (body["tileId"] as number) < 144);
   if (!valid) {
     throw new Error("Table command has an invalid command body.");
   }

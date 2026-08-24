@@ -4,18 +4,18 @@ A four-player Hong Kong Mahjong Discord Activity, built as a TypeScript monorepo
 
 ## Status
 
-Milestone 3 is complete locally. Authenticated table members can occupy four exclusive persistent seats, leave or move seats, toggle readiness, and reconnect without losing their reservations. Additional members remain spectators. The SQLite-backed room revision, actor-scoped command receipts, stale-client resynchronization, viewer-specific snapshots, and schema migration all survive forced Durable Object eviction.
+Milestone 4 is complete locally. Four authenticated table members can occupy persistent seats, ready up, receive distinct private hands, and play deterministic draw/discard turns through wall exhaustion. Spectators receive public tiles and concealed counts only. Canonical state, hash-linked events, actor-scoped command receipts, viewer-specific snapshots, reconnects, schema migration, and replay verification all survive forced Durable Object eviction.
 
 Milestone 1 still requires credentialed deployment smoke evidence through Discord's proxy on desktop/web and mobile; that external evidence is tracked separately from the completed local implementation.
 
-The first production-shaped milestone is four authenticated Discord users joining one persistent table, choosing seats, receiving distinct private hands, playing several draw/discard turns, reconnecting, and surviving Durable Object eviction.
+Claims, kongs, winning hands, and scoring remain gated to later milestones.
 
 ## Planning documents
 
 - [Implementation roadmap](docs/roadmap.md)
 - [Technical baseline](docs/architecture/technical-baseline.md)
 - [Hong Kong v1 rules decision register](docs/rules/hong-kong-v1/decision-register.md)
-- [Provisional Hong Kong v1 profile](docs/rules/hong-kong-v1/README.md)
+- [Accepted Hong Kong v1 profile](docs/rules/hong-kong-v1/README.md)
 - [Testing strategy](docs/testing-strategy.md)
 - [Risk register](docs/risk-register.md)
 - [Open technical and product decisions](docs/open-questions.md)

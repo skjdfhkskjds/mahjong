@@ -1,4 +1,19 @@
 import { DurableObject } from "cloudflare:workers";
+import {
+  applyGameCommand,
+  canonicalEventHashPayload,
+  canonicalGameEventJson,
+  canonicalGameJson,
+  decodeCanonicalGameEventJson,
+  decodeCanonicalGameJson,
+  HONG_KONG_V1_RANDOM_BYTES,
+  projectGame,
+  reduceGameEvent,
+  startHongKongV1Game,
+  type CanonicalGameState,
+  type HongKongGameCommand,
+  type HongKongGameEvent,
+} from "@mahjong/rules-hong-kong";
 
 import {
   isValidApplicationActor,
@@ -13,7 +28,7 @@ import {
 } from "../http/responses.js";
 
 const PROTOCOL_VERSION = 1;
-const MAX_MESSAGE_BYTES = 2_048;
+const MAX_MESSAGE_BYTES = 16_384;
 const MAX_INTERNAL_BODY_BYTES = 4_096;
 const CAPABILITY_LIFETIME_MS = 15 * 60 * 1_000;
 const MAX_CLOCK_SKEW_MS = 60_000;
@@ -142,7 +157,9 @@ interface LobbyCommandEnvelope {
   readonly command:
     | { readonly type: "lobby/claim-seat"; readonly seat: Seat }
     | { readonly type: "lobby/leave-seat" }
-    | { readonly type: "lobby/set-ready"; readonly ready: boolean };
+    | { readonly type: "lobby/set-ready"; readonly ready: boolean }
+    | { readonly type: "game/start" }
+    | HongKongGameCommand;
 }
 
 interface LobbySeatRow {
@@ -193,7 +210,8 @@ interface ViewerSafeTableSnapshot {
   readonly protocolVersion: 1;
   readonly stateVersion: number;
   readonly view: {
-    readonly phase: "lobby";
+    readonly phase: "lobby" | "playing" | "exhausted";
+    readonly game?: ReturnType<typeof projectGame>;
     readonly seats: readonly {
       readonly occupant: ViewerSafeActor | null;
       readonly ready: boolean;
@@ -590,6 +608,36 @@ function parseLobbyCommand(message: string): LobbyCommandEnvelope | undefined {
         command: { type: "lobby/set-ready", ready: command["ready"] },
       };
     }
+    if (command["type"] === "game/start" && hasExactKeys(command, ["type"])) {
+      return {
+        commandId: value["commandId"],
+        expectedStateVersion: value["expectedStateVersion"] as number,
+        command: { type: "game/start" },
+      };
+    }
+    if (command["type"] === "game/draw" && hasExactKeys(command, ["type"])) {
+      return {
+        commandId: value["commandId"],
+        expectedStateVersion: value["expectedStateVersion"] as number,
+        command: { type: "game/draw" },
+      };
+    }
+    if (
+      command["type"] === "game/discard" &&
+      hasExactKeys(command, ["type", "tileId"]) &&
+      Number.isSafeInteger(command["tileId"]) &&
+      (command["tileId"] as number) >= 0 &&
+      (command["tileId"] as number) < 144
+    ) {
+      return {
+        commandId: value["commandId"],
+        expectedStateVersion: value["expectedStateVersion"] as number,
+        command: {
+          type: "game/discard",
+          tileId: command["tileId"] as never,
+        },
+      };
+    }
     return undefined;
   } catch {
     return undefined;
@@ -652,6 +700,16 @@ async function sha256(value: string): Promise<string> {
   );
 }
 
+async function sha256Hex(value: string): Promise<string> {
+  const digest = await crypto.subtle.digest(
+    "SHA-256",
+    new TextEncoder().encode(value),
+  );
+  return [...new Uint8Array(digest)]
+    .map((byte) => byte.toString(16).padStart(2, "0"))
+    .join("");
+}
+
 function parseCapability(value: string): ParsedCapability | undefined {
   const parts = value.split(".");
   const [version, tableId, capabilityId, secret] = parts;
@@ -684,7 +742,7 @@ export class TableRoom extends DurableObject<Env> {
     const sql = this.ctx.storage.sql;
     const knownTables = sql
       .exec<{ name: string }>(
-        "SELECT name FROM sqlite_master WHERE type = 'table' AND name IN ('storage_metadata', 'table_record', 'members', 'binding_receipts', 'capabilities', 'actor_sessions', 'connection_grants', 'lobby_state', 'lobby_seats', 'lobby_command_receipts')",
+        "SELECT name FROM sqlite_master WHERE type = 'table' AND name IN ('storage_metadata', 'table_record', 'members', 'binding_receipts', 'capabilities', 'actor_sessions', 'connection_grants', 'lobby_state', 'lobby_seats', 'lobby_command_receipts', 'canonical_game_state', 'game_events')",
       )
       .toArray();
     const freshStorage = knownTables.length === 0;
@@ -727,7 +785,11 @@ export class TableRoom extends DurableObject<Env> {
         "SELECT schema_version FROM storage_metadata WHERE singleton = 1",
       )
       .one();
-    if (metadata.schema_version !== 1 && metadata.schema_version !== 2) {
+    if (
+      metadata.schema_version !== 1 &&
+      metadata.schema_version !== 2 &&
+      metadata.schema_version !== 3
+    ) {
       throw new Error("Unsupported TableRoom storage schema version.");
     }
     sql.exec(
@@ -778,6 +840,85 @@ export class TableRoom extends DurableObject<Env> {
       sql.exec(
         "SELECT command_id, actor_id, request_json, response_json, created_at FROM lobby_command_receipts LIMIT 0",
       );
+    }
+    const postLobbyVersion = sql
+      .exec<{ schema_version: number }>(
+        "SELECT schema_version FROM storage_metadata WHERE singleton = 1",
+      )
+      .one().schema_version;
+    if (postLobbyVersion === 2) {
+      this.ctx.storage.transactionSync(() => {
+        sql.exec(
+          "CREATE TABLE canonical_game_state (singleton INTEGER PRIMARY KEY CHECK (singleton = 1), state_json TEXT NOT NULL, last_event_hash TEXT NOT NULL)",
+        );
+        sql.exec(
+          "CREATE TABLE game_events (sequence INTEGER PRIMARY KEY CHECK (sequence >= 1), event_json TEXT NOT NULL, previous_hash TEXT, event_hash TEXT NOT NULL UNIQUE)",
+        );
+        sql.exec(
+          "UPDATE storage_metadata SET schema_version = 3 WHERE singleton = 1",
+        );
+      });
+    } else {
+      sql.exec(
+        "SELECT singleton, state_json, last_event_hash FROM canonical_game_state LIMIT 0",
+      );
+      sql.exec(
+        "SELECT sequence, event_json, previous_hash, event_hash FROM game_events LIMIT 0",
+      );
+    }
+    void this.ctx.blockConcurrencyWhile(async () => {
+      await this.verifyPersistedGame();
+    });
+  }
+
+  private async verifyPersistedGame(): Promise<void> {
+    const checkpoint = this.ctx.storage.sql
+      .exec<{ state_json: string; last_event_hash: string }>(
+        "SELECT state_json, last_event_hash FROM canonical_game_state WHERE singleton = 1",
+      )
+      .toArray()[0];
+    const rows = this.ctx.storage.sql
+      .exec<{
+        sequence: number;
+        event_json: string;
+        previous_hash: string | null;
+        event_hash: string;
+      }>(
+        "SELECT sequence, event_json, previous_hash, event_hash FROM game_events ORDER BY sequence",
+      )
+      .toArray();
+    if (checkpoint === undefined) {
+      if (rows.length !== 0)
+        throw new Error("Game events exist without a canonical checkpoint.");
+      return;
+    }
+    if (rows.length === 0)
+      throw new Error("Canonical game checkpoint exists without events.");
+    let previousHash: string | null = null;
+    let replayed: CanonicalGameState | undefined;
+    for (const [index, row] of rows.entries()) {
+      if (row.sequence !== index + 1 || row.previous_hash !== previousHash)
+        throw new Error("Persisted game event chain is non-contiguous.");
+      const event = decodeCanonicalGameEventJson(row.event_json);
+      if (event.sequence !== row.sequence)
+        throw new Error(
+          "Persisted game event sequence does not match its row.",
+        );
+      const expectedHash = await sha256Hex(
+        canonicalEventHashPayload(previousHash, event),
+      );
+      if (row.event_hash !== expectedHash)
+        throw new Error("Persisted game event hash verification failed.");
+      replayed = reduceGameEvent(replayed, event);
+      previousHash = row.event_hash;
+    }
+    const checkpointState = decodeCanonicalGameJson(checkpoint.state_json);
+    if (
+      replayed === undefined ||
+      canonicalGameJson(replayed) !== canonicalGameJson(checkpointState) ||
+      checkpoint.last_event_hash !== previousHash
+    ) {
+      throw new Error("Canonical game checkpoint diverges from event replay.");
     }
   }
 
@@ -867,6 +1008,22 @@ export class TableRoom extends DurableObject<Env> {
       .one().state_version;
   }
 
+  private gameState():
+    | { readonly state: CanonicalGameState; readonly lastEventHash: string }
+    | undefined {
+    const row = this.ctx.storage.sql
+      .exec<{ state_json: string; last_event_hash: string }>(
+        "SELECT state_json, last_event_hash FROM canonical_game_state WHERE singleton = 1",
+      )
+      .toArray()[0];
+    return row === undefined
+      ? undefined
+      : {
+          state: decodeCanonicalGameJson(row.state_json),
+          lastEventHash: row.last_event_hash,
+        };
+  }
+
   private snapshot(
     attachment: ConnectionAttachment,
     grant: ConnectionGrantRow,
@@ -877,9 +1034,13 @@ export class TableRoom extends DurableObject<Env> {
       )
       .toArray();
     const seatsByName = new Map(seats.map((seat) => [seat.seat, seat]));
-    const viewerSeat = seats.find(
-      ({ actor_id }) => actor_id === attachment.actorId,
-    );
+    const game = this.gameState();
+    const viewerSeat =
+      game === undefined
+        ? seats.find(({ actor_id }) => actor_id === attachment.actorId)?.seat
+        : SEATS.find(
+            (seat) => game.state.players[seat].actorId === attachment.actorId,
+          );
     const viewer = this.ctx.storage.sql
       .exec<{ actor_id: string; display_name: string }>(
         "SELECT actor_id, display_name FROM members WHERE actor_id = ?",
@@ -900,9 +1061,21 @@ export class TableRoom extends DurableObject<Env> {
       protocolVersion: PROTOCOL_VERSION,
       stateVersion: this.stateVersion(),
       view: {
-        phase: "lobby",
+        phase:
+          game === undefined
+            ? "lobby"
+            : game.state.phase === "exhausted"
+              ? "exhausted"
+              : "playing",
+        ...(game === undefined
+          ? {}
+          : { game: projectGame(game.state, attachment.actorId) }),
         seats: SEATS.map((seat) => {
-          const row = seatsByName.get(seat);
+          const gameActorId = game?.state.players[seat].actorId;
+          const row =
+            gameActorId === undefined
+              ? seatsByName.get(seat)
+              : seats.find(({ actor_id }) => actor_id === gameActorId);
           return {
             occupant:
               row === undefined
@@ -918,7 +1091,7 @@ export class TableRoom extends DurableObject<Env> {
           actor: { displayName: viewer.display_name, id: viewer.actor_id },
           ...(viewerSeat === undefined
             ? { role: "spectator" as const }
-            : { role: "player" as const, seat: viewerSeat.seat }),
+            : { role: "player" as const, seat: viewerSeat }),
         },
       },
     };
@@ -942,16 +1115,106 @@ export class TableRoom extends DurableObject<Env> {
     }
   }
 
-  private applyLobbyCommand(
+  private async applyLobbyCommand(
     actorId: string,
     envelope: LobbyCommandEnvelope,
-  ): {
+  ): Promise<{
     readonly applied: boolean;
-    readonly event?: RoomDomainEvent;
+    readonly event?: RoomDomainEvent | HongKongGameEvent;
     readonly response: string;
     readonly stale: boolean;
-  } {
+  }> {
     const requestJson = canonicalLobbyRequest(envelope);
+    let preparedGame:
+      | {
+          readonly event: HongKongGameEvent;
+          readonly eventHash: string;
+          readonly previousHash: string | null;
+          readonly state: CanonicalGameState;
+        }
+      | undefined;
+    let preparedRejection:
+      { readonly code: string; readonly message: string } | undefined;
+    if (envelope.expectedStateVersion === this.stateVersion()) {
+      if (envelope.command.type === "game/start") {
+        if (this.gameState() !== undefined) {
+          preparedRejection = {
+            code: "game-already-started",
+            message: "This game has already started.",
+          };
+        } else {
+          const rows = this.ctx.storage.sql
+            .exec<LobbySeatRow>(
+              "SELECT seat, actor_id, display_name, ready FROM lobby_seats",
+            )
+            .toArray();
+          if (rows.length !== 4 || rows.some(({ ready }) => ready !== 1)) {
+            preparedRejection = {
+              code: "table-not-ready",
+              message: "Four seated players must be ready before starting.",
+            };
+          } else if (!rows.some(({ actor_id }) => actor_id === actorId)) {
+            preparedRejection = {
+              code: "spectator-cannot-start",
+              message: "Only a seated player can start the game.",
+            };
+          } else {
+            const bySeat = new Map(rows.map((row) => [row.seat, row.actor_id]));
+            const actors = Object.fromEntries(
+              SEATS.map((seat) => [seat, bySeat.get(seat)]),
+            ) as Record<Seat, string>;
+            const started = startHongKongV1Game(
+              actors,
+              crypto.getRandomValues(new Uint8Array(HONG_KONG_V1_RANDOM_BYTES)),
+            );
+            const eventHash = await sha256Hex(
+              canonicalEventHashPayload(null, started.event),
+            );
+            preparedGame = {
+              event: started.event,
+              eventHash,
+              previousHash: null,
+              state: started.state,
+            };
+          }
+        }
+      } else if (
+        envelope.command.type === "game/draw" ||
+        envelope.command.type === "game/discard"
+      ) {
+        const current = this.gameState();
+        if (current === undefined) {
+          preparedRejection = {
+            code: "game-not-started",
+            message: "The game has not started.",
+          };
+        } else {
+          const decision = applyGameCommand(
+            current.state,
+            actorId,
+            envelope.command,
+          );
+          if (!decision.accepted || decision.state === undefined) {
+            preparedRejection = decision.accepted
+              ? {
+                  code: "invalid-game-transition",
+                  message: "The game transition did not produce state.",
+                }
+              : decision.error;
+          } else {
+            const eventHash = await sha256Hex(
+              canonicalEventHashPayload(current.lastEventHash, decision.event),
+            );
+            preparedGame = {
+              event: decision.event,
+              eventHash,
+              previousHash: current.lastEventHash,
+              state: decision.state,
+            };
+          }
+        }
+      }
+    }
     return this.ctx.storage.transactionSync(() => {
       const existing = this.ctx.storage.sql
         .exec<LobbyReceiptRow>(
@@ -988,7 +1251,7 @@ export class TableRoom extends DurableObject<Env> {
 
       const currentVersion = this.stateVersion();
       let applied = false;
-      let event: RoomDomainEvent | undefined;
+      let event: RoomDomainEvent | HongKongGameEvent | undefined;
       let stale = false;
       let rejection:
         { readonly code: string; readonly message: string } | undefined;
@@ -997,6 +1260,58 @@ export class TableRoom extends DurableObject<Env> {
         rejection = {
           code: "stale-state-version",
           message: "The table state changed; resynchronize and retry.",
+        };
+      } else if (
+        envelope.command.type === "game/start" ||
+        envelope.command.type === "game/draw" ||
+        envelope.command.type === "game/discard"
+      ) {
+        if (preparedGame === undefined) {
+          rejection = preparedRejection ?? {
+            code: "game-state-changed",
+            message: "The game state changed; resynchronize and retry.",
+          };
+        } else {
+          const current = this.gameState();
+          const validPrevious =
+            preparedGame.previousHash === null
+              ? current === undefined
+              : current?.lastEventHash === preparedGame.previousHash;
+          if (!validPrevious) {
+            stale = true;
+            rejection = {
+              code: "stale-state-version",
+              message: "The table state changed; resynchronize and retry.",
+            };
+          } else {
+            if (current === undefined) {
+              this.ctx.storage.sql.exec(
+                "INSERT INTO canonical_game_state (singleton, state_json, last_event_hash) VALUES (1, ?, ?)",
+                canonicalGameJson(preparedGame.state),
+                preparedGame.eventHash,
+              );
+            } else {
+              this.ctx.storage.sql.exec(
+                "UPDATE canonical_game_state SET state_json = ?, last_event_hash = ? WHERE singleton = 1",
+                canonicalGameJson(preparedGame.state),
+                preparedGame.eventHash,
+              );
+            }
+            this.ctx.storage.sql.exec(
+              "INSERT INTO game_events (sequence, event_json, previous_hash, event_hash) VALUES (?, ?, ?, ?)",
+              preparedGame.event.sequence,
+              canonicalGameEventJson(preparedGame.event),
+              preparedGame.previousHash,
+              preparedGame.eventHash,
+            );
+            applied = true;
+            event = preparedGame.event;
+          }
+        }
+      } else if (this.gameState() !== undefined) {
+        rejection = {
+          code: "lobby-closed",
+          message: "Seats and readiness are locked after the game starts.",
         };
       } else if (envelope.command.type === "lobby/claim-seat") {
         const occupied = this.ctx.storage.sql
@@ -1871,10 +2186,10 @@ export class TableRoom extends DurableObject<Env> {
     );
   }
 
-  public override webSocketMessage(
+  public override async webSocketMessage(
     socket: WebSocket,
     message: string | ArrayBuffer,
-  ): void {
+  ): Promise<void> {
     const attachment = connectionAttachment(socket.deserializeAttachment());
     const grant =
       attachment === undefined ? undefined : this.connectionGrant(attachment);
@@ -1904,7 +2219,7 @@ export class TableRoom extends DurableObject<Env> {
       socket.close(1008, "Unsupported message");
       return;
     }
-    const result = this.applyLobbyCommand(attachment.actorId, command);
+    const result = await this.applyLobbyCommand(attachment.actorId, command);
     socket.send(result.response);
     if (result.event !== undefined) this.broadcastSnapshots();
     else if (result.stale) socket.send(this.snapshot(attachment, grant));

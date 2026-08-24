@@ -1,6 +1,13 @@
 import { env } from "cloudflare:workers";
 import { evictDurableObject, runInDurableObject } from "cloudflare:test";
 import { describe, expect, it } from "vitest";
+import {
+  applyGameCommand,
+  canonicalEventHashPayload,
+  canonicalGameEventJson,
+  canonicalGameJson,
+  startHongKongV1Game,
+} from "@mahjong/rules-hong-kong";
 
 import type { TableRoom } from "../../src/worker/durable-objects/table-room.js";
 import { tableRoomV1Schema } from "../fixtures/table-room-v1-schema.js";
@@ -24,6 +31,13 @@ interface SnapshotMessage {
   readonly stateVersion: number;
   readonly type: string;
   readonly view: {
+    readonly phase: string;
+    readonly game?: {
+      readonly phase: string;
+      readonly turn: string;
+      readonly viewerHand?: readonly { readonly id: number }[];
+      readonly wallRemaining: number;
+    };
     readonly tableId: string;
     readonly seats: readonly {
       readonly occupant: {
@@ -56,6 +70,65 @@ interface ReceiptMessage {
 
 const owner = { displayName: "Table Owner", id: "discord:owner" } as const;
 const member = { displayName: "Invited Member", id: "discord:member" } as const;
+
+async function sha256HexForTest(value: string): Promise<string> {
+  const digest = await crypto.subtle.digest(
+    "SHA-256",
+    new TextEncoder().encode(value),
+  );
+  return [...new Uint8Array(digest)]
+    .map((byte) => byte.toString(16).padStart(2, "0"))
+    .join("");
+}
+
+async function installGameChain(stub: DurableObjectStub<TableRoom>): Promise<{
+  readonly genesisStateJson: string;
+}> {
+  const started = startHongKongV1Game(
+    {
+      east: "actor:east",
+      south: "actor:south",
+      west: "actor:west",
+      north: "actor:north",
+    },
+    Uint8Array.from({ length: 1_028 }, (_, index) => (index * 73 + 9) & 0xff),
+  );
+  const openingTile = started.state.players.east.hand[0];
+  if (openingTile === undefined) throw new Error("Dealer has no opening tile.");
+  const discard = applyGameCommand(
+    started.state,
+    started.state.players.east.actorId,
+    { type: "game/discard", tileId: openingTile },
+  );
+  if (!discard.accepted || discard.state === undefined)
+    throw new Error("Unable to build persisted test game.");
+  const finalState = discard.state;
+  const firstHash = await sha256HexForTest(
+    canonicalEventHashPayload(null, started.event),
+  );
+  expect(firstHash).toBe(
+    "d589f4c5af7c9328a38a2d5630de04fb670e7dacb2e9ab1e474d487e6705c2b9",
+  );
+  const secondHash = await sha256HexForTest(
+    canonicalEventHashPayload(firstHash, discard.event),
+  );
+  await runInDurableObject(stub, (_instance, state) => {
+    state.storage.sql.exec(
+      "INSERT INTO canonical_game_state (singleton, state_json, last_event_hash) VALUES (1, ?, ?)",
+      canonicalGameJson(finalState),
+      secondHash,
+    );
+    state.storage.sql.exec(
+      "INSERT INTO game_events (sequence, event_json, previous_hash, event_hash) VALUES (1, ?, NULL, ?), (2, ?, ?, ?)",
+      canonicalGameEventJson(started.event),
+      firstHash,
+      canonicalGameEventJson(discard.event),
+      firstHash,
+      secondHash,
+    );
+  });
+  return { genesisStateJson: canonicalGameJson(started.state) };
+}
 
 function tableRoom(name: string): DurableObjectStub<TableRoom> {
   return (
@@ -1156,6 +1229,181 @@ describe("TableRoom authority", () => {
     fifth.socket.close(1000, "test complete");
   });
 
+  it("persists a private draw/discard game and hash-linked events across eviction", async () => {
+    const tableId = `game-${crypto.randomUUID()}`;
+    const stub = tableRoom(tableId);
+    const { binding } = await createTable(stub, tableId);
+    const actors = [
+      owner,
+      { id: "discord:game-south", displayName: "Game South" },
+      { id: "discord:game-west", displayName: "Game West" },
+      { id: "discord:game-north", displayName: "Game North" },
+      { id: "discord:game-spectator", displayName: "Game Spectator" },
+    ] as const;
+    const actorById = new Map<string, (typeof actors)[number]>(
+      actors.map((actor) => [actor.id, actor]),
+    );
+    for (const actor of actors) {
+      if (actor !== owner) await addMember(stub, binding, actor);
+      const activation = await activateSession(stub, binding, actor.id, 1);
+      expect(activation.status).toBe(200);
+      await activation.body?.cancel();
+    }
+
+    let version = 4;
+    const seatNames = ["east", "south", "west", "north"] as const;
+    for (const [index, seat] of seatNames.entries()) {
+      const actor = actors[index];
+      if (actor === undefined) throw new Error("Missing game actor.");
+      const connection = await openSocket(stub, binding, 1, actor);
+      const claimMessages = nextMessages<ReceiptMessage | SnapshotMessage>(
+        connection.socket,
+        2,
+      );
+      connection.socket.send(
+        commandMessage(`game-claim-${seat}`, version, {
+          type: "lobby/claim-seat",
+          seat,
+        }),
+      );
+      expect((await claimMessages)[0]).toMatchObject({ outcome: "applied" });
+      version += 1;
+      const readyMessages = nextMessages<ReceiptMessage | SnapshotMessage>(
+        connection.socket,
+        2,
+      );
+      connection.socket.send(
+        commandMessage(`game-ready-${seat}`, version, {
+          type: "lobby/set-ready",
+          ready: true,
+        }),
+      );
+      expect((await readyMessages)[0]).toMatchObject({ outcome: "applied" });
+      version += 1;
+      connection.socket.close(1000, "setup complete");
+    }
+
+    const starter = await openSocket(stub, binding, 1, owner);
+    const startMessages = nextMessages<ReceiptMessage | SnapshotMessage>(
+      starter.socket,
+      2,
+    );
+    starter.socket.send(
+      commandMessage("game-start", version, { type: "game/start" }),
+    );
+    const [startReceipt, startedSnapshot] = await startMessages;
+    expect(startReceipt).toMatchObject({ outcome: "applied" });
+    version += 1;
+    expect(startedSnapshot).toMatchObject({
+      stateVersion: version,
+      view: { phase: "playing", game: { phase: "awaiting-dealer-discard" } },
+    });
+    expect(JSON.stringify(startedSnapshot)).not.toContain('"order"');
+    const replayedStart = await sendCommand(
+      starter.socket,
+      "game-start",
+      version - 1,
+      { type: "game/start" },
+    );
+    expect(replayedStart).toEqual(startReceipt);
+    const staleGameMessages = nextMessages<ReceiptMessage | SnapshotMessage>(
+      starter.socket,
+      2,
+    );
+    starter.socket.send(
+      commandMessage("game-stale", version - 1, { type: "game/draw" }),
+    );
+    expect((await staleGameMessages)[0]).toMatchObject({
+      outcome: "rejected",
+      error: { code: "stale-state-version" },
+    });
+    starter.socket.close(1000, "start complete");
+
+    const started = startedSnapshot as SnapshotMessage;
+    const eastActorId = started.view.seats[0]?.occupant?.id;
+    const eastActor =
+      eastActorId === undefined ? undefined : actorById.get(eastActorId);
+    if (eastActor === undefined) throw new Error("Missing selected dealer.");
+    const east = await openSocket(stub, binding, 1, eastActor);
+    const discardTile = east.initial.view.game?.viewerHand?.[0]?.id;
+    if (discardTile === undefined)
+      throw new Error("Dealer received no private hand.");
+    const discardMessages = nextMessages<ReceiptMessage | SnapshotMessage>(
+      east.socket,
+      2,
+    );
+    east.socket.send(
+      commandMessage("game-discard", version, {
+        type: "game/discard",
+        tileId: discardTile,
+      }),
+    );
+    expect((await discardMessages)[0]).toMatchObject({ outcome: "applied" });
+    version += 1;
+    east.socket.close(1000, "discard complete");
+
+    await evictDurableObject(stub);
+    const southActorId = started.view.seats[1]?.occupant?.id;
+    const southActor =
+      southActorId === undefined ? undefined : actorById.get(southActorId);
+    if (southActor === undefined) throw new Error("Missing South player.");
+    const south = await openSocket(stub, binding, 1, southActor);
+    expect(south.initial).toMatchObject({
+      stateVersion: version,
+      view: {
+        phase: "playing",
+        game: { phase: "awaiting-draw", turn: "south" },
+      },
+    });
+    const drawMessages = nextMessages<ReceiptMessage | SnapshotMessage>(
+      south.socket,
+      2,
+    );
+    south.socket.send(
+      commandMessage("game-draw", version, { type: "game/draw" }),
+    );
+    const [drawReceipt, drawnSnapshot] = await drawMessages;
+    expect(drawReceipt).toMatchObject({ outcome: "applied" });
+    expect(drawnSnapshot).toMatchObject({
+      view: { game: { phase: "awaiting-discard", turn: "south" } },
+    });
+    expect(
+      (drawnSnapshot as SnapshotMessage).view.game?.viewerHand,
+    ).toHaveLength(14);
+
+    const spectator = await openSocket(stub, binding, 1, actors[4]);
+    expect(spectator.initial.view.game).not.toHaveProperty("viewerHand");
+    expect(JSON.stringify(spectator.initial)).not.toContain('"hand"');
+    await expect(
+      runInDurableObject(stub, (_instance, state) => ({
+        events: state.storage.sql
+          .exec<{ count: number }>("SELECT count(*) AS count FROM game_events")
+          .one().count,
+        hashes: state.storage.sql
+          .exec<{ event_hash: string }>(
+            "SELECT event_hash FROM game_events ORDER BY sequence",
+          )
+          .toArray()
+          .map(({ event_hash }) => event_hash),
+        schemaVersion: state.storage.sql
+          .exec<{ schema_version: number }>(
+            "SELECT schema_version FROM storage_metadata WHERE singleton = 1",
+          )
+          .one().schema_version,
+      })),
+    ).resolves.toMatchObject({
+      events: 3,
+      hashes: [
+        expect.stringMatching(/^[0-9a-f]{64}$/u),
+        expect.stringMatching(/^[0-9a-f]{64}$/u),
+        expect.stringMatching(/^[0-9a-f]{64}$/u),
+      ],
+      schemaVersion: 3,
+    });
+    spectator.socket.close(1000, "test complete");
+    south.socket.close(1000, "test complete");
+  });
+
   it("stores actor-scoped receipts and handles replay, collision, and stale state safely", async () => {
     const tableId = `receipt-${crypto.randomUUID()}`;
     const stub = tableRoom(tableId);
@@ -1297,7 +1545,7 @@ describe("TableRoom authority", () => {
     second.socket.close(1000, "test complete");
   });
 
-  it("migrates persisted v1 storage to v2 without losing milestone 2 data", async () => {
+  it("migrates persisted v1 storage to v3 without losing milestone 2 data", async () => {
     const tableId = `migration-${crypto.randomUUID()}`;
     const stub = tableRoom(tableId);
     const binding: Binding = {
@@ -1309,6 +1557,8 @@ describe("TableRoom authority", () => {
     };
     await runInDurableObject(stub, (_instance, state) => {
       for (const table of [
+        "game_events",
+        "canonical_game_state",
         "lobby_command_receipts",
         "lobby_seats",
         "lobby_state",
@@ -1417,11 +1667,114 @@ describe("TableRoom authority", () => {
       capabilities: 1,
       connectionGrant: "fixture-connection",
       members: 2,
-      schemaVersion: 2,
+      schemaVersion: 3,
       stateVersion: 0,
       tables: 1,
     });
   });
+
+  it("migrates schema v2 lobby state to v3 game storage", async () => {
+    const tableId = `migration-v2-${crypto.randomUUID()}`;
+    const stub = tableRoom(tableId);
+    const { binding } = await createTable(stub, tableId);
+    const activation = await activateSession(stub, binding, owner.id, 1);
+    expect(activation.status).toBe(200);
+    await activation.body?.cancel();
+    const connection = await openSocket(stub, binding, 1);
+    const messages = nextMessages<ReceiptMessage | SnapshotMessage>(
+      connection.socket,
+      2,
+    );
+    connection.socket.send(
+      commandMessage("migration-v2-seat", 0, {
+        type: "lobby/claim-seat",
+        seat: "east",
+      }),
+    );
+    await messages;
+    connection.socket.close(1000, "downgrade fixture");
+    await runInDurableObject(stub, (_instance, state) => {
+      state.storage.sql.exec("DROP TABLE game_events");
+      state.storage.sql.exec("DROP TABLE canonical_game_state");
+      state.storage.sql.exec(
+        "UPDATE storage_metadata SET schema_version = 2 WHERE singleton = 1",
+      );
+    });
+    await evictDurableObject(stub);
+    const migrated = await openSocket(stub, binding, 1);
+    expect(migrated.initial).toMatchObject({
+      stateVersion: 1,
+      view: { phase: "lobby" },
+    });
+    expect(migrated.initial.view.seats[0]).toEqual({
+      seat: "east",
+      occupant: owner,
+      ready: false,
+    });
+    await expect(
+      runInDurableObject(
+        stub,
+        (_instance, state) =>
+          state.storage.sql
+            .exec<{ schema_version: number }>(
+              "SELECT schema_version FROM storage_metadata WHERE singleton = 1",
+            )
+            .one().schema_version,
+      ),
+    ).resolves.toBe(3);
+    migrated.socket.close(1000, "test complete");
+  });
+
+  it.each([
+    "tampered-hash",
+    "missing-event",
+    "reordered",
+    "checkpoint",
+  ] as const)(
+    "fails closed when the persisted game chain has %s corruption",
+    async (corruption) => {
+      const tableId = `game-corrupt-${corruption}-${crypto.randomUUID()}`;
+      const stub = tableRoom(tableId);
+      await createTable(stub, tableId);
+      const fixture = await installGameChain(stub);
+      await runInDurableObject(stub, (_instance, state) => {
+        if (corruption === "tampered-hash") {
+          state.storage.sql.exec(
+            "UPDATE game_events SET event_hash = ? WHERE sequence = 2",
+            "0".repeat(64),
+          );
+        } else if (corruption === "missing-event") {
+          state.storage.sql.exec("DELETE FROM game_events WHERE sequence = 1");
+        } else if (corruption === "reordered") {
+          state.storage.sql.exec(
+            "UPDATE game_events SET sequence = 99 WHERE sequence = 1",
+          );
+          state.storage.sql.exec(
+            "UPDATE game_events SET sequence = 1 WHERE sequence = 2",
+          );
+          state.storage.sql.exec(
+            "UPDATE game_events SET sequence = 2 WHERE sequence = 99",
+          );
+        } else {
+          state.storage.sql.exec(
+            "UPDATE canonical_game_state SET state_json = ? WHERE singleton = 1",
+            fixture.genesisStateJson,
+          );
+        }
+      });
+      await evictDurableObject(stub);
+      await expect(
+        post(stub, "/internal/bindings/apply", {
+          version: 1,
+          operationId: crypto.randomUUID(),
+          instanceId: "instance-original",
+          actor: owner,
+          deadlineAt: Date.now() + 60_000,
+          intent: { kind: "create" },
+        }),
+      ).rejects.toThrow(/game|event|checkpoint|chain/iu);
+    },
+  );
 
   it("refuses to open an unsupported persisted schema version", async () => {
     const tableId = `schema-${crypto.randomUUID()}`;
