@@ -11,8 +11,6 @@ permissions:
 
 jobs:
   quality:
-    # Temporarily disabled; run `pnpm check` and `pnpm app:build` locally before pushing.
-    if: ${{ false }}
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v6
