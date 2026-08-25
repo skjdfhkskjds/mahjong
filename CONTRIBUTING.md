@@ -22,6 +22,12 @@ feat(protocol)!: version viewer-safe table deltas
 
 ## Pull requests
 
+Every pull request must close at least one associated issue. Keep each issue small and limited to one outcome; a pull request addressing multiple outcomes must close multiple issues. List each issue on its own line in the pull request description so GitHub links it and closes it when the pull request merges:
+
+```text
+- closes #123
+```
+
 Every pull request should state:
 
 - The roadmap milestone and acceptance criterion it advances.
