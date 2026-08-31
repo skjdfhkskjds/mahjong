@@ -82,6 +82,13 @@ function connectedSocket(): SocketStatusMonitor {
           view: {
             phase: "lobby",
             tableId: "walking-skeleton",
+            seats: [
+              { seat: "east", occupant: null, ready: false },
+              { seat: "south", occupant: null, ready: false },
+              { seat: "west", occupant: null, ready: false },
+              { seat: "north", occupant: null, ready: false },
+            ],
+            spectators: [{ id: "server-id", displayName: "Local Player" }],
             viewer: {
               role: "spectator",
               actor: { id: "server-id", displayName: "Local Player" },
@@ -207,6 +214,13 @@ describe("client startup", () => {
             view: {
               phase: "lobby",
               tableId,
+              seats: [
+                { seat: "east", occupant: null, ready: false },
+                { seat: "south", occupant: null, ready: false },
+                { seat: "west", occupant: null, ready: false },
+                { seat: "north", occupant: null, ready: false },
+              ],
+              spectators: [{ id: "server-id", displayName: "Local Player" }],
               viewer: {
                 role: "spectator",
                 actor: { id: "server-id", displayName: "Local Player" },

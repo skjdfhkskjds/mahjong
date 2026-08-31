@@ -1,6 +1,6 @@
 # Mahjong Activity Hong Kong profile v1
 
-Status: provisional
+Status: accepted
 
 Last reviewed: 2026-08-23
 
@@ -19,7 +19,7 @@ This is the project's explicit friend-group Hong Kong Mahjong profile. It is not
 - East opens by discarding without drawing. Later turns draw from the head, recursively replace bonuses from the tail, then discard one structural tile.
 - Use a modern draw-to-the-end wall with no fixed dead wall. `head > tail` means no future draw is available; an exhaustive draw occurs only when play requires a tile that is unavailable.
 
-These choices are encoded in `hongKongV1Profile` and validated by an exact runtime schema. They may change while the profile remains provisional. Once accepted and used for historical matches, semantic fixture changes require `hong-kong/v2`.
+These choices are encoded in `hongKongV1Profile` and validated by an exact runtime schema. They are an accepted compatibility contract; semantic fixture changes require `hong-kong/v2`.
 
 ## Still intentionally unresolved
 

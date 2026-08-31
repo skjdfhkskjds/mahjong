@@ -148,7 +148,7 @@ Evidence:
 
 ## Milestone 3 — Persistent lobby and viewer-safe protocol
 
-Status: not started
+Status: complete
 
 Deliverables:
 
@@ -171,9 +171,19 @@ Exit criteria:
 - The oldest committed schema fixture loads under current code.
 - WebSocket attachments contain only bounded connection identity, actor identity, session expiry, and connection generation; all authoritative data remains in SQLite.
 
+Evidence:
+
+- `TableRoom` storage schema v2 transactionally migrates the committed Milestone 2 schema while preserving table ownership, ACL members, binding receipts, capabilities, actor sessions, and connection grants. Unknown future schema versions fail closed.
+- SQLite owns the room revision, four exclusive actor-reserved seats, ready state, and actor-scoped command receipts. Membership and accepted lobby mutations increment the viewer-visible revision exactly once; reconnect and socket closure do not release a seat.
+- Protocol-v1 command envelopes are runtime validated. Identical same-actor retries replay the stored receipt, changed or cross-actor command-ID reuse returns a generic collision, and stale commands receive a rejection followed by a current viewer-specific snapshot.
+- Every snapshot is independently projected from allowlisted lobby fields for its authenticated viewer. Strict client decoding rejects extra canonical/hidden fields, malformed seat topology, duplicate identities, and inconsistent viewer roles.
+- Runtime tests fill all four distinct seats while a fifth member remains a spectator, persist ready reservations through reconnect and forced eviction, exercise command replay/collision/stale behavior, load a persisted v1 schema fixture, reject an unknown schema, and drive a lobby command through the public Worker WebSocket route before eviction/resync.
+- The React client renders the four seats and spectators and exposes claim, move, leave, and ready controls using the current snapshot revision. Rejected receipts and connection state are surfaced accessibly. A local browser smoke test exercised claim/readiness at desktop and mobile widths without console errors or horizontal overflow.
+- The local quality gate passes 64 domain tests, 40 client tests, and 85 Worker/Durable Object tests. The production-style Worker and client bundle also builds locally with CI intentionally disabled.
+
 ## Milestone 4 — Hidden-state draw/discard vertical slice
 
-Status: not started
+Status: complete
 
 Rules gate: tile set, deal, bonus replacement order, wall/dead-wall exhaustion, initial dealer turn, and draw/discard behavior must be accepted in the rules register.
 
@@ -195,6 +205,25 @@ Exit criteria:
 - Disconnect/reconnect and forced eviction preserve the game.
 
 This is the first meaningful product milestone.
+
+Evidence:
+
+- `@mahjong/rules-hong-kong` owns a pure deterministic lifecycle engine for the
+  accepted `hong-kong/v1` setup, recursive bonus replacement, dealer opening
+  discard, ordinary head draws, tail replacements, and deterministic
+  exhaustion transitions.
+- Shuffle algorithm `random-bytes-rejection-fisher-yates/v1` consumes 1,028
+  authority-generated cryptographic bytes with fixed full vectors. Canonical JSON sorts object keys, and event hashes are
+  SHA-256 over a versioned payload containing the previous lowercase hash.
+- Invariant and simulation tests cover 144-tile conservation, physical-ID
+  uniqueness, phase hand sizes, invalid actions, JSON round trips, event replay,
+  long games, and player/spectator projection noninterference.
+- `TableRoom` schema v3 migrates v1/v2 storage and persists canonical state plus
+  its append-only hash-linked event stream. Game commands retain the actor-bound
+  idempotent receipt and optimistic-version behavior established in Milestone 3.
+- Viewer snapshots contain only public bonuses/discards/counts and the connected
+  player's own hand. The strict client decoder rejects extra fields and the UI
+  renders wall/turn/public state with private draw/discard controls.
 
 ## Milestone 5 — Claims, kongs, and deadlines
 

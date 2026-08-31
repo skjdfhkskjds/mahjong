@@ -7,7 +7,7 @@ This application is the single deployable React client and Cloudflare Worker. Th
 - `src/client` owns React, the Embedded App SDK adapter, browser transport, and presentation state.
 - `src/worker` owns HTTP authentication, request policy, platform integrations, and Durable Objects.
 - Client and Worker source may import pure packages through public exports but may not import one another.
-- The walking skeleton carries viewer-safe mock lobby snapshots only. It does not create Mahjong game state.
+- The WebSocket carries runtime-validated lobby commands, actor-scoped receipts, and viewer-safe snapshots only. It does not create Mahjong game state.
 
 ## Standalone development
 
@@ -55,6 +55,14 @@ The first verified actor in a new Activity instance becomes the table owner. A v
 Authenticated session responses report `access: "member"` with an owner/member `role`, or `access: "join-required"` without a role. Join-required clients do not open a table socket until an actor-bound invitation has been redeemed. Invitation and resume capability strings are intended for direct, out-of-band delivery; do not put them in URLs, storage, or logs.
 
 All authenticated mutations require exact origin, JSON, and the current session's `X-CSRF-Token`. Table and capability identifiers are never authorization on their own.
+
+## Lobby WebSocket protocol
+
+An authorized socket receives a complete viewer-specific lobby snapshot containing four ordered seats, persistent occupants and ready state, table spectators, the viewer's role, and the current room `stateVersion`. The client can claim a vacant seat, leave its seat, or toggle readiness through a protocol-v1 command carrying a bounded `commandId` and the snapshot version it acted on.
+
+Accepted room transitions commit their SQLite mutation and actor-scoped receipt atomically, increment `stateVersion` once, and then broadcast a freshly projected snapshot to each current viewer. An identical retry by the same actor returns the stored receipt without applying twice. A stale version returns a rejection plus a fresh snapshot; command-ID collisions return a generic rejection without exposing the original actor or command.
+
+Seats are actor reservations, not socket presence. They survive disconnect, hibernation, and Durable Object eviction until the player explicitly leaves. WebSocket attachments retain only bounded connection/session identity; room authority, seats, readiness, revisions, and receipts remain in SQLite.
 
 ## Verification
 

@@ -38,6 +38,9 @@ importers:
 
   apps/discord-activity:
     dependencies:
+      '@mahjong/rules-hong-kong':
+        specifier: workspace:*
+        version: link:../../packages/rules-hong-kong
       '@discord/embedded-app-sdk':
         specifier: 2.5.0
         version: 2.5.0

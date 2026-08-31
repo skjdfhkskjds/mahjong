@@ -13,6 +13,7 @@
     "typecheck": "tsc --project tsconfig.client.json --noEmit && tsc --project tsconfig.worker.json --noEmit && tsc --project tsconfig.tests.json --noEmit && tsc --project tsconfig.tools.json --noEmit"
   },
   "dependencies": {
+    "@mahjong/rules-hong-kong": "workspace:*",
     "@discord/embedded-app-sdk": "2.5.0",
     "react": "19.2.8",
     "react-dom": "19.2.8"

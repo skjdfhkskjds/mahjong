@@ -5,7 +5,7 @@ export const hongKongProfileSchema = z.strictObject({
   ruleset: z.strictObject({
     id: z.literal("hong-kong"),
     version: z.literal(1),
-    status: z.literal("provisional"),
+    status: z.literal("accepted"),
   }),
   decisions: z.tuple([
     z.literal("HK-001"),
