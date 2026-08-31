@@ -4,6 +4,8 @@
 
 This symbolic example identifies behavior without prescribing a full shuffle vector. Each named tile represents one unique physical tile ID.
 
+Milestone 4 makes this lifecycle executable. The fixed shuffle vector is kept separately so this example can remain readable, while the engine fixtures exercise the same deal, recursive bonus replacement, dealer opening discard, ordinary head draw, tail replacement, and exhaustion boundary.
+
 1. The room assigns players A/B/C/D to East/South/West/North. A is dealer.
 2. The server shuffles all 144 physical IDs and sets `head = 0`, `tail = 143`.
 3. The 53-step deal runs exactly as documented. In acquisition order, East's 14 slots include Spring and then Plum. West's 13 slots include Orchid. South and North receive only structural tiles.
@@ -31,3 +33,9 @@ Invariant checks throughout:
 - Bonuses move to public bonus ownership and never enter concealed structural hands.
 - Head draws and tail replacements never consume the same tile.
 - East has 14 structural tiles before the opening discard; ordinary active players have 14 before later discards; inactive players have 13.
+
+Executable correspondence:
+
+- `deterministic-shuffle.test.ts` fixes the complete shuffled physical-ID order and selected dealer for a published random-byte stream.
+- `draw-discard-game.test.ts` verifies the four private post-replacement hands, forces an ordinary draw through three recursive tail replacements, and runs multiple seeded games through the step 11–13 exhaustion boundary.
+- The same engine fixture checks all 144 physical IDs after every accepted event and replays the event stream to byte-equivalent canonical state.

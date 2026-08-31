@@ -1,14 +1,14 @@
 # Foundational rule traceability
 
-| Decision       | Executable contract                  | Verification                                               |
-| -------------- | ------------------------------------ | ---------------------------------------------------------- |
-| HK-001, HK-010 | `hongKongV1Profile.tileSet`          | `hong-kong-profile.test.ts`                                |
-| HK-011         | `bonusTileKinds`                     | exact bonus ID fixtures in `create-tile-set.test.ts`       |
-| HK-002         | `createHongKongV1TileSet`            | exact ID boundary fixtures in `create-tile-set.test.ts`    |
-| HK-003         | `initialDealSeatOrder`               | packet order and per-seat counts in `initial-deal.test.ts` |
-| HK-004–HK-006  | `hongKongV1Profile.wall`             | strict profile parse and JSON round trip                   |
-| HK-007, HK-013 | `hongKongV1Profile.bonusReplacement` | strict profile parse; Worked Example 1                     |
-| HK-008         | `hongKongV1Profile.ordinaryTurn`     | strict profile parse; Worked Example 1                     |
-| HK-009         | `hongKongV1Profile.seating`          | strict profile parse; Worked Example 1                     |
+| Decision       | Executable contract                                                               | Verification                                                                                                                                                        |
+| -------------- | --------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| HK-001, HK-010 | `hongKongV1Profile.tileSet`; `createHongKongV1TileSet`                            | accepted-profile round trip in `hong-kong-profile.test.ts`; 144-tile identity and boundary fixtures in `create-tile-set.test.ts`                                    |
+| HK-011         | `bonusTileKinds`                                                                  | exact season/flower ID fixtures in `create-tile-set.test.ts`; public bonus projection in `draw-discard-game.test.ts`                                                |
+| HK-002         | `HONG_KONG_V1_SHUFFLE_ALGORITHM`; `deterministicShuffle`                          | complete fixed physical-ID vector, byte sensitivity, permutation, and input-length fixtures in `deterministic-shuffle.test.ts`                                      |
+| HK-003         | `initialDealSeatOrder`; `startHongKongV1Game`                                     | packet-order fixture in `initial-deal.test.ts`; post-replacement structural-hand counts in `draw-discard-game.test.ts`; Worked Example 1                            |
+| HK-004–HK-006  | `hongKongV1Profile.wall`; `deterministicShuffle`; `applyGameCommand`              | accepted-profile round trip, fixed shuffle vector, multi-game exhaustion simulation, recursive replacement fixture, and 144-tile invariant checks                   |
+| HK-007, HK-013 | `hongKongV1Profile.bonusReplacement`; `startHongKongV1Game`; `applyGameCommand`   | public initial bonuses, forced three-bonus ordinary replacement chain, multi-game conservation simulation, and Worked Example 1                                     |
+| HK-008         | `hongKongV1Profile.ordinaryTurn`; `applyGameCommand`; `replayGameEvents`          | phase/actor/tile rejection fixtures, multi-game draw/discard simulation through exhaustion, canonical round trip, forged-transition rejection, and Worked Example 1 |
+| HK-009         | `hongKongV1Profile.seating`; `selectInitialDealerPosition`; `startHongKongV1Game` | fixed dealer-selection vector, four-seat hand fixture, turn-order simulation, and Worked Example 1                                                                  |
 
-Future milestones replace prose-only evidence with engine fixtures when the corresponding behavior is implemented. Every scoring decision must eventually map to positive, near-miss, interaction, and payment fixtures where applicable.
+Milestone 4 replaces the foundational prose-only lifecycle evidence with permanent engine fixtures. Every later scoring decision must map to positive, near-miss, interaction, and payment fixtures where applicable.
