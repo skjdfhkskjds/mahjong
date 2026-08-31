@@ -243,21 +243,31 @@ describe("ActivityInstance coordination", () => {
     expect(stored.intent.capabilityDigest).toMatch(/^[A-Za-z0-9_-]{43}$/u);
   });
 
-  it("returns only the credential promoted from concurrent session proposals", async () => {
+  it("keeps only the latest credential valid across concurrent session issuances", async () => {
     const { instanceId, stub } = instanceStub();
     const first = await issue(stub, instanceId, owner);
 
     const responses = await Promise.all(
       Array.from({ length: 6 }, () => issueResponse(stub, instanceId, owner)),
     );
-    expect(responses.filter(({ status }) => status === 201)).toHaveLength(1);
-    expect(responses.filter(({ status }) => status === 409)).toHaveLength(5);
-    const successfulResponse = responses.find(({ status }) => status === 201);
-    if (successfulResponse === undefined) {
+    expect(
+      responses.every(({ status }) => status === 201 || status === 409),
+    ).toBe(true);
+    const successfulResponses = responses.filter(
+      ({ status }) => status === 201,
+    );
+    if (successfulResponses.length === 0) {
       throw new Error("A concurrent session issuance did not succeed.");
     }
-    const successful = await successfulResponse.json<IssuedSession>();
-    expect(successful.sessionGeneration).toBe(2);
+    const successful = await Promise.all(
+      successfulResponses.map((response) => response.json<IssuedSession>()),
+    );
+    const latest = successful.reduce((current, candidate) =>
+      candidate.sessionGeneration > current.sessionGeneration
+        ? candidate
+        : current,
+    );
+    expect(latest.sessionGeneration).toBeGreaterThan(first.sessionGeneration);
     for (const response of responses.filter(({ status }) => status === 409)) {
       await expect(response.json()).resolves.toMatchObject({
         error: { code: "session-replaced-concurrently" },
@@ -270,12 +280,14 @@ describe("ActivityInstance coordination", () => {
       credential(instanceId, owner.id, first),
     );
     expect(oldValidation.status).toBe(401);
-    const successfulValidation = await post(
-      stub,
-      "/internal/sessions/validate",
-      credential(instanceId, owner.id, successful),
-    );
-    expect(successfulValidation.status).toBe(200);
+    for (const session of successful) {
+      const validation = await post(
+        stub,
+        "/internal/sessions/validate",
+        credential(instanceId, owner.id, session),
+      );
+      expect(validation.status).toBe(session === latest ? 200 : 401);
+    }
   });
 
   it("keeps the current credential valid when replacement activation fails", async () => {
