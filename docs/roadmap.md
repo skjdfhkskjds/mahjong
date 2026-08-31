@@ -116,7 +116,7 @@ Completion evidence still required:
 
 ## Milestone 2 — Identity, table access, and instance binding
 
-Status: not started
+Status: complete
 
 Deliverables:
 
@@ -136,6 +136,15 @@ Exit criteria:
 - A resumed table can bind to a new instance only through an authorized flow.
 - Invalid, expired, or mismatched users and instances are rejected.
 - No browser-provided Discord identity or instance metadata is trusted without server verification.
+
+Evidence:
+
+- Discord authentication resolves `/users/@me`, verifies the exact application and Activity instance through the bot-authenticated Activity Instance API, and requires the trusted actor ID in its current `users` list before issuing a session.
+- Signed session payload v2 is scoped to the verified instance and a server-side actor generation. Replacement and logout invalidate older HTTP and WebSocket authority; current/previous HMAC keys retain bounded rotation support.
+- The SQLite-backed `ActivityInstance` persists one unpredictable table binding per instance. `TableRoom` owns the table ACL, immutable owner, actor-bound invitations, owner-only resume capabilities, binding receipts, session generations, and connection grants.
+- Runtime tests prove same-instance convergence, different-instance separation, duplicate-session replacement, actor-bound invitation redemption, owner-only rebinding, old-instance rejection, forced-eviction recovery, and rejection of browser-selected table locators.
+- Binding operation receipts and table-owned operation IDs make create/resume replay safe when either side loses a response before finalizing the cross-object saga.
+- The local quality gate passes 64 domain tests, 29 client tests, and 79 Worker/Durable Object tests. The production-style Worker and client bundle also builds locally with CI intentionally disabled.
 
 ## Milestone 3 — Persistent lobby and viewer-safe protocol
 

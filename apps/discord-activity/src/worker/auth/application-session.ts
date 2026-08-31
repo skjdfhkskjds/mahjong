@@ -1,10 +1,14 @@
 import type { AuthenticationMode } from "../env.js";
 
 const DEFAULT_COOKIE_NAME = "__Host-mahjong_session";
-const SESSION_VERSION = 1;
+const SESSION_VERSION = 2;
 const DEFAULT_SESSION_LIFETIME_SECONDS = 15 * 60;
 const encoder = new TextEncoder();
 const decoder = new TextDecoder(undefined, { fatal: true, ignoreBOM: false });
+const OPAQUE_IDENTIFIER_PATTERN = /^[A-Za-z0-9_-]{43}$/u;
+const INSTANCE_ID_PATTERN = /^[^\p{Cc}\p{Cf}]{1,128}$/u;
+const ACTOR_ID_PATTERN = /^[^\p{Cc}\p{Cf}]{1,96}$/u;
+const DISPLAY_NAME_PATTERN = /^[^\p{Cc}\p{Cf}]{1,40}$/u;
 
 export interface ApplicationActor {
   readonly id: string;
@@ -15,8 +19,17 @@ export interface ApplicationSession {
   readonly actor: ApplicationActor;
   readonly csrfToken: string;
   readonly expiresAt: number;
+  readonly instanceId: string;
   readonly issuedAt: number;
   readonly mode: AuthenticationMode;
+  readonly sessionGeneration: number;
+  readonly sessionId: string;
+}
+
+export interface ApplicationSessionScope {
+  readonly instanceId: string;
+  readonly sessionGeneration: number;
+  readonly sessionId: string;
 }
 
 export interface SessionConfiguration {
@@ -30,9 +43,12 @@ interface SessionPayload {
   readonly csrfToken: string;
   readonly displayName: string;
   readonly expiresAt: number;
+  readonly instanceId: string;
   readonly issuedAt: number;
   readonly mode: AuthenticationMode;
-  readonly version: 1;
+  readonly sessionGeneration: number;
+  readonly sessionId: string;
+  readonly version: 2;
 }
 
 function bytesToBase64Url(bytes: Uint8Array): string {
@@ -72,17 +88,37 @@ async function signingKey(secret: string): Promise<CryptoKey> {
   );
 }
 
-function validActor(value: unknown): value is ApplicationActor {
+export function isValidApplicationDisplayName(value: unknown): value is string {
+  return typeof value === "string" && DISPLAY_NAME_PATTERN.test(value);
+}
+
+export function isValidApplicationActor(
+  value: unknown,
+): value is ApplicationActor {
   if (typeof value !== "object" || value === null || Array.isArray(value))
     return false;
   const actor = value as Record<string, unknown>;
   return (
+    Object.keys(actor).length === 2 &&
     typeof actor["id"] === "string" &&
-    actor["id"].length > 0 &&
-    actor["id"].length <= 96 &&
-    typeof actor["displayName"] === "string" &&
-    actor["displayName"].length > 0 &&
-    actor["displayName"].length <= 40
+    ACTOR_ID_PATTERN.test(actor["id"]) &&
+    isValidApplicationDisplayName(actor["displayName"])
+  );
+}
+
+function validSessionScope(value: unknown): value is ApplicationSessionScope {
+  if (typeof value !== "object" || value === null || Array.isArray(value)) {
+    return false;
+  }
+  const scope = value as Record<string, unknown>;
+  return (
+    Object.keys(scope).length === 3 &&
+    typeof scope["instanceId"] === "string" &&
+    INSTANCE_ID_PATTERN.test(scope["instanceId"]) &&
+    Number.isSafeInteger(scope["sessionGeneration"]) &&
+    (scope["sessionGeneration"] as number) > 0 &&
+    typeof scope["sessionId"] === "string" &&
+    OPAQUE_IDENTIFIER_PATTERN.test(scope["sessionId"])
   );
 }
 
@@ -97,12 +133,18 @@ function decodePayload(bytes: Uint8Array): SessionPayload | undefined {
       id: payload["actorId"],
     };
     if (
-      Object.keys(payload).length !== 7 ||
+      Object.keys(payload).length !== 10 ||
       payload["version"] !== SESSION_VERSION ||
       (payload["mode"] !== "mock" && payload["mode"] !== "discord") ||
-      !validActor(actor) ||
+      !isValidApplicationActor(actor) ||
       typeof payload["csrfToken"] !== "string" ||
-      !/^[A-Za-z0-9_-]{43}$/u.test(payload["csrfToken"]) ||
+      !OPAQUE_IDENTIFIER_PATTERN.test(payload["csrfToken"]) ||
+      typeof payload["instanceId"] !== "string" ||
+      !INSTANCE_ID_PATTERN.test(payload["instanceId"]) ||
+      typeof payload["sessionId"] !== "string" ||
+      !OPAQUE_IDENTIFIER_PATTERN.test(payload["sessionId"]) ||
+      !Number.isSafeInteger(payload["sessionGeneration"]) ||
+      (payload["sessionGeneration"] as number) <= 0 ||
       !Number.isSafeInteger(payload["issuedAt"]) ||
       !Number.isSafeInteger(payload["expiresAt"]) ||
       (payload["issuedAt"] as number) < 0 ||
@@ -116,8 +158,11 @@ function decodePayload(bytes: Uint8Array): SessionPayload | undefined {
       csrfToken: payload["csrfToken"],
       displayName: actor.displayName,
       expiresAt: payload["expiresAt"] as number,
+      instanceId: payload["instanceId"],
       issuedAt: payload["issuedAt"] as number,
       mode: payload["mode"],
+      sessionGeneration: payload["sessionGeneration"] as number,
+      sessionId: payload["sessionId"],
       version: SESSION_VERSION,
     };
   } catch {
@@ -161,12 +206,15 @@ function validConfiguration(
 
 export async function createSessionCookie(
   actor: ApplicationActor,
+  scope: ApplicationSessionScope,
   secret: string,
   now = Date.now(),
   configuration?: Partial<SessionConfiguration>,
 ): Promise<{ readonly cookie: string; readonly session: ApplicationSession }> {
-  if (!validActor(actor))
+  if (!isValidApplicationActor(actor))
     throw new TypeError("Application session actor is invalid.");
+  if (!validSessionScope(scope))
+    throw new TypeError("Application session scope is invalid.");
   const { cookieName, lifetimeSeconds, mode } =
     validConfiguration(configuration);
   const expiresAt = now + lifetimeSeconds * 1_000;
@@ -178,8 +226,11 @@ export async function createSessionCookie(
     csrfToken,
     displayName: actor.displayName,
     expiresAt,
+    instanceId: scope.instanceId,
     issuedAt: now,
     mode,
+    sessionGeneration: scope.sessionGeneration,
+    sessionId: scope.sessionId,
     version: SESSION_VERSION,
   };
   const encodedPayload = bytesToBase64Url(
@@ -197,7 +248,16 @@ export async function createSessionCookie(
       : "HttpOnly; SameSite=Lax";
   return {
     cookie: `${cookieName}=${token}; Path=/; Max-Age=${String(lifetimeSeconds)}; ${attributes}`,
-    session: { actor, csrfToken, expiresAt, issuedAt: now, mode },
+    session: {
+      actor,
+      csrfToken,
+      expiresAt,
+      instanceId: scope.instanceId,
+      issuedAt: now,
+      mode,
+      sessionGeneration: scope.sessionGeneration,
+      sessionId: scope.sessionId,
+    },
   };
 }
 
@@ -251,8 +311,11 @@ export async function readApplicationSession(
     actor: { displayName: payload.displayName, id: payload.actorId },
     csrfToken: payload.csrfToken,
     expiresAt: payload.expiresAt,
+    instanceId: payload.instanceId,
     issuedAt: payload.issuedAt,
     mode: payload.mode,
+    sessionGeneration: payload.sessionGeneration,
+    sessionId: payload.sessionId,
   };
 }
 
