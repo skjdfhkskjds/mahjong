@@ -14,23 +14,76 @@ export interface RoomLifecycle {
   readonly roomActivityGeneration: number;
 }
 
-function deadlineExists(sql: SqlStorage, deadlineId: string): boolean {
-  return (
-    sql
-      .exec<{ deadline_id: string }>(
-        "SELECT deadline_id FROM deadlines WHERE deadline_id = ?",
-        deadlineId,
-      )
-      .toArray()[0] !== undefined
-  );
-}
-
-function scheduleOnce(
+function reconcileDerivedDeadline(
   sql: SqlStorage,
   deadline: Parameters<typeof scheduleDeadline>[1],
+  targetsPayload: (payload: Record<string, unknown>) => boolean,
+  preserveEarlierPending: boolean,
 ): void {
-  if (!deadlineExists(sql, deadline.deadlineId)) {
-    scheduleDeadline(sql, deadline);
+  const rows = sql
+    .exec<{
+      deadline_id: string;
+      due_at: number;
+      payload_json: string;
+      status: string;
+    }>(
+      "SELECT deadline_id, due_at, payload_json, status FROM deadlines WHERE kind = ? AND target_generation = ?",
+      deadline.kind,
+      deadline.targetGeneration,
+    )
+    .toArray();
+  const matching = rows.filter((row) => {
+    const payload = JSON.parse(row.payload_json) as Record<string, unknown>;
+    return targetsPayload(payload);
+  });
+  let deadlineId = deadline.deadlineId;
+  let dueAt = deadline.dueAt;
+  const earlierPending = preserveEarlierPending
+    ? matching
+        .filter((row) => row.status === "pending" && row.due_at <= dueAt)
+        .sort(
+          (left, right) =>
+            left.due_at - right.due_at ||
+            left.deadline_id.localeCompare(right.deadline_id),
+        )[0]
+    : undefined;
+  if (earlierPending !== undefined) {
+    deadlineId = earlierPending.deadline_id;
+    dueAt = earlierPending.due_at;
+  }
+  const exact = matching.find((row) => row.deadline_id === deadlineId);
+  if (exact !== undefined && exact.status !== "pending") {
+    const root = `${deadlineId}:r${String(dueAt)}`;
+    deadlineId = root;
+    let suffix = 0;
+    while (
+      matching.some(
+        (row) => row.deadline_id === deadlineId && row.status !== "pending",
+      )
+    ) {
+      suffix += 1;
+      deadlineId = `${root}:${String(suffix)}`;
+    }
+  }
+  for (const row of matching) {
+    if (row.status === "pending" && row.deadline_id !== deadlineId) {
+      sql.exec(
+        "UPDATE deadlines SET status = 'cancelled', processed_at = NULL WHERE deadline_id = ? AND status = 'pending'",
+        row.deadline_id,
+      );
+    }
+  }
+  const pending = matching.find(
+    (row) => row.deadline_id === deadlineId && row.status === "pending",
+  );
+  if (pending !== undefined) {
+    sql.exec(
+      "UPDATE deadlines SET due_at = ? WHERE deadline_id = ? AND status = 'pending'",
+      dueAt,
+      deadlineId,
+    );
+  } else {
+    scheduleDeadline(sql, { ...deadline, deadlineId, dueAt });
   }
 }
 
@@ -211,18 +264,23 @@ export function reconcilePresenceDeadlines(
       expiries.length === 0 ? undefined : Math.max(...expiries);
     const expiryBacked = latestExpiry !== undefined;
     const deadlineId = `${expiryBacked ? "disconnect-expiry" : "disconnect"}:${String(automation.connection_generation)}`;
-    scheduleOnce(sql, {
-      deadlineId,
-      dueAt: (latestExpiry ?? input.now) + DISCONNECT_GRACE_MS,
-      kind: "disconnect",
-      payload: {
-        type: "system/disconnect-grace-expired",
-        actorId,
-        connectionGeneration: automation.connection_generation,
+    reconcileDerivedDeadline(
+      sql,
+      {
+        deadlineId,
+        dueAt: (latestExpiry ?? input.now) + DISCONNECT_GRACE_MS,
+        kind: "disconnect",
+        payload: {
+          type: "system/disconnect-grace-expired",
+          actorId,
+          connectionGeneration: automation.connection_generation,
+        },
+        status: "pending",
+        targetGeneration: automation.connection_generation,
       },
-      status: "pending",
-      targetGeneration: automation.connection_generation,
-    });
+      (payload) => payload["actorId"] === actorId,
+      !expiryBacked,
+    );
   }
 
   const lifecycle = readRoomLifecycle(sql);
@@ -232,15 +290,21 @@ export function reconcilePresenceDeadlines(
       ? undefined
       : Math.max(...input.observations.map(({ expiresAt }) => expiresAt));
   const expiryBacked = latestRoomExpiry !== undefined;
-  scheduleOnce(sql, {
-    deadlineId: `${expiryBacked ? "abandonment-expiry" : "abandonment"}:${String(lifecycle.roomActivityGeneration)}`,
-    dueAt: (latestRoomExpiry ?? input.now) + ABANDONMENT_DEADLINE_MS,
-    kind: "abandonment",
-    payload: {
-      type: "system/table-abandonment-expired",
-      roomActivityGeneration: lifecycle.roomActivityGeneration,
+  reconcileDerivedDeadline(
+    sql,
+    {
+      deadlineId: `${expiryBacked ? "abandonment-expiry" : "abandonment"}:${String(lifecycle.roomActivityGeneration)}`,
+      dueAt: (latestRoomExpiry ?? input.now) + ABANDONMENT_DEADLINE_MS,
+      kind: "abandonment",
+      payload: {
+        type: "system/table-abandonment-expired",
+        roomActivityGeneration: lifecycle.roomActivityGeneration,
+      },
+      status: "pending",
+      targetGeneration: lifecycle.roomActivityGeneration,
     },
-    status: "pending",
-    targetGeneration: lifecycle.roomActivityGeneration,
-  });
+    (payload) =>
+      payload["roomActivityGeneration"] === lifecycle.roomActivityGeneration,
+    !expiryBacked,
+  );
 }

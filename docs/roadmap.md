@@ -351,10 +351,10 @@ Compatibility and release evidence:
   collaborative entropy, and live hidden-event commitments.
 
 Local verification on 2026-09-01 covers 198 pure/domain tests, 53 client tests,
-and 155 Worker/Durable Object tests, plus formatting, lint, strict typechecks,
+and 159 Worker/Durable Object tests, plus formatting, lint, strict typechecks,
 boundaries, exports, and the production-style client/Worker build. The
 developer's ignored Discord-mode `.dev.vars` is intentionally excluded from
-release evidence; all 155 Worker tests pass with the committed mock
+release evidence; all 159 Worker tests pass with the committed mock
 configuration. Credentialed Discord proxy smoke remains Milestone 1 evidence
 and was not performed by this local release.
 

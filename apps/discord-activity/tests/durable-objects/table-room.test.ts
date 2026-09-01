@@ -14,6 +14,7 @@ import {
   startHongKongV1Game,
   startHongKongV2Game,
   type CanonicalGameStateV2,
+  type VersionedHongKongGameEvent,
 } from "@mahjong/rules-hong-kong";
 
 import type { TableRoom } from "../../src/worker/durable-objects/table-room.js";
@@ -445,6 +446,7 @@ async function connect(
   sessionGeneration: number,
   actor: { readonly displayName: string; readonly id: string } = owner,
   instanceId = "instance-original",
+  sessionExpiresAt = Date.now() + 60_000,
 ): Promise<Response> {
   return stub.fetch(
     new Request("https://table-room.internal/connect?protocolVersion=2", {
@@ -456,7 +458,7 @@ async function connect(
         "X-Mahjong-Connection-Generation": crypto.randomUUID(),
         "X-Mahjong-Display-Name": displayNameHeader(actor.displayName),
         "X-Mahjong-Instance-Id": instanceId,
-        "X-Mahjong-Session-Expires-At": String(Date.now() + 60_000),
+        "X-Mahjong-Session-Expires-At": String(sessionExpiresAt),
         "X-Mahjong-Session-Generation": String(sessionGeneration),
         "X-Mahjong-Table-Id": binding.tableId,
       },
@@ -469,8 +471,16 @@ async function openSocket(
   binding: Binding,
   sessionGeneration: number,
   actor: { readonly displayName: string; readonly id: string } = owner,
+  sessionExpiresAt = Date.now() + 60_000,
 ): Promise<{ readonly initial: SnapshotMessage; readonly socket: WebSocket }> {
-  const upgrade = await connect(stub, binding, sessionGeneration, actor);
+  const upgrade = await connect(
+    stub,
+    binding,
+    sessionGeneration,
+    actor,
+    "instance-original",
+    sessionExpiresAt,
+  );
   expect(upgrade.status).toBe(101);
   const socket = upgrade.webSocket;
   if (socket === null) throw new Error("WebSocket upgrade returned no socket.");
@@ -2006,6 +2016,261 @@ describe("TableRoom authority", () => {
     east.socket.close(1000, "test complete");
   });
 
+  it.each(["some", "all"] as const)(
+    "immediately passes %s automated responders in a newly opened discard window",
+    async (coverage) => {
+      const tableId = `autopilot-reaction-${coverage}-${crypto.randomUUID()}`;
+      const stub = tableRoom(tableId);
+      const { binding } = await createTable(stub, tableId);
+      const actors = {
+        east: owner,
+        south: { id: `${tableId}:south`, displayName: "Auto South" },
+        west: { id: `${tableId}:west`, displayName: "Auto West" },
+        north: { id: `${tableId}:north`, displayName: "Auto North" },
+      } as const;
+      const started = startHongKongV2Game(
+        {
+          east: actors.east.id,
+          south: actors.south.id,
+          west: actors.west.id,
+          north: actors.north.id,
+        },
+        Uint8Array.from(
+          { length: 1_028 },
+          (_, index) => (index * 73 + 221) & 0xff,
+        ),
+      );
+      const version = await installTableGameFixture(stub, binding, actors, [
+        started.event,
+      ]);
+      const actorById = new Map<
+        string,
+        { readonly displayName: string; readonly id: string }
+      >(Object.values(actors).map((actor) => [actor.id, actor]));
+      const dealer = actorById.get(started.state.players.east.actorId);
+      if (dealer === undefined) throw new Error("Missing automatic dealer.");
+      const connection = await openSocket(stub, binding, 1, dealer);
+      const responderActors = [
+        started.state.players.south.actorId,
+        started.state.players.west.actorId,
+        started.state.players.north.actorId,
+      ];
+      const automated =
+        coverage === "all" ? responderActors : responderActors.slice(0, 1);
+      await runInDurableObject(stub, (_instance, state) => {
+        for (const actorId of automated) {
+          state.storage.sql.exec(
+            "UPDATE player_automation SET autopilot = 1 WHERE actor_id = ?",
+            actorId,
+          );
+        }
+      });
+      const tileId = connection.initial.view.game?.viewerHand?.[0]?.id;
+      if (tileId === undefined)
+        throw new Error("Automatic dealer has no tile.");
+      const messages = nextMessages<ReceiptMessage | SnapshotMessage>(
+        connection.socket,
+        2,
+      );
+      connection.socket.send(
+        commandMessage(`automatic-window-${coverage}`, version, {
+          type: "game/discard",
+          tileId,
+        }),
+      );
+      expect((await messages)[0]).toMatchObject({
+        outcome: "applied",
+        stateVersion: version + 1,
+      });
+      await expect(
+        runInDurableObject(stub, (_instance, state) => {
+          const checkpoint = decodeCanonicalVersionedGameJson(
+            state.storage.sql
+              .exec<{ state_json: string }>(
+                "SELECT state_json FROM canonical_game_state WHERE singleton = 1",
+              )
+              .one().state_json,
+          );
+          if (checkpoint.schemaVersion !== 2) {
+            throw new Error("Automatic reaction checkpoint regressed.");
+          }
+          return {
+            intents:
+              checkpoint.reactionWindow === null
+                ? 3
+                : Object.keys(checkpoint.reactionWindow.intents).length,
+            phase: checkpoint.phase,
+            reactionDeadlines: state.storage.sql
+              .exec<{ count: number }>(
+                "SELECT count(*) AS count FROM deadlines WHERE kind = 'reaction' AND status = 'pending'",
+              )
+              .one().count,
+          };
+        }),
+      ).resolves.toEqual(
+        coverage === "all"
+          ? {
+              intents: 3,
+              phase: "awaiting-draw",
+              reactionDeadlines: 0,
+            }
+          : {
+              intents: 1,
+              phase: "awaiting-discard-reactions",
+              reactionDeadlines: 1,
+            },
+      );
+      connection.socket.close(1000, "test complete");
+    },
+  );
+
+  it("immediately passes automated responders in a new added-kong window", async () => {
+    const tableId = `autopilot-added-kong-${crypto.randomUUID()}`;
+    const stub = tableRoom(tableId);
+    const { binding } = await createTable(stub, tableId);
+    const actors = {
+      east: owner,
+      south: { id: `${tableId}:south`, displayName: "Kong South" },
+      west: { id: `${tableId}:west`, displayName: "Kong West" },
+      north: { id: `${tableId}:north`, displayName: "Kong North" },
+    } as const;
+    const started = startHongKongV2Game(
+      {
+        east: actors.east.id,
+        south: actors.south.id,
+        west: actors.west.id,
+        north: actors.north.id,
+      },
+      Uint8Array.from(
+        { length: 1_028 },
+        (_, index) => (index * 73 + 207) & 0xff,
+      ),
+    );
+    let current = placePhysicalTiles(started.state, [
+      { index: 0, seat: "east", tileId: 4 },
+      { index: 0, seat: "south", tileId: 5 },
+      { index: 1, seat: "south", tileId: 6 },
+      { index: 2, seat: "south", tileId: 7 },
+    ]);
+    const events: VersionedHongKongGameEvent[] = [
+      { ...started.event, state: current },
+    ];
+    const apply = (
+      actorId: string,
+      command: Parameters<typeof applyGameCommandV2>[2],
+    ) => {
+      const decision = applyGameCommandV2(current, actorId, command);
+      if (!decision.accepted || decision.state === undefined) {
+        throw new Error("Added-kong fixture command failed.");
+      }
+      events.push(...decision.events);
+      current = decision.state;
+    };
+    apply(current.players.east.actorId, {
+      type: "game/discard",
+      tileId: 4 as PhysicalTileId,
+    });
+    const firstWindow = current.reactionWindow;
+    if (firstWindow === null) throw new Error("Pung fixture opened no window.");
+    apply(current.players.south.actorId, {
+      type: "game/react",
+      response: {
+        type: "pung",
+        handTileIds: [5 as PhysicalTileId, 6 as PhysicalTileId],
+      },
+      windowId: firstWindow.id,
+    });
+    for (const seat of ["west", "north"] as const) {
+      apply(current.players[seat].actorId, {
+        type: "game/react",
+        response: { type: "pass" },
+        windowId: firstWindow.id,
+      });
+    }
+    const meldId = current.players.south.melds[0]?.id;
+    if (meldId === undefined) throw new Error("Pung fixture has no meld.");
+    const firstEvent = events[0];
+    if (firstEvent === undefined)
+      throw new Error("Kong fixture has no genesis.");
+    const version = await installTableGameFixture(stub, binding, actors, [
+      firstEvent,
+      ...events.slice(1),
+    ]);
+    const actorById = new Map<
+      string,
+      { readonly displayName: string; readonly id: string }
+    >(Object.values(actors).map((actor) => [actor.id, actor]));
+    const sourceActor = actorById.get(current.players.south.actorId);
+    if (sourceActor === undefined)
+      throw new Error("Missing kong source actor.");
+    const source = await openSocket(stub, binding, 1, sourceActor);
+    await runInDurableObject(stub, (_instance, state) => {
+      for (const seat of ["east", "west", "north"] as const) {
+        state.storage.sql.exec(
+          "UPDATE player_automation SET autopilot = 1 WHERE actor_id = ?",
+          current.players[seat].actorId,
+        );
+      }
+    });
+    const messages = nextMessages<ReceiptMessage | SnapshotMessage>(
+      source.socket,
+      2,
+    );
+    source.socket.send(
+      commandMessage("automatic-added-kong-window", version, {
+        type: "game/propose-added-kong",
+        meldId,
+        tileId: 7,
+      }),
+    );
+    expect((await messages)[0]).toMatchObject({
+      outcome: "applied",
+      stateVersion: version + 1,
+    });
+    await expect(
+      runInDurableObject(stub, (_instance, state) => {
+        const checkpoint = decodeCanonicalVersionedGameJson(
+          state.storage.sql
+            .exec<{ state_json: string }>(
+              "SELECT state_json FROM canonical_game_state WHERE singleton = 1",
+            )
+            .one().state_json,
+        );
+        if (checkpoint.schemaVersion !== 2) {
+          throw new Error("Added-kong checkpoint regressed.");
+        }
+        return {
+          meld: checkpoint.players.south.melds[0],
+          phase: checkpoint.phase,
+          reactionWindow: checkpoint.reactionWindow,
+          tailTypes: state.storage.sql
+            .exec<{ event_json: string }>(
+              "SELECT event_json FROM game_events ORDER BY sequence DESC LIMIT 6",
+            )
+            .toArray()
+            .reverse()
+            .map(
+              ({ event_json }) =>
+                (JSON.parse(event_json) as { readonly type: string }).type,
+            ),
+        };
+      }),
+    ).resolves.toMatchObject({
+      meld: { kind: "kong", kongKind: "added", tileIds: [4, 5, 6, 7] },
+      phase: "awaiting-discard",
+      reactionWindow: null,
+      tailTypes: [
+        "game/added-kong-proposed",
+        "game/reaction-intent-submitted",
+        "game/reaction-intent-submitted",
+        "game/reaction-intent-submitted",
+        "game/reaction-resolved",
+        "game/kong-replacement-drawn",
+      ],
+    });
+    source.socket.close(1000, "test complete");
+  });
+
   it("stores actor-scoped receipts and handles replay, collision, and stale state safely", async () => {
     const tableId = `receipt-${crypto.randomUUID()}`;
     const stub = tableRoom(tableId);
@@ -2997,7 +3262,7 @@ describe("TableRoom authority", () => {
       ) {
         throw new Error("Silent-expiry fixture has no socket attachment.");
       }
-      const expiredAt = Date.now() - 1;
+      const expiredAt = Date.now() - 15 * 60_000 - 1;
       socket.serializeAttachment({
         ...attachment,
         sessionExpiresAt: expiredAt,
@@ -3095,7 +3360,7 @@ describe("TableRoom authority", () => {
       ) {
         throw new Error("Claim-expiry fixture has no socket attachment.");
       }
-      const expiredAt = Date.now() - 1;
+      const expiredAt = Date.now() - 15_001;
       socket.serializeAttachment({
         ...attachment,
         sessionExpiresAt: expiredAt,
@@ -3126,6 +3391,320 @@ describe("TableRoom authority", () => {
           .one().state_version,
       })),
     ).resolves.toEqual({ autopilot: 1, stateVersion: 2 });
+  });
+
+  it("moves derived actor and table expiry deadlines when the latest socket closes", async () => {
+    const tableId = `decreasing-expiry-${crypto.randomUUID()}`;
+    const stub = tableRoom(tableId);
+    const { binding } = await createTable(stub, tableId);
+    const activation = await activateSession(stub, binding, owner.id, 1);
+    expect(activation.status).toBe(200);
+    await activation.body?.cancel();
+    await runInDurableObject(stub, (_instance, state) => {
+      state.storage.sql.exec(
+        "INSERT INTO lobby_seats (seat, actor_id, display_name, ready) VALUES ('east', ?, ?, 0)",
+        owner.id,
+        owner.displayName,
+      );
+    });
+    const base = Date.now();
+    const laterExpiry = base + 180_000;
+    const earlierExpiry = base + 60_000;
+    const later = await openSocket(stub, binding, 1, owner, laterExpiry);
+    const earlier = await openSocket(stub, binding, 1, owner, earlierExpiry);
+    const before = await runInDurableObject(stub, (_instance, state) => {
+      const generation = state.storage.sql
+        .exec<{ connection_generation: number }>(
+          "SELECT connection_generation FROM player_automation WHERE actor_id = ?",
+          owner.id,
+        )
+        .one().connection_generation;
+      const lifecycleGeneration = state.storage.sql
+        .exec<{ room_activity_generation: number }>(
+          "SELECT room_activity_generation FROM room_lifecycle WHERE singleton = 1",
+        )
+        .one().room_activity_generation;
+      return {
+        abandonmentDue: state.storage.sql
+          .exec<{ due_at: number }>(
+            "SELECT due_at FROM deadlines WHERE kind = 'abandonment' AND target_generation = ? AND status = 'pending'",
+            lifecycleGeneration,
+          )
+          .one().due_at,
+        disconnectDue: state.storage.sql
+          .exec<{ due_at: number }>(
+            "SELECT due_at FROM deadlines WHERE kind = 'disconnect' AND target_generation = ? AND status = 'pending'",
+            generation,
+          )
+          .one().due_at,
+      };
+    });
+    expect(before).toEqual({
+      abandonmentDue: laterExpiry + 15 * 60_000,
+      disconnectDue: laterExpiry + 15_000,
+    });
+
+    await runInDurableObject(stub, async (instance, state) => {
+      const laterSocket = state.getWebSockets().find((socket) => {
+        const attachment = socket.deserializeAttachment() as {
+          readonly sessionExpiresAt?: unknown;
+        } | null;
+        return attachment?.sessionExpiresAt === laterExpiry;
+      });
+      if (laterSocket === undefined) {
+        throw new Error("Later-expiring server socket is missing.");
+      }
+      await instance.webSocketClose(laterSocket, 1000, "test close", true);
+    });
+    const after = await runInDurableObject(stub, async (_instance, state) => {
+      const generation = state.storage.sql
+        .exec<{ connection_generation: number }>(
+          "SELECT connection_generation FROM player_automation WHERE actor_id = ?",
+          owner.id,
+        )
+        .one().connection_generation;
+      const lifecycleGeneration = state.storage.sql
+        .exec<{ room_activity_generation: number }>(
+          "SELECT room_activity_generation FROM room_lifecycle WHERE singleton = 1",
+        )
+        .one().room_activity_generation;
+      return {
+        alarm: await state.storage.getAlarm(),
+        abandonmentDue: state.storage.sql
+          .exec<{ deadline_id: string; due_at: number }>(
+            "SELECT deadline_id, due_at FROM deadlines WHERE kind = 'abandonment' AND target_generation = ? AND status = 'pending'",
+            lifecycleGeneration,
+          )
+          .one(),
+        disconnectDue: state.storage.sql
+          .exec<{ deadline_id: string; due_at: number }>(
+            "SELECT deadline_id, due_at FROM deadlines WHERE kind = 'disconnect' AND target_generation = ? AND status = 'pending'",
+            generation,
+          )
+          .one(),
+      };
+    });
+    expect(after.alarm).toBe(earlierExpiry + 15_000);
+    expect(after.abandonmentDue.due_at).toBe(earlierExpiry + 15 * 60_000);
+    expect(after.abandonmentDue.deadline_id.length).toBeGreaterThan(0);
+    expect(after.disconnectDue.due_at).toBe(earlierExpiry + 15_000);
+    expect(after.disconnectDue.deadline_id.length).toBeGreaterThan(0);
+    await runInDurableObject(stub, (instance) => instance.alarm());
+    await expect(
+      runInDurableObject(stub, (_instance, state) => ({
+        receipts: state.storage.sql
+          .exec<{ count: number }>(
+            "SELECT count(*) AS count FROM system_command_receipts",
+          )
+          .one().count,
+        stateVersion: state.storage.sql
+          .exec<{ state_version: number }>(
+            "SELECT state_version FROM lobby_state WHERE singleton = 1",
+          )
+          .one().state_version,
+      })),
+    ).resolves.toEqual({ receipts: 0, stateVersion: 0 });
+
+    const deadlineEvidence = () =>
+      runInDurableObject(stub, (_instance, state) => ({
+        abandoned: state.storage.sql
+          .exec<{ abandoned: number }>(
+            "SELECT abandoned FROM room_lifecycle WHERE singleton = 1",
+          )
+          .one().abandoned,
+        autopilot: state.storage.sql
+          .exec<{ autopilot: number }>(
+            "SELECT autopilot FROM player_automation WHERE actor_id = ?",
+            owner.id,
+          )
+          .one().autopilot,
+        deadlines: state.storage.sql
+          .exec<{ deadline_id: string; status: string }>(
+            "SELECT deadline_id, status FROM deadlines WHERE deadline_id IN (?, ?) ORDER BY kind",
+            after.abandonmentDue.deadline_id,
+            after.disconnectDue.deadline_id,
+          )
+          .toArray(),
+        eventCount: state.storage.sql
+          .exec<{ count: number }>("SELECT count(*) AS count FROM game_events")
+          .one().count,
+        receipts: state.storage.sql
+          .exec<{ command_id: string; result_json: string }>(
+            "SELECT command_id, result_json FROM system_command_receipts ORDER BY command_id",
+          )
+          .toArray()
+          .map(({ command_id, result_json }) => ({
+            commandId: command_id,
+            result: JSON.parse(result_json) as unknown,
+          })),
+        stateVersion: state.storage.sql
+          .exec<{ state_version: number }>(
+            "SELECT state_version FROM lobby_state WHERE singleton = 1",
+          )
+          .one().state_version,
+      }));
+
+    const simulatedExpiry = Date.now() - 15_001;
+    await runInDurableObject(stub, async (instance, state) => {
+      const remainingSocket = state.getWebSockets().find((socket) => {
+        const attachment = socket.deserializeAttachment() as {
+          readonly sessionExpiresAt?: unknown;
+        } | null;
+        return attachment?.sessionExpiresAt === earlierExpiry;
+      });
+      const attachment = remainingSocket?.deserializeAttachment() as
+        Record<string, unknown> | null | undefined;
+      if (
+        remainingSocket === undefined ||
+        attachment === null ||
+        attachment === undefined
+      ) {
+        throw new Error("Earlier-expiring server socket is missing.");
+      }
+      remainingSocket.serializeAttachment({
+        ...attachment,
+        sessionExpiresAt: simulatedExpiry,
+      });
+      state.storage.sql.exec(
+        "UPDATE connection_grants SET expires_at = ?",
+        simulatedExpiry,
+      );
+      state.storage.sql.exec(
+        "UPDATE deadlines SET due_at = ? WHERE deadline_id = ?",
+        simulatedExpiry + 15_000,
+        after.disconnectDue.deadline_id,
+      );
+      state.storage.sql.exec(
+        "UPDATE deadlines SET due_at = ? WHERE deadline_id = ?",
+        simulatedExpiry + 15 * 60_000,
+        after.abandonmentDue.deadline_id,
+      );
+      await instance.webSocketClose(
+        remainingSocket,
+        1000,
+        "expired fixture close",
+        true,
+      );
+    });
+    await expect(
+      runInDurableObject(stub, (_instance, state) => ({
+        abandonment: state.storage.sql
+          .exec<{ due_at: number; status: string }>(
+            "SELECT due_at, status FROM deadlines WHERE deadline_id = ?",
+            after.abandonmentDue.deadline_id,
+          )
+          .one(),
+        disconnect: state.storage.sql
+          .exec<{ due_at: number; status: string }>(
+            "SELECT due_at, status FROM deadlines WHERE deadline_id = ?",
+            after.disconnectDue.deadline_id,
+          )
+          .one(),
+      })),
+    ).resolves.toEqual({
+      abandonment: {
+        due_at: simulatedExpiry + 15 * 60_000,
+        status: "pending",
+      },
+      disconnect: {
+        due_at: simulatedExpiry + 15_000,
+        status: "pending",
+      },
+    });
+    await evictDurableObject(stub);
+    await runInDurableObject(stub, (instance) => instance.alarm());
+    const afterDisconnect = await deadlineEvidence();
+    expect(afterDisconnect).toEqual({
+      abandoned: 0,
+      autopilot: 1,
+      deadlines: [
+        {
+          deadline_id: after.abandonmentDue.deadline_id,
+          status: "pending",
+        },
+        {
+          deadline_id: after.disconnectDue.deadline_id,
+          status: "processed",
+        },
+      ],
+      eventCount: 0,
+      receipts: [
+        {
+          commandId: after.disconnectDue.deadline_id,
+          result: { outcome: "processed", publicTransition: true },
+        },
+      ],
+      stateVersion: 1,
+    });
+
+    await runInDurableObject(stub, async (instance, state) => {
+      await state.storage.setAlarm(before.disconnectDue);
+      await instance.alarm();
+    });
+    await expect(deadlineEvidence()).resolves.toEqual(afterDisconnect);
+
+    await runInDurableObject(stub, (_instance, state) => {
+      state.storage.sql.exec(
+        "UPDATE deadlines SET due_at = ? WHERE deadline_id = ?",
+        Date.now() - 1,
+        after.abandonmentDue.deadline_id,
+      );
+    });
+    await evictDurableObject(stub);
+    await runInDurableObject(stub, (instance) => instance.alarm());
+    const afterAbandonment = await deadlineEvidence();
+    expect(afterAbandonment).toEqual({
+      abandoned: 1,
+      autopilot: 1,
+      deadlines: [
+        {
+          deadline_id: after.abandonmentDue.deadline_id,
+          status: "processed",
+        },
+        {
+          deadline_id: after.disconnectDue.deadline_id,
+          status: "processed",
+        },
+      ],
+      eventCount: 0,
+      receipts: [
+        {
+          commandId: after.abandonmentDue.deadline_id,
+          result: { outcome: "processed", publicTransition: true },
+        },
+        {
+          commandId: after.disconnectDue.deadline_id,
+          result: { outcome: "processed", publicTransition: true },
+        },
+      ],
+      stateVersion: 2,
+    });
+    await expect(
+      runInDurableObject(stub, (_instance, state) => ({
+        pendingAbandonmentCount: state.storage.sql
+          .exec<{ count: number }>(
+            "SELECT count(*) AS count FROM deadlines d JOIN room_lifecycle r ON r.singleton = 1 AND r.room_activity_generation = d.target_generation WHERE d.kind = 'abandonment' AND d.status = 'pending'",
+          )
+          .one().count,
+        replacementStatus: state.storage.sql
+          .exec<{ status: string }>(
+            "SELECT status FROM deadlines WHERE deadline_id = ?",
+            after.abandonmentDue.deadline_id,
+          )
+          .one().status,
+      })),
+    ).resolves.toEqual({
+      pendingAbandonmentCount: 0,
+      replacementStatus: "processed",
+    });
+
+    await runInDurableObject(stub, async (instance, state) => {
+      await state.storage.setAlarm(before.abandonmentDue);
+      await instance.alarm();
+    });
+    await expect(deadlineEvidence()).resolves.toEqual(afterAbandonment);
+    later.socket.close(1000, "test complete");
+    earlier.socket.close(1000, "test complete");
   });
 
   it("retires automation on leave and makes an old disconnect delivery a no-op", async () => {
@@ -3225,15 +3804,16 @@ describe("TableRoom authority", () => {
     const dueAt = Date.now() + 120_000;
     await runInDurableObject(stub, async (_instance, state) => {
       scheduleDeadline(state.storage.sql, {
-        deadlineId: "abandonment:repair",
+        deadlineId: "reaction:repair",
         dueAt,
-        kind: "abandonment",
+        kind: "reaction",
         payload: {
-          type: "system/table-abandonment-expired",
-          roomActivityGeneration: 0,
+          type: "system/reaction-expired",
+          openingSequence: 1,
+          windowId: "repair-window",
         },
         status: "pending",
-        targetGeneration: 0,
+        targetGeneration: 1,
       });
       await state.storage.deleteAlarm();
     });

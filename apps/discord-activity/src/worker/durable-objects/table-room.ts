@@ -5,6 +5,7 @@ import {
   decodeCanonicalVersionedGameJson,
   HONG_KONG_V1_RANDOM_BYTES,
   projectGameV2,
+  reduceVersionedGameEvent,
   startHongKongV2Game,
   type CanonicalGameStateV2,
   type GameViewV2,
@@ -15,6 +16,7 @@ import {
 
 import {
   automaticGameEvents,
+  automaticReactionPassEvents,
   gamePlayerAt,
 } from "./table-room/table-room-automation.js";
 import {
@@ -813,6 +815,14 @@ export class TableRoom extends DurableObject<Env> {
     return readAutomationByActor(this.ctx.storage.sql);
   }
 
+  private automatedActorIds(): ReadonlySet<string> {
+    return new Set(
+      [...this.automationByActor()]
+        .filter(([, autopilot]) => autopilot)
+        .map(([actorId]) => actorId),
+    );
+  }
+
   private snapshot(
     attachment: ConnectionAttachment,
     grant: ConnectionGrantRow,
@@ -996,7 +1006,23 @@ export class TableRoom extends DurableObject<Env> {
           if (!decision.accepted) {
             preparedRejection = decision.error;
           } else {
-            preparedGame = await prepareGameEventBatch(stored, decision.events);
+            if (decision.state === undefined) {
+              throw new Error("Accepted game command produced no state.");
+            }
+            const automaticPasses = automaticReactionPassEvents(
+              decision.state,
+              this.automatedActorIds(),
+            );
+            preparedGame = await prepareGameEventBatch(
+              stored,
+              automaticPasses === undefined
+                ? decision.events
+                : [
+                    decision.events[0],
+                    ...decision.events.slice(1),
+                    ...automaticPasses,
+                  ],
+            );
           }
         }
       }
@@ -1445,7 +1471,22 @@ export class TableRoom extends DurableObject<Env> {
       ) {
         events = automaticGameEvents(state, payload.actorId);
       }
-      if (events !== undefined && stored !== undefined) {
+      if (events !== undefined && stored !== undefined && state !== undefined) {
+        let afterEvents = state;
+        for (const event of events) {
+          const next = reduceVersionedGameEvent(afterEvents, event);
+          if (next.schemaVersion !== 2) {
+            throw new Error("Automatic game work produced legacy state.");
+          }
+          afterEvents = next;
+        }
+        const automaticPasses = automaticReactionPassEvents(
+          afterEvents,
+          this.automatedActorIds(),
+        );
+        if (automaticPasses !== undefined) {
+          events = [events[0], ...events.slice(1), ...automaticPasses];
+        }
         batch = await prepareGameEventBatch(stored, events);
       }
     }

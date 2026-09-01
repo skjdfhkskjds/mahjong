@@ -3,6 +3,7 @@ import {
   reduceVersionedGameEvent,
   type CanonicalGameStateV2,
   type NonEmptyGameEventBatch,
+  type VersionedHongKongGameEvent,
 } from "@mahjong/rules-hong-kong";
 
 import type { TableSeat } from "./table-room-protocol.js";
@@ -92,4 +93,35 @@ export function automaticGameEvents(
     return discarded.accepted ? discarded.events : undefined;
   }
   return undefined;
+}
+
+/** Appends deterministic passes for every currently automated responder. */
+export function automaticReactionPassEvents(
+  state: CanonicalGameStateV2,
+  automatedActorIds: ReadonlySet<string>,
+): NonEmptyGameEventBatch | undefined {
+  let current = state;
+  const events: VersionedHongKongGameEvent[] = [];
+  while (current.reactionWindow !== null) {
+    const responder = current.reactionWindow.responderOrder
+      .map((seat) => gamePlayerAt(current, seat).actorId)
+      .find(
+        (actorId) =>
+          automatedActorIds.has(actorId) &&
+          !Object.hasOwn(current.reactionWindow?.intents ?? {}, actorId),
+      );
+    if (responder === undefined) break;
+    const pass = applyGameCommandV2(current, responder, {
+      type: "game/react",
+      response: { type: "pass" },
+      windowId: current.reactionWindow.id,
+    });
+    if (!pass.accepted || pass.state === undefined) {
+      throw new Error("Automatic reaction pass was rejected.");
+    }
+    events.push(...pass.events);
+    current = pass.state;
+  }
+  const first = events[0];
+  return first === undefined ? undefined : [first, ...events.slice(1)];
 }
