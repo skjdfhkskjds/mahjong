@@ -8,6 +8,7 @@ import {
 
 import { isLegalReaction } from "../claims/legal-reactions.js";
 import { normalizeReactionWindow } from "../claims/reaction-resolution.js";
+import { initialDealSeatOrder } from "../setup/initial-deal.js";
 import { canonicalTileIds, type DeclaredMeld } from "../melds/meld.js";
 import {
   isBonusTile,
@@ -26,9 +27,16 @@ import {
   type VersionedCanonicalGameState,
   type CanonicalGameStateV1,
   type CanonicalGameStateV2,
+  type CompletionProvenance,
   type ReactionResponse,
   type SubmittedReactionIntent,
 } from "./game-state.js";
+import {
+  assertCompletedHandResult,
+  assertResultMatchesCompletionProvenance,
+  scoreReactionWinCandidate,
+  scoreSelfWinCandidate,
+} from "./win-resolution.js";
 
 export function assertUpgradeProvenance(
   state: CanonicalGameStateV1,
@@ -105,7 +113,7 @@ export function provenanceTileId(
 ): TileId | null {
   if (state.phase === "exhausted") return null;
   if (provenance.type === "initial-deal") {
-    return state.players.east.hand.at(-1) ?? null;
+    return initialEastAcquisition(state).tileId;
   }
   if (provenance.type !== "draw") return null;
   return (
@@ -118,11 +126,42 @@ export function provenanceTileId(
 export function provenanceAcquisition(
   state: CanonicalGameStateV1,
   provenance: LegacyUpgradeProvenance,
-): "deal" | "draw" | "replacement" | null {
+): "bonus-replacement" | "deal" | "draw" | "kong-replacement" | null {
   if (state.phase === "exhausted") return null;
-  if (provenance.type === "initial-deal") return "deal";
+  if (provenance.type === "initial-deal") {
+    return initialEastAcquisition(state).acquisition;
+  }
   if (provenance.type !== "draw") return null;
-  return provenance.replacementTileIds.length > 0 ? "replacement" : "draw";
+  return provenance.replacementTileIds.length > 0
+    ? "bonus-replacement"
+    : "draw";
+}
+
+function initialEastAcquisition(
+  state: CanonicalGameStateV1 | CanonicalGameStateV2,
+): {
+  readonly acquisition: "bonus-replacement" | "deal";
+  readonly tileId: TileId | null;
+} {
+  const eastDealt = initialDealSeatOrder.flatMap((assignedSeat, index) => {
+    const id = state.wall.order[index];
+    return assignedSeat === seat("east") && id !== undefined ? [id] : [];
+  });
+  let tail = state.wall.order.length - 1;
+  let lastReplacement: TileId | null = null;
+  for (const dealtId of eastDealt) {
+    if (!isBonusTile(dealtId)) continue;
+    let replacement = state.wall.order[tail];
+    tail -= 1;
+    while (replacement !== undefined && isBonusTile(replacement)) {
+      replacement = state.wall.order[tail];
+      tail -= 1;
+    }
+    if (replacement !== undefined) lastReplacement = replacement;
+  }
+  return lastReplacement === null
+    ? { acquisition: "deal", tileId: state.players.east.hand.at(-1) ?? null }
+    : { acquisition: "bonus-replacement", tileId: lastReplacement };
 }
 
 export function assertGameInvariants(
@@ -135,6 +174,7 @@ export function assertGameInvariants(
   if (
     value["schemaVersion"] !== 2 ||
     !hasExactKeys(value, [
+      "completionProvenance",
       "phase",
       "players",
       "prevailingWind",
@@ -151,7 +191,6 @@ export function assertGameInvariants(
     value["ruleset"] !== "hong-kong/v1" ||
     value["shuffleAlgorithm"] !== HONG_KONG_V1_SHUFFLE_ALGORITHM ||
     value["prevailingWind"] !== "east" ||
-    value["result"] !== null ||
     !(
       [
         "awaiting-dealer-discard",
@@ -160,6 +199,7 @@ export function assertGameInvariants(
         "awaiting-discard-reactions",
         "awaiting-added-kong-reactions",
         "pending-win-validation",
+        "complete",
         "exhausted",
       ] as readonly string[]
     ).includes(value["phase"] as string)
@@ -167,6 +207,15 @@ export function assertGameInvariants(
     throw new Error("Unsupported canonical game encoding.");
   }
   const state = value as unknown as CanonicalGameStateV2;
+  if (state.phase === "complete") {
+    assertCompletedHandResult(state.result);
+    const completionProvenance = assertCompletionProvenance(state);
+    assertResultMatchesCompletionProvenance(state.result, completionProvenance);
+  } else if (state.result !== null || state.completionProvenance !== null) {
+    throw new Error(
+      "Only a complete hand may contain result or completion provenance.",
+    );
+  }
   assertCommonState(state);
   assertTurnProvenance(state);
   assertReactionWindow(state);
@@ -191,6 +240,23 @@ export function assertGameInvariants(
       assertMeld(meld);
       if (meldIds.has(meld.id)) throw new Error("Meld IDs must be unique.");
       meldIds.add(meld.id);
+    }
+  }
+  if (state.phase === "complete" && state.result !== null) {
+    const winner = playerAt(state.players, state.result.winnerSeat);
+    const completedHand = {
+      bonusTileIds: [...winner.bonuses].sort(numericTileOrder),
+      concealedTileIds: [...winner.hand].sort(numericTileOrder),
+      declaredMelds: winner.melds.map((meld) => ({
+        ...meld,
+        tileIds: [...meld.tileIds].sort(numericTileOrder),
+      })),
+    };
+    if (
+      state.turn !== state.result.winnerSeat ||
+      canonicalJson(completedHand) !== canonicalJson(state.result.winningHand)
+    ) {
+      throw new Error("Completed result does not match the winning player.");
     }
   }
   assertConservation(state);
@@ -309,6 +375,104 @@ function assertCommonState(state: VersionedCanonicalGameState): void {
   }
 }
 
+function assertCompletionProvenance(
+  state: CanonicalGameStateV2,
+): CompletionProvenance {
+  const value: unknown = state.completionProvenance;
+  if (!isRecord(value) || typeof value["kind"] !== "string") {
+    throw new Error("Complete state requires canonical win provenance.");
+  }
+  if (value["kind"] === "self-pick") {
+    if (
+      !hasExactKeys(value, [
+        "acquiredTileWasFinalWall",
+        "eastHadDeclaredKong",
+        "eastHadDiscarded",
+        "kind",
+        "kongReplacementChainDepth",
+        "lastAcquisition",
+        "winnerSeat",
+        "winningTileId",
+      ]) ||
+      typeof value["acquiredTileWasFinalWall"] !== "boolean" ||
+      typeof value["eastHadDeclaredKong"] !== "boolean" ||
+      typeof value["eastHadDiscarded"] !== "boolean" ||
+      !Number.isSafeInteger(value["kongReplacementChainDepth"]) ||
+      (value["kongReplacementChainDepth"] as number) < 0 ||
+      !["bonus-replacement", "deal", "draw", "kong-replacement"].includes(
+        value["lastAcquisition"] as string,
+      ) ||
+      !seats.includes(value["winnerSeat"] as Seat) ||
+      !validTileId(value["winningTileId"])
+    ) {
+      throw new Error("Self-pick completion provenance is invalid.");
+    }
+    const provenance = value as unknown as Extract<
+      CompletionProvenance,
+      { readonly kind: "self-pick" }
+    >;
+    if (
+      (provenance.lastAcquisition === "kong-replacement") !==
+        provenance.kongReplacementChainDepth > 0 ||
+      (provenance.acquiredTileWasFinalWall &&
+        state.wall.head <= state.wall.tail) ||
+      provenance.winnerSeat !== state.turn ||
+      provenance.winningTileId !== state.turnProvenance.lastAcquiredTileId ||
+      provenance.acquiredTileWasFinalWall !==
+        state.turnProvenance.lastAcquiredTileWasFinalWall ||
+      provenance.eastHadDeclaredKong !==
+        state.turnProvenance.eastHasDeclaredKong ||
+      provenance.eastHadDiscarded !== state.turnProvenance.eastHasDiscarded ||
+      provenance.kongReplacementChainDepth !==
+        state.turnProvenance.replacementChainDepth ||
+      provenance.lastAcquisition !== state.turnProvenance.lastAcquisition
+    ) {
+      throw new Error("Self-pick provenance contradicts terminal state.");
+    }
+    return provenance;
+  }
+  if (
+    (value["kind"] !== "discard" && value["kind"] !== "robbing-kong") ||
+    !hasExactKeys(value, [
+      "kind",
+      "sourceIsOpeningEastDiscard",
+      "sourceLastCatch",
+      "sourceSeat",
+      "winnerSeat",
+      "winningTileId",
+    ]) ||
+    typeof value["sourceIsOpeningEastDiscard"] !== "boolean" ||
+    typeof value["sourceLastCatch"] !== "boolean" ||
+    !seats.includes(value["sourceSeat"] as Seat) ||
+    !seats.includes(value["winnerSeat"] as Seat) ||
+    value["sourceSeat"] === value["winnerSeat"] ||
+    !validTileId(value["winningTileId"])
+  ) {
+    throw new Error("Reaction completion provenance is invalid.");
+  }
+  const provenance = value as unknown as Exclude<
+    CompletionProvenance,
+    { readonly kind: "self-pick" }
+  >;
+  if (
+    (provenance.sourceIsOpeningEastDiscard &&
+      (provenance.kind !== "discard" || provenance.sourceSeat !== "east")) ||
+    (provenance.sourceLastCatch && state.wall.head <= state.wall.tail) ||
+    provenance.winnerSeat !== state.turn ||
+    state.turnProvenance.lastAcquiredTileId !== null ||
+    state.turnProvenance.lastAcquiredTileWasFinalWall ||
+    state.turnProvenance.lastAcquisition !== null ||
+    state.turnProvenance.replacementChainDepth !== 0 ||
+    state.turnProvenance.replacementPending ||
+    !playerAt(state.players, provenance.winnerSeat).hand.includes(
+      provenance.winningTileId,
+    )
+  ) {
+    throw new Error("Reaction provenance contradicts terminal state.");
+  }
+  return provenance;
+}
+
 function assertTurnProvenance(state: CanonicalGameStateV2): void {
   const value: unknown = state.turnProvenance;
   if (
@@ -317,6 +481,7 @@ function assertTurnProvenance(state: CanonicalGameStateV2): void {
       "eastHasDeclaredKong",
       "eastHasDiscarded",
       "lastAcquiredTileId",
+      "lastAcquiredTileWasFinalWall",
       "lastAcquisition",
       "replacementChainDepth",
       "replacementPending",
@@ -327,8 +492,12 @@ function assertTurnProvenance(state: CanonicalGameStateV2): void {
       value["lastAcquiredTileId"] === null ||
       validTileId(value["lastAcquiredTileId"])
     ) ||
-    !([null, "deal", "draw", "replacement"] as const).includes(
-      value["lastAcquisition"] as "deal" | "draw" | "replacement" | null,
+    typeof value["lastAcquiredTileWasFinalWall"] !== "boolean" ||
+    !(
+      [null, "bonus-replacement", "deal", "draw", "kong-replacement"] as const
+    ).includes(
+      value["lastAcquisition"] as
+        "bonus-replacement" | "deal" | "draw" | "kong-replacement" | null,
     ) ||
     !Number.isSafeInteger(value["replacementChainDepth"]) ||
     (value["replacementChainDepth"] as number) < 0 ||
@@ -349,6 +518,28 @@ function assertTurnProvenance(state: CanonicalGameStateV2): void {
     state.phase === "awaiting-discard" ||
     state.phase === "awaiting-added-kong-reactions";
   const acquiredTileId = provenance.lastAcquiredTileId;
+  const priorHeadTile = state.wall.order[state.wall.head - 1];
+  const acquiredMatchesCanonicalWall =
+    acquiredTileId === null ||
+    provenance.lastAcquisition === null ||
+    provenance.replacementPending
+      ? true
+      : provenance.lastAcquisition === "deal"
+        ? true
+        : provenance.lastAcquisition === "bonus-replacement" &&
+            state.turn === seat("east") &&
+            !provenance.eastHasDiscarded &&
+            !provenance.eastHasDeclaredKong
+          ? initialEastAcquisition(state).tileId === acquiredTileId &&
+            initialEastAcquisition(state).acquisition ===
+              provenance.lastAcquisition
+          : provenance.lastAcquisition === "draw"
+            ? state.wall.order[state.wall.head - 1] === acquiredTileId
+            : provenance.lastAcquisition === "bonus-replacement"
+              ? state.wall.order[state.wall.tail + 1] === acquiredTileId &&
+                priorHeadTile !== undefined &&
+                isBonusTile(priorHeadTile)
+              : state.wall.order[state.wall.tail + 1] === acquiredTileId;
   const acquiredIsLocated =
     acquiredTileId === null ||
     active.hand.includes(acquiredTileId) ||
@@ -367,10 +558,17 @@ function assertTurnProvenance(state: CanonicalGameStateV2): void {
   if (!acquiredIsLocated) {
     throw new Error("The last acquired tile is not owned by the active seat.");
   }
+  if (!acquiredMatchesCanonicalWall) {
+    throw new Error("Turn acquisition contradicts the canonical wall.");
+  }
   if (
     (!provenance.eastHasDiscarded && state.players.east.discards.length > 0) ||
     provenance.eastHasDeclaredKong !== eastHasKong ||
     (preDiscardPhase && provenance.lastAcquiredTileId === null) ||
+    (provenance.lastAcquiredTileWasFinalWall &&
+      (provenance.lastAcquiredTileId === null ||
+        provenance.lastAcquisition === null ||
+        state.wall.head <= state.wall.tail)) ||
     provenance.replacementChainDepth > Math.min(4, activeKongCount) ||
     (state.phase === "awaiting-dealer-discard" &&
       provenance.eastHasDiscarded) ||
@@ -387,18 +585,24 @@ function assertTurnProvenance(state: CanonicalGameStateV2): void {
     (provenance.lastAcquisition === "deal" &&
       (state.phase !== "awaiting-dealer-discard" ||
         state.turn !== seat("east") ||
-        provenance.replacementChainDepth !== 0)) ||
+        (!provenance.replacementPending &&
+          provenance.replacementChainDepth !== 0))) ||
     ((provenance.lastAcquisition === "draw" ||
-      provenance.lastAcquisition === "replacement") &&
+      provenance.lastAcquisition === "bonus-replacement" ||
+      provenance.lastAcquisition === "kong-replacement") &&
       state.phase !== "awaiting-discard" &&
       state.phase !== "awaiting-added-kong-reactions" &&
+      state.phase !== "pending-win-validation" &&
+      state.phase !== "complete" &&
       !(
-        provenance.lastAcquisition === "replacement" &&
+        (provenance.lastAcquisition === "bonus-replacement" ||
+          provenance.lastAcquisition === "kong-replacement") &&
         state.phase === "awaiting-dealer-discard" &&
         state.turn === seat("east")
       )) ||
     (provenance.replacementChainDepth > 0 &&
-      provenance.lastAcquisition !== "replacement" &&
+      !provenance.replacementPending &&
+      provenance.lastAcquisition !== "kong-replacement" &&
       !(state.phase === "exhausted" && provenance.lastAcquiredTileId === null))
   ) {
     throw new Error("Turn provenance contradicts canonical gameplay state.");
@@ -410,10 +614,18 @@ function assertReactionWindow(state: CanonicalGameStateV2): void {
   if (window === null) {
     if (
       state.phase === "awaiting-discard-reactions" ||
-      state.phase === "awaiting-added-kong-reactions" ||
-      state.phase === "pending-win-validation"
+      state.phase === "awaiting-added-kong-reactions"
     )
       throw new Error("Reaction phase requires an open window.");
+    if (
+      state.phase === "pending-win-validation" &&
+      scoreSelfWinCandidate(
+        { ...state, phase: "awaiting-discard" },
+        state.turn,
+      ) === null
+    ) {
+      throw new Error("Pending self win must reproduce a legal score.");
+    }
     return;
   }
   const expectedKeys =
@@ -424,6 +636,8 @@ function assertReactionWindow(state: CanonicalGameStateV2): void {
           "kind",
           "openingSequence",
           "responderOrder",
+          "sourceIsOpeningEastDiscard",
+          "sourceLastCatch",
           "sourceSeat",
           "sourceTileId",
         ]
@@ -433,6 +647,8 @@ function assertReactionWindow(state: CanonicalGameStateV2): void {
           "kind",
           "openingSequence",
           "responderOrder",
+          "sourceIsOpeningEastDiscard",
+          "sourceLastCatch",
           "sourceMeldId",
           "sourceSeat",
           "sourceTileId",
@@ -447,6 +663,8 @@ function assertReactionWindow(state: CanonicalGameStateV2): void {
     canonicalJson(window.responderOrder) !==
       canonicalJson(threeSeatsAfter(window.sourceSeat)) ||
     !isRecord(window.intents) ||
+    typeof window.sourceIsOpeningEastDiscard !== "boolean" ||
+    typeof window.sourceLastCatch !== "boolean" ||
     !Number.isSafeInteger(window.openingSequence) ||
     window.openingSequence < 1 ||
     window.openingSequence > state.sequence ||
@@ -462,6 +680,9 @@ function assertReactionWindow(state: CanonicalGameStateV2): void {
   }
   const source = playerAt(state.players, window.sourceSeat);
   if (
+    (window.sourceIsOpeningEastDiscard &&
+      (window.kind !== "discard" || window.sourceSeat !== seat("east"))) ||
+    (window.sourceLastCatch && state.wall.head <= state.wall.tail) ||
     (window.kind === "discard" &&
       source.discards.at(-1) !== window.sourceTileId) ||
     (window.kind === "added-kong" &&
@@ -487,7 +708,9 @@ function assertReactionWindow(state: CanonicalGameStateV2): void {
       !validReactionResponse(submitted.response) ||
       !isLegalReaction(state, submitted.seat, submitted.response, {
         includeStructuralWin: true,
-      })
+      }) ||
+      (submitted.response.type === "win" &&
+        scoreReactionWinCandidate(state, submitted.seat) === null)
     )
       throw new Error("Reaction intent actor or response is invalid.");
   }
@@ -587,10 +810,18 @@ function assertStructuralCounts(state: CanonicalGameStateV2): void {
     const structuralCount = player.hand.length + 3 * player.melds.length;
     let expected = 13;
     if (
+      state.phase === "complete" &&
+      currentSeat === state.result?.winnerSeat
+    ) {
+      expected = 14;
+    }
+    if (
       currentSeat === state.turn &&
       (state.phase === "awaiting-dealer-discard" ||
         state.phase === "awaiting-discard" ||
         state.phase === "awaiting-added-kong-reactions" ||
+        (state.phase === "pending-win-validation" &&
+          state.reactionWindow === null) ||
         (state.phase === "pending-win-validation" &&
           state.reactionWindow?.kind === "added-kong"))
     )
@@ -622,8 +853,12 @@ export function assertVersionedGameEvent(
         throw new Error("Canonical genesis event is invalid.");
       }
       assertGameInvariants(value["state"]);
-      if (value["state"].sequence !== 1)
-        throw new Error("Genesis sequence mismatch.");
+      if (
+        value["state"].sequence !== 1 ||
+        (value["state"].schemaVersion === 2 &&
+          value["state"].phase === "pending-win-validation")
+      )
+        throw new Error("Genesis state is not deployable.");
       return;
     case "game/tile-discarded":
       assertExactEvent(value, ["seat", "sequence", "tileId", "type"]);
@@ -758,6 +993,16 @@ export function assertVersionedGameEvent(
         value["tileIds"].some((id) => !validTileId(id))
       )
         throw new Error("Invalid kong replacement event.");
+      return;
+    case "game/self-win-declared":
+      assertExactEvent(value, ["seat", "sequence", "type"]);
+      if (!seats.includes(value["seat"] as Seat)) {
+        throw new Error("Invalid self-win seat.");
+      }
+      return;
+    case "game/hand-completed":
+      assertExactEvent(value, ["result", "sequence", "type"]);
+      assertCompletedHandResult(value["result"]);
       return;
     default:
       throw new Error("Unknown canonical game event type.");
@@ -934,4 +1179,8 @@ function threeSeatsAfter(source: Seat): readonly [Seat, Seat, Seat] {
 
 function numericIds(tileIds: readonly TileId[]): string {
   return tileIds.map(Number).join(",");
+}
+
+function numericTileOrder(left: TileId, right: TileId): number {
+  return Number(left) - Number(right);
 }

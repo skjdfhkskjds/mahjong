@@ -22,10 +22,12 @@ import type {
   ConcealedKongDeclaredEvent,
   DiscardReactionOpenedEvent,
   DrawnEvent,
+  HandCompletedEvent,
   HongKongGameEvent,
   KongReplacementDrawnEvent,
   ReactionIntentSubmittedEvent,
   ReactionResolvedEvent,
+  SelfWinDeclaredEvent,
   StateUpgradedEvent,
   VersionedHongKongGameEvent,
 } from "./game-contracts.js";
@@ -46,6 +48,12 @@ import {
   type CanonicalPlayerStateV2,
   type SeatMap,
 } from "./game-state.js";
+import {
+  completionProvenanceFor,
+  expectedPendingCompletion,
+  scoreReactionWinCandidate,
+  scoreSelfWinCandidate,
+} from "./win-resolution.js";
 
 export function reduceVersionedGameEvent(
   state: VersionedCanonicalGameState | undefined,
@@ -152,6 +160,10 @@ function reduceV2Event(
       return reduceAddedKongProposal(state, event);
     case "game/kong-replacement-drawn":
       return reduceKongReplacement(state, event);
+    case "game/self-win-declared":
+      return reduceSelfWinDeclared(state, event);
+    case "game/hand-completed":
+      return reduceHandCompleted(state, event);
     case "game/tile-discarded":
       throw new Error(
         "Legacy discard events cannot reinterpret schema-v2 state.",
@@ -160,6 +172,81 @@ function reduceV2Event(
     case "game/started":
       throw new Error("Unexpected game lifecycle event.");
   }
+}
+
+function reduceSelfWinDeclared(
+  state: CanonicalGameStateV2,
+  event: SelfWinDeclaredEvent,
+): CanonicalGameStateV2 {
+  if (
+    event.seat !== state.turn ||
+    scoreSelfWinCandidate(state, event.seat) === null
+  ) {
+    throw new Error("Self win declaration is not exactly legal.");
+  }
+  return {
+    ...state,
+    phase: "pending-win-validation",
+    sequence: event.sequence,
+  };
+}
+
+function reduceHandCompleted(
+  state: CanonicalGameStateV2,
+  event: HandCompletedEvent,
+): CanonicalGameStateV2 {
+  const expected = expectedPendingCompletion(state);
+  if (canonicalJson(expected) !== canonicalJson(event.result)) {
+    throw new Error("Hand completion does not match the authoritative score.");
+  }
+  const window = state.reactionWindow;
+  const completionProvenance = completionProvenanceFor(state, event.result);
+  if (window === null) {
+    return {
+      ...state,
+      completionProvenance,
+      phase: "complete",
+      result: event.result,
+      sequence: event.sequence,
+    };
+  }
+  if (scoreReactionWinCandidate(state, event.result.winnerSeat) === null) {
+    throw new Error("Completed reaction winner is no longer scoreable.");
+  }
+  const winner = playerAt(state.players, event.result.winnerSeat);
+  const source = playerAt(state.players, window.sourceSeat);
+  let players = replacePlayerV2(state.players, event.result.winnerSeat, {
+    ...winner,
+    hand: [...winner.hand, window.sourceTileId],
+  });
+  players = replacePlayerV2(
+    players,
+    window.sourceSeat,
+    window.kind === "discard"
+      ? { ...source, discards: source.discards.slice(0, -1) }
+      : {
+          ...source,
+          hand: removeExactTiles(source.hand, [window.sourceTileId]),
+        },
+  );
+  return {
+    ...state,
+    completionProvenance,
+    phase: "complete",
+    players,
+    reactionWindow: null,
+    result: event.result,
+    sequence: event.sequence,
+    turn: event.result.winnerSeat,
+    turnProvenance: {
+      ...state.turnProvenance,
+      lastAcquiredTileId: null,
+      lastAcquiredTileWasFinalWall: false,
+      lastAcquisition: null,
+      replacementChainDepth: 0,
+      replacementPending: false,
+    },
+  };
 }
 
 function reduceDraw(
@@ -227,10 +314,12 @@ function reduceDraw(
     turnProvenance: {
       ...state.turnProvenance,
       lastAcquiredTileId: structural[0] ?? null,
+      lastAcquiredTileWasFinalWall:
+        !event.exhausted && state.wall.head + 1 > tail,
       lastAcquisition: event.exhausted
         ? null
         : event.replacementTileIds.length > 0
-          ? "replacement"
+          ? "bonus-replacement"
           : "draw",
       replacementChainDepth: 0,
       replacementPending: false,
@@ -270,6 +359,11 @@ function reduceDiscardReactionOpened(
       kind: "discard",
       openingSequence: event.sequence,
       responderOrder,
+      sourceIsOpeningEastDiscard:
+        event.seat === seat("east") &&
+        !state.turnProvenance.eastHasDiscarded &&
+        !state.turnProvenance.eastHasDeclaredKong,
+      sourceLastCatch: state.turnProvenance.lastAcquiredTileWasFinalWall,
       sourceSeat: event.seat,
       sourceTileId: event.tileId,
     },
@@ -280,6 +374,7 @@ function reduceDiscardReactionOpened(
       eastHasDiscarded:
         state.turnProvenance.eastHasDiscarded || event.seat === seat("east"),
       lastAcquiredTileId: null,
+      lastAcquiredTileWasFinalWall: false,
       lastAcquisition: null,
       replacementChainDepth: 0,
       replacementPending: false,
@@ -301,7 +396,9 @@ function reduceReactionIntent(
     Object.hasOwn(window.intents, event.actorId) ||
     !isLegalReaction(state, event.seat, event.response, {
       includeStructuralWin: true,
-    })
+    }) ||
+    (event.response.type === "win" &&
+      scoreReactionWinCandidate(state, event.seat) === null)
   ) {
     throw new Error("Reaction intent is not valid for the open window.");
   }
@@ -401,8 +498,9 @@ function reduceReactionResolved(
         state.turnProvenance.eastHasDeclaredKong ||
         (response.type === "kong" && event.outcome.seat === seat("east")),
       lastAcquiredTileId: window.sourceTileId,
+      lastAcquiredTileWasFinalWall: false,
       lastAcquisition: null,
-      replacementChainDepth: 0,
+      replacementChainDepth: response.type === "kong" ? 1 : 0,
       replacementPending: response.type === "kong",
     },
   };
@@ -428,6 +526,10 @@ function reduceConcealedKong(
     throw new Error("Concealed kong event is not exactly legal.");
   }
   const player = playerAt(state.players, event.seat);
+  const linkedToPriorKongReplacement =
+    state.turnProvenance.lastAcquisition === "kong-replacement" &&
+    state.turnProvenance.lastAcquiredTileId !== null &&
+    event.meld.tileIds.includes(state.turnProvenance.lastAcquiredTileId);
   return {
     ...state,
     players: replacePlayerV2(state.players, event.seat, {
@@ -440,6 +542,9 @@ function reduceConcealedKong(
       ...state.turnProvenance,
       eastHasDeclaredKong:
         state.turnProvenance.eastHasDeclaredKong || event.seat === seat("east"),
+      replacementChainDepth: linkedToPriorKongReplacement
+        ? state.turnProvenance.replacementChainDepth + 1
+        : 1,
       replacementPending: true,
     },
   };
@@ -467,6 +572,10 @@ function reduceAddedKongProposal(
       kind: "added-kong",
       openingSequence: event.sequence,
       responderOrder: threeSeatsAfter(event.seat),
+      sourceIsOpeningEastDiscard: false,
+      sourceLastCatch:
+        state.turnProvenance.lastAcquiredTileWasFinalWall &&
+        state.turnProvenance.lastAcquiredTileId === event.tileId,
       sourceMeldId: event.meldId,
       sourceSeat: event.seat,
       sourceTileId: event.tileId,
@@ -494,6 +603,9 @@ function commitAddedKong(
     kongKind: "added",
     tileIds: canonicalTileIds([...meld.tileIds, window.sourceTileId]),
   };
+  const linkedToPriorKongReplacement =
+    state.turnProvenance.lastAcquisition === "kong-replacement" &&
+    state.turnProvenance.lastAcquiredTileId === window.sourceTileId;
   return {
     ...state,
     phase: "awaiting-discard",
@@ -512,6 +624,9 @@ function commitAddedKong(
       eastHasDeclaredKong:
         state.turnProvenance.eastHasDeclaredKong ||
         window.sourceSeat === seat("east"),
+      replacementChainDepth: linkedToPriorKongReplacement
+        ? state.turnProvenance.replacementChainDepth + 1
+        : 1,
       replacementPending: true,
     },
   };
@@ -551,8 +666,10 @@ function reduceKongReplacement(
     turnProvenance: {
       ...state.turnProvenance,
       lastAcquiredTileId: structural[0] ?? null,
-      lastAcquisition: event.exhausted ? null : "replacement",
-      replacementChainDepth: state.turnProvenance.replacementChainDepth + 1,
+      lastAcquiredTileWasFinalWall:
+        !event.exhausted &&
+        state.wall.head > state.wall.tail - event.tileIds.length,
+      lastAcquisition: event.exhausted ? null : "kong-replacement",
       replacementPending: false,
     },
     wall: { ...state.wall, tail: state.wall.tail - event.tileIds.length },
@@ -572,6 +689,7 @@ function upgradeState(
   ) as unknown as SeatMap<CanonicalPlayerStateV2>;
   return {
     ...state,
+    completionProvenance: null,
     players,
     prevailingWind: "east",
     reactionWindow: null,
@@ -582,6 +700,10 @@ function upgradeState(
       eastHasDeclaredKong: false,
       eastHasDiscarded: event.provenance.eastHasDiscarded,
       lastAcquiredTileId: provenanceTileId(state, event.provenance),
+      lastAcquiredTileWasFinalWall:
+        event.provenance.type === "draw" &&
+        !event.provenance.exhausted &&
+        state.wall.head > state.wall.tail,
       lastAcquisition: provenanceAcquisition(state, event.provenance),
       replacementChainDepth: 0,
       replacementPending: false,

@@ -35,6 +35,11 @@ import {
   type CanonicalPlayerStateV1,
   type CanonicalPlayerStateV2,
 } from "./game-state.js";
+import {
+  expectedPendingCompletion,
+  scoreReactionWinCandidate,
+  scoreSelfWinCandidate,
+} from "./win-resolution.js";
 
 export function decideGameCommand(
   state: CanonicalGameStateV1,
@@ -186,10 +191,30 @@ export function decideGameCommandV2(
       },
     ]);
   }
-  return rejected(
-    "win-validation-unavailable",
-    "Winning declarations require the integrated scorer.",
-  );
+  const result = scoreSelfWinCandidate(state, player.seat);
+  if (result === null) {
+    return rejected(
+      "win-not-allowed",
+      "The hand is not a legal three-faan win.",
+    );
+  }
+  const declared = {
+    type: "game/self-win-declared" as const,
+    sequence: state.sequence + 1,
+    seat: player.seat,
+  };
+  const pending = reduceVersionedGameEvent(state, declared);
+  if (!isCanonicalGameStateV2(pending)) {
+    throw new Error("A v2 win declaration produced legacy state.");
+  }
+  return accepted([
+    declared,
+    {
+      type: "game/hand-completed",
+      sequence: declared.sequence + 1,
+      result: expectedPendingCompletion(pending),
+    },
+  ]);
 }
 
 function decideLegacyCommandBatch(
@@ -287,12 +312,13 @@ function decideReaction(
     return rejected("reaction-final", "The first valid response is final.");
   }
   if (command.response.type === "win") {
-    return rejected(
-      "win-validation-unavailable",
-      "Winning declarations require the integrated scorer.",
-    );
-  }
-  if (!isLegalReaction(state, player.seat, command.response)) {
+    if (scoreReactionWinCandidate(state, player.seat) === null) {
+      return rejected(
+        "win-not-allowed",
+        "The claimed tile does not complete a legal three-faan win.",
+      );
+    }
+  } else if (!isLegalReaction(state, player.seat, command.response)) {
     return rejected(
       "illegal-reaction",
       "That exact physical reaction is not legal in this window.",
@@ -302,7 +328,10 @@ function decideReaction(
     type: "game/reaction-intent-submitted",
     sequence: state.sequence + 1,
     actorId: player.actorId,
-    response: command.response,
+    response:
+      command.response.type === "win"
+        ? { type: "win", structurallyEligible: true }
+        : command.response,
     seat: player.seat,
     windowId: window.id,
   };
@@ -352,12 +381,20 @@ function createResolutionEvents(
     windowId: window.id,
   };
   const afterResolved = reduceVersionedGameEvent(state, resolved);
-  if (
-    !isCanonicalGameStateV2(afterResolved) ||
-    !afterResolved.turnProvenance.replacementPending
-  ) {
-    return [resolved];
+  if (!isCanonicalGameStateV2(afterResolved)) {
+    throw new Error("A v2 resolution produced legacy state.");
   }
+  if (afterResolved.phase === "pending-win-validation") {
+    return [
+      resolved,
+      {
+        type: "game/hand-completed",
+        sequence: resolved.sequence + 1,
+        result: expectedPendingCompletion(afterResolved),
+      },
+    ];
+  }
+  if (!afterResolved.turnProvenance.replacementPending) return [resolved];
   const replacement = replacementFromTail(afterResolved);
   return [
     resolved,

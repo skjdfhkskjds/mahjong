@@ -2,11 +2,11 @@
 
 ## Owns
 
-The project-defined, accepted Hong Kong rules profile and its pure implementation. The canonical schema-v2 surface includes physical tiles, deterministic shuffle from explicit random bytes, dealer selection, the initial deal, recursive bonus replacement, draw/discard decisions, private reaction intentions, chow/pung/kong claims, every kong form, replay, viewer projections, and invariants.
+The project-defined, accepted Hong Kong rules profile and its pure implementation. The canonical schema-v2 surface includes physical tiles, deterministic shuffle from explicit random bytes, dealer selection, the initial deal, recursive bonus replacement, draw/discard decisions, private reaction intentions, chow/pung/kong claims, every kong form, winning-hand decomposition, Hong Kong scoring and payments, single-winner resolution, replay, viewer projections, and invariants.
 
 ## Does not own
 
-Discord, Cloudflare, storage, networking, UI, room membership, table access, operational timeout policy, scoring, or match progression. Structurally eligible wins are authority-only until the scorer can enforce the minimum and produce payments.
+Discord, Cloudflare, storage, networking, UI, room membership, table access, operational timeout policy, or match progression.
 
 ## Dependencies
 
@@ -27,3 +27,4 @@ Only `@mahjong/rules-hong-kong` is public. Consumers may not deep-import impleme
 - Historical schema-v1 state and event bytes retain strict decoding and replay. The existing unversioned starter and command surface remain schema v1 for deployed callers; new integrations opt into schema v2 explicitly and upgrade verified v1 histories only through a deterministic event.
 - Public melds preserve exact physical IDs and provenance; kongs count as three structural tiles despite containing four physical tiles.
 - Projections expose a player's own hand/actions, public bonuses, discards and melds, and concealed counts without exposing opponents' hands, intentions, eligibility, or the wall.
+- Win actions are exposed only after the integrated scorer proves the three-faan minimum. Accepted wins end in one replayable scored result, and projections never expose losing candidates or their scores.

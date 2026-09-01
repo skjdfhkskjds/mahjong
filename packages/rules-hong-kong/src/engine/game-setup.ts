@@ -68,10 +68,13 @@ export function startHongKongV2Game(
     playerAt(acquired, assignedSeat).push(id);
   }
   let exhausted = false;
+  let eastLastReplacementTileId: TileId | null = null;
   for (const currentSeat of seats) {
     for (const dealtId of playerAt(acquired, currentSeat)) {
       let id: TileId | undefined = dealtId;
+      let replacementRequired = false;
       while (id !== undefined && isBonusTile(id)) {
+        replacementRequired = true;
         playerAt(mutable, currentSeat).bonuses.push(id);
         if (head > tail) {
           id = undefined;
@@ -81,11 +84,17 @@ export function startHongKongV2Game(
           tail -= 1;
         }
       }
-      if (id !== undefined) playerAt(mutable, currentSeat).hand.push(id);
+      if (id !== undefined) {
+        playerAt(mutable, currentSeat).hand.push(id);
+        if (currentSeat === seat("east") && replacementRequired) {
+          eastLastReplacementTileId = id;
+        }
+      }
     }
   }
   const eastHand = mutable.east.hand;
   const state: CanonicalGameStateV2 = {
+    completionProvenance: null,
     phase: exhausted ? "exhausted" : "awaiting-dealer-discard",
     players: mutable,
     prevailingWind: "east",
@@ -99,8 +108,10 @@ export function startHongKongV2Game(
     turnProvenance: {
       eastHasDeclaredKong: false,
       eastHasDiscarded: false,
-      lastAcquiredTileId: eastHand.at(-1) ?? null,
-      lastAcquisition: "deal",
+      lastAcquiredTileId: eastLastReplacementTileId ?? eastHand.at(-1) ?? null,
+      lastAcquiredTileWasFinalWall: false,
+      lastAcquisition:
+        eastLastReplacementTileId === null ? "deal" : "bonus-replacement",
       replacementChainDepth: 0,
       replacementPending: false,
     },

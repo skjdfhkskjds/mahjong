@@ -137,7 +137,7 @@ describe("Hong Kong winning-hand decomposition", () => {
         concealed: "c1 c2 c3 c4 c5 c6 o1 o2 o3 b7 b8 b9 R R",
         conditions: { wallPosition: "final-wall-tile" },
       }),
-    ).toThrow("must be self-picked");
+    ).toThrow("cannot be an ordinary discard");
     expect(() =>
       scoringFixture({
         concealed: "c1 c2 c3 c4 c5 c6 o1 o2 o3 b7 b8 b9 R R",

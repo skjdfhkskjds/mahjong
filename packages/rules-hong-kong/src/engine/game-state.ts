@@ -1,6 +1,7 @@
 import type { Seat, TileId } from "@mahjong/game-core";
 
 import type { DeclaredMeld } from "../melds/meld.js";
+import type { CompletedHandResult } from "./win-resolution.js";
 import type { HONG_KONG_V1_SHUFFLE_ALGORITHM } from "../wall/deterministic-shuffle.js";
 
 export type LegacyGamePhase =
@@ -95,6 +96,8 @@ interface ReactionWindowBase {
   readonly kind: ReactionKind;
   readonly openingSequence: number;
   readonly responderOrder: readonly [Seat, Seat, Seat];
+  readonly sourceIsOpeningEastDiscard: boolean;
+  readonly sourceLastCatch: boolean;
   readonly sourceSeat: Seat;
   readonly sourceTileId: TileId;
 }
@@ -114,17 +117,43 @@ export interface TurnProvenance {
   readonly eastHasDiscarded: boolean;
   readonly eastHasDeclaredKong: boolean;
   readonly lastAcquiredTileId: TileId | null;
-  readonly lastAcquisition: "deal" | "draw" | "replacement" | null;
+  readonly lastAcquiredTileWasFinalWall: boolean;
+  readonly lastAcquisition:
+    "bonus-replacement" | "deal" | "draw" | "kong-replacement" | null;
   readonly replacementChainDepth: number;
   readonly replacementPending: boolean;
 }
 
+export type CompletionProvenance =
+  | {
+      readonly acquiredTileWasFinalWall: boolean;
+      readonly eastHadDeclaredKong: boolean;
+      readonly eastHadDiscarded: boolean;
+      readonly kind: "self-pick";
+      readonly kongReplacementChainDepth: number;
+      readonly lastAcquisition: Exclude<
+        TurnProvenance["lastAcquisition"],
+        null
+      >;
+      readonly winnerSeat: Seat;
+      readonly winningTileId: TileId;
+    }
+  | {
+      readonly kind: "discard" | "robbing-kong";
+      readonly sourceIsOpeningEastDiscard: boolean;
+      readonly sourceLastCatch: boolean;
+      readonly sourceSeat: Seat;
+      readonly winnerSeat: Seat;
+      readonly winningTileId: TileId;
+    };
+
 export interface CanonicalGameStateV2 {
+  readonly completionProvenance: CompletionProvenance | null;
   readonly phase: GamePhase;
   readonly players: SeatMap<CanonicalPlayerStateV2>;
   readonly prevailingWind: "east";
   readonly reactionWindow: ReactionWindow | null;
-  readonly result: null;
+  readonly result: CompletedHandResult | null;
   readonly ruleset: "hong-kong/v1";
   readonly schemaVersion: 2;
   readonly sequence: number;

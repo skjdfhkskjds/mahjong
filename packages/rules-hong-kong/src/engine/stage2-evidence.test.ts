@@ -387,7 +387,7 @@ describe("stage 2 compatibility and invariant evidence", () => {
 
   it.each([
     ["ordinary draw", false, "draw"],
-    ["bonus replacement", true, "replacement"],
+    ["bonus replacement", true, "bonus-replacement"],
   ] as const)(
     "derives exact upgrade provenance from an awaiting-discard %s",
     (_name, replacement, acquisition) => {
@@ -535,7 +535,7 @@ describe("stage 2 compatibility and invariant evidence", () => {
     }
     const replacementState = replaced.state;
     expect(replacementState.turnProvenance).toMatchObject({
-      lastAcquisition: "replacement",
+      lastAcquisition: "kong-replacement",
       replacementChainDepth: 1,
       replacementPending: false,
     });
@@ -677,7 +677,7 @@ describe("stage 2 claims, kong, and replay evidence", () => {
     );
     expect(state.turnProvenance).toMatchObject({
       eastHasDeclaredKong: true,
-      lastAcquisition: "replacement",
+      lastAcquisition: "kong-replacement",
       replacementChainDepth: 1,
       replacementPending: false,
     });
@@ -810,8 +810,8 @@ describe("stage 2 claims, kong, and replay evidence", () => {
     }
     expect(state.players.east.melds).toHaveLength(2);
     expect(state.turnProvenance).toMatchObject({
-      lastAcquisition: "replacement",
-      replacementChainDepth: 2,
+      lastAcquisition: "kong-replacement",
+      replacementChainDepth: 1,
       replacementPending: false,
     });
     expect(events.map((event) => event.type)).toEqual([
@@ -822,7 +822,7 @@ describe("stage 2 claims, kong, and replay evidence", () => {
     ]);
   });
 
-  it("freezes a provisional robbed-added-kong outcome pending validation", () => {
+  it("keeps provisional scored-win validation implementation-only", () => {
     const westWinningWait = [
       0, 8, 36, 37, 38, 40, 41, 42, 44, 45, 46, 108, 109,
     ] as const;
@@ -908,9 +908,17 @@ describe("stage 2 claims, kong, and replay evidence", () => {
     expect(reduced.players.south.melds[0]).toEqual(pung);
     expect(reduced.players.south.hand).toContain(7);
     expect(reduced.players.west.hand).not.toContain(7);
-    const frozenView = projectGameV2(reduced, reduced.players.west.actorId);
-    expect(frozenView.reaction).toBeUndefined();
-    expect(frozenView.viewerActions?.reaction).toBeUndefined();
+    expect(() => projectGameV2(reduced, reduced.players.west.actorId)).toThrow(
+      /implementation-only/iu,
+    );
+    expect(() => canonicalGameJson(reduced)).toThrow(/implementation-only/iu);
+    const completion = resolution.events[1];
+    if (completion?.type !== "game/hand-completed") {
+      throw new Error("Rob resolution omitted scored completion.");
+    }
+    expectVersionedRoundTrip(completion);
+    const complete = reduceVersionedGameEvent(reduced, completion);
+    expect(complete).toMatchObject({ phase: "complete" });
     expect(decideReactionExpiration(reduced)).toMatchObject({
       accepted: false,
       error: { code: "no-reaction-window" },

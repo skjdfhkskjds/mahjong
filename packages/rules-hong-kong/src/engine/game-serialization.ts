@@ -34,14 +34,24 @@ export function canonicalVersionedGameJson(
   state: VersionedCanonicalGameState,
 ): string {
   assertGameInvariants(state);
+  if (state.schemaVersion === 2 && state.phase === "pending-win-validation") {
+    throw new Error("Implementation-only win validation is not deployable.");
+  }
   return canonicalJson(state);
 }
 
 export function decodeCanonicalVersionedGameJson(
   value: string,
 ): VersionedCanonicalGameState {
+  // This closed codec validates canonical shape and internal rules coherence.
+  // Event-chain authenticity requires replay/checkpoint verification by the
+  // persistence boundary; alternate coherent histories cannot be identified
+  // from standalone state bytes.
   const parsed = JSON.parse(value) as unknown;
   assertGameInvariants(parsed);
+  if (parsed.schemaVersion === 2 && parsed.phase === "pending-win-validation") {
+    throw new Error("Implementation-only win validation is not deployable.");
+  }
   if (canonicalVersionedGameJson(parsed) !== value) {
     throw new Error("Canonical versioned game state bytes are not canonical.");
   }

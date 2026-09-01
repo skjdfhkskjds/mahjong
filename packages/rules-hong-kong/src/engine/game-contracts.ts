@@ -14,6 +14,7 @@ import type {
   ReactionResponse,
   ReactionWindow,
 } from "./game-state.js";
+import type { CompletedHandResult } from "./win-resolution.js";
 
 export interface StartedEventV1 {
   readonly type: "game/started";
@@ -136,6 +137,18 @@ export interface KongReplacementDrawnEvent {
   readonly tileIds: readonly TileId[];
 }
 
+export interface SelfWinDeclaredEvent {
+  readonly type: "game/self-win-declared";
+  readonly sequence: number;
+  readonly seat: Seat;
+}
+
+export interface HandCompletedEvent {
+  readonly type: "game/hand-completed";
+  readonly sequence: number;
+  readonly result: CompletedHandResult;
+}
+
 /** The deployed schema-v1 event contract. Keep strict for historical bytes. */
 export type HongKongGameEvent =
   DrawnEvent | ExhaustedEvent | LegacyDiscardedEvent | StartedEventV1;
@@ -146,9 +159,11 @@ export type HongKongGameEventV2 =
   | DiscardReactionOpenedEvent
   | DrawnEvent
   | ExhaustedEvent
+  | HandCompletedEvent
   | KongReplacementDrawnEvent
   | ReactionIntentSubmittedEvent
   | ReactionResolvedEvent
+  | SelfWinDeclaredEvent
   | StartedEventV2;
 
 export type VersionedHongKongGameEvent =
@@ -209,10 +224,7 @@ export interface PublicMeld {
   readonly sourceSeat?: Seat;
 }
 
-export type PublicReactionAction = Exclude<
-  ReactionResponse,
-  { readonly type: "win" }
->;
+export type PublicReactionAction = PlayerReactionResponse;
 
 export interface GameView {
   readonly phase:
@@ -232,7 +244,7 @@ export interface GameView {
 }
 
 export interface GameViewV2 {
-  readonly phase: GamePhase;
+  readonly phase: Exclude<GamePhase, "pending-win-validation">;
   readonly players: readonly {
     readonly bonuses: readonly PublicTile[];
     readonly concealedCount: number;
@@ -248,6 +260,7 @@ export interface GameViewV2 {
     readonly windowId: string;
   };
   readonly turn: Seat;
+  readonly result?: CompletedHandResult;
   readonly viewerActions?: {
     readonly reaction?: {
       readonly actions: readonly PublicReactionAction[];

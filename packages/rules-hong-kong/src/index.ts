@@ -8,6 +8,7 @@ export { initialDealSeatOrder } from "./setup/initial-deal.js";
 export {
   applyGameCommand,
   applyGameCommandV2,
+  assertVersionedCheckpointMatchesReplay,
   assertGameInvariants,
   canonicalEventHashPayload,
   canonicalGameEventJson,
@@ -41,11 +42,13 @@ export type {
   CanonicalPlayerState,
   CanonicalPlayerStateV1,
   CanonicalPlayerStateV2,
+  CompletionProvenance,
   GameDecision,
   GameDecisionV2,
   GamePhase,
   GameView,
   GameViewV2,
+  HandCompletedEvent,
   HongKongGameCommand,
   HongKongGameCommandV2,
   HongKongGameEvent,
@@ -58,9 +61,20 @@ export type {
   ReactionResponse,
   ReactionWindow,
   SeatMap,
+  SelfWinDeclaredEvent,
   StateUpgradedEvent,
   VersionedHongKongGameEvent,
   VersionedCanonicalGameState,
+} from "./engine/draw-discard-game.js";
+export type {
+  CompletedHandResult,
+  WinningPhysicalHand,
+} from "./engine/draw-discard-game.js";
+export {
+  assertCompletedHandResult,
+  resolveScoredReactionWinner,
+  scoreReactionWinCandidate,
+  scoreSelfWinCandidate,
 } from "./engine/draw-discard-game.js";
 export {
   isLegalReaction,
@@ -90,6 +104,44 @@ export type {
   MeldExposure,
   MeldKind,
 } from "./melds/meld.js";
+export {
+  awardPatterns,
+  patternSuppressionGraph,
+  validatePatternInteractionGraph,
+} from "./scoring/award-patterns.js";
+export type {
+  PatternAwards,
+  PatternSuppressionEdge,
+  SuppressedPattern,
+} from "./scoring/award-patterns.js";
+export { decomposeWinningHand } from "./scoring/decompose-hand.js";
+export type {
+  HandDecomposition,
+  ScoringMeld,
+} from "./scoring/decompose-hand.js";
+export { detectPatterns, patternCatalog } from "./scoring/detect-patterns.js";
+export type {
+  DetectedPattern,
+  PatternCategory,
+  PatternId,
+} from "./scoring/detect-patterns.js";
+export {
+  createScoringHandFixture,
+  scoringTileId,
+} from "./scoring/hand-fixture.js";
+export type {
+  ScoringHandFixture,
+  ScoringHandFixtureInput,
+  WinningConditions,
+  WinningTileSource,
+} from "./scoring/hand-fixture.js";
+export { calculatePayments, halfSpicyPoints } from "./scoring/payments.js";
+export type { SeatPayments } from "./scoring/payments.js";
+export { scoreDecomposition, scoreHongKongHand } from "./scoring/score-hand.js";
+export type {
+  HongKongHandScore,
+  ScoredDecomposition,
+} from "./scoring/score-hand.js";
 export { bonusTileKinds, flowers, seasons } from "./tiles/bonus-tile-kind.js";
 export type { BonusTileKind, Flower, Season } from "./tiles/bonus-tile-kind.js";
 export type { HongKongTileKind } from "./tiles/hong-kong-tile-kind.js";

@@ -2,7 +2,6 @@ import { seat, seats, type Seat, type TileId } from "@mahjong/game-core";
 import { describe, expect, it } from "vitest";
 
 import { legalReactionsForSeat } from "../claims/legal-reactions.js";
-import { normalizeReactionWindow } from "../claims/reaction-resolution.js";
 import type { ReactionResponse, SeatMap } from "./game-state.js";
 import {
   applyGameCommandV2 as applyGameCommand,
@@ -424,7 +423,7 @@ describe("canonical schema-v2 claims and kongs", () => {
     assertGameInvariants(state);
   });
 
-  it("models a structurally eligible rob internally without exposing a deployable win", () => {
+  it("offers and completes a scored robbing-kong win", () => {
     const westWinningWait = [
       0, 8, 36, 37, 38, 40, 41, 42, 44, 45, 46, 108, 109,
     ] as const;
@@ -468,32 +467,32 @@ describe("canonical schema-v2 claims and kongs", () => {
     expect(
       projectGame(state, state.players.west.actorId).viewerActions?.reaction
         ?.actions,
-    ).not.toContainEqual(expect.objectContaining({ type: "win" }));
-    expect(
-      applyGameCommand(state, state.players.west.actorId, {
-        type: "game/react",
-        response: { type: "win" },
-        windowId: state.reactionWindow?.id ?? "missing",
-      }),
-    ).toMatchObject({
-      accepted: false,
-      error: { code: "win-validation-unavailable" },
+    ).toContainEqual({ type: "win" });
+    const won = applyGameCommand(state, state.players.west.actorId, {
+      type: "game/react",
+      response: { type: "win" },
+      windowId: state.reactionWindow?.id ?? "missing",
     });
-    if (state.reactionWindow === null)
-      throw new Error("Rob window disappeared.");
-    state = reduceGameEvent(state, {
-      type: "game/reaction-intent-submitted",
-      sequence: state.sequence + 1,
-      actorId: state.players.west.actorId,
-      response: { type: "win", structurallyEligible: true },
-      seat: seat("west"),
-      windowId: state.reactionWindow.id,
-    }) as CanonicalGameStateV2;
-    if (state.reactionWindow === null)
-      throw new Error("Rob window disappeared.");
-    expect(
-      normalizeReactionWindow(state, state.reactionWindow).outcome,
-    ).toEqual({ type: "structural-win", seats: ["west"] });
+    expect(won).toMatchObject({ accepted: true });
+    if (!won.accepted || won.state === undefined)
+      throw new Error("Rob failed.");
+    expect(won.events.map((event) => event.type)).toEqual([
+      "game/reaction-intent-submitted",
+    ]);
+    state = won.state;
+    const resolved = decideReactionExpiration(state);
+    if (!resolved.accepted) throw new Error("Rob resolution failed.");
+    expect(resolved.events.map((event) => event.type)).toEqual([
+      "game/reaction-resolved",
+      "game/hand-completed",
+    ]);
+    for (const event of resolved.events) {
+      state = reduceGameEvent(state, event) as CanonicalGameStateV2;
+    }
+    expect(state).toMatchObject({ phase: "complete" });
+    expect(state.players.south.melds[0]).toMatchObject({ kind: "pung" });
+    expect(state.players.south.hand).not.toContain(7);
+    expect(state.players.west.hand).toContain(7);
   });
 
   it("recurses through bonus tiles for a kong replacement", () => {

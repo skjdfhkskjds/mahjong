@@ -19,6 +19,10 @@ import {
   type CanonicalGameStateV1,
   type CanonicalGameStateV2,
 } from "./game-state.js";
+import {
+  scoreReactionWinCandidate,
+  scoreSelfWinCandidate,
+} from "./win-resolution.js";
 
 export type {
   GameView,
@@ -38,12 +42,14 @@ export function projectGameV2(
   state: CanonicalGameStateV2,
   viewerActorId: string,
 ): GameViewV2 {
+  if (state.phase === "pending-win-validation") {
+    throw new Error("Implementation-only win validation cannot be projected.");
+  }
   const viewer = seats
     .map((currentSeat) => playerAt(state.players, currentSeat))
     .find(({ actorId }) => actorId === viewerActorId);
   const publicTile = (id: TileId): PublicTile => ({ id, kind: tileKind(id) });
-  const reaction =
-    state.phase === "pending-win-validation" ? null : state.reactionWindow;
+  const reaction = state.reactionWindow;
   const ownIntent =
     reaction === null ||
     viewer === undefined ||
@@ -88,6 +94,7 @@ export function projectGameV2(
           },
         }),
     turn: state.turn,
+    ...(state.result === null ? {} : { result: state.result }),
     ...(viewer === undefined
       ? {}
       : {
@@ -97,10 +104,7 @@ export function projectGameV2(
                   reaction: {
                     actions:
                       ownIntent === undefined
-                        ? legalReactionsForSeat(state, viewer.seat).filter(
-                            (action): action is PublicReactionAction =>
-                              action.type !== "win",
-                          )
+                        ? legalViewerReactions(state, viewer.seat)
                         : [],
                     status:
                       ownIntent === undefined
@@ -187,5 +191,21 @@ function legalSelfActions(
       tileId,
     })),
   );
+  if (scoreSelfWinCandidate(state, viewerSeat) !== null) {
+    actions.push({ type: "game/declare-win" });
+  }
+  return actions;
+}
+
+function legalViewerReactions(
+  state: CanonicalGameStateV2,
+  viewerSeat: Seat,
+): readonly PublicReactionAction[] {
+  const actions: PublicReactionAction[] = [
+    ...legalReactionsForSeat(state, viewerSeat),
+  ];
+  if (scoreReactionWinCandidate(state, viewerSeat) !== null) {
+    actions.push({ type: "win" });
+  }
   return actions;
 }

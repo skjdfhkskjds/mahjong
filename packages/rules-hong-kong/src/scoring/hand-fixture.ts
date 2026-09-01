@@ -244,9 +244,11 @@ export function createScoringHandFixture(
   }
   if (
     fixture.winningConditions.wallPosition === "final-wall-tile" &&
-    fixture.winningTileSource.type !== "self-pick"
+    fixture.winningTileSource.type === "discard"
   ) {
-    throw new RangeError("The final wall tile itself must be self-picked.");
+    throw new RangeError(
+      "The final wall tile itself cannot be an ordinary discard.",
+    );
   }
   if (
     fixture.winningConditions.wallPosition ===
