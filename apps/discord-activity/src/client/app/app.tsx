@@ -5,6 +5,7 @@ import { HttpActivityApi } from "../adapters/transport/activity-api-client.js";
 import {
   createTableSocketUrl,
   ReconnectingSocketStatusMonitor,
+  TABLE_PROTOCOL_VERSION,
   type TableCommandEnvelope,
   type TableReceipt,
   type ViewerSafeTableSnapshot,
@@ -16,6 +17,16 @@ import {
   type ClientStartupStatus,
   type StartupCheck,
 } from "../features/startup/client-startup.js";
+import {
+  GamePanel,
+  TableCommandButton,
+} from "../features/gameplay/game-panel.js";
+
+export {
+  GamePanel,
+  reactionSubmissionPending,
+  TableCommandButton,
+} from "../features/gameplay/game-panel.js";
 
 interface AppProps {
   readonly config: RuntimeConfig;
@@ -69,7 +80,7 @@ function LobbyPanel({
 }: {
   readonly connected: boolean;
   readonly latestReceipt: TableReceipt | undefined;
-  readonly onCommand: (command: TableCommandEnvelope["command"]) => void;
+  readonly onCommand: (command: TableCommandEnvelope["command"]) => boolean;
   readonly snapshot: ViewerSafeTableSnapshot | undefined;
 }) {
   const viewer = snapshot?.view.viewer;
@@ -165,15 +176,14 @@ function LobbyPanel({
           snapshot.view.seats.every(
             ({ occupant, ready }) => occupant !== null && ready,
           ) ? (
-            <button
+            <TableCommandButton
               className="lobby-button game-start-button"
+              command={{ type: "game/start" }}
               disabled={!connected}
-              onClick={() => {
-                onCommand({ type: "game/start" });
-              }}
+              onCommand={onCommand}
             >
               Start hand
-            </button>
+            </TableCommandButton>
           ) : null}
 
           <div className="spectator-list">
@@ -192,130 +202,6 @@ function LobbyPanel({
       ) : (
         <p className="lobby-placeholder" role="status">
           The lobby will appear after the table sends a viewer-safe snapshot.
-        </p>
-      )}
-    </section>
-  );
-}
-
-function tileLabel(tile: {
-  readonly id: number;
-  readonly kind: Readonly<Record<string, unknown>>;
-}): string {
-  const kind = tile.kind;
-  if (kind["type"] === "suited") {
-    return `${String(kind["rank"])} ${String(kind["suit"])}`;
-  }
-  if (kind["type"] === "wind") return `${String(kind["wind"])} wind`;
-  if (kind["type"] === "dragon") return `${String(kind["dragon"])} dragon`;
-  const name = kind["name"];
-  return typeof name === "string" ? name : "bonus";
-}
-
-export function GamePanel({
-  connected,
-  latestReceipt,
-  onCommand,
-  snapshot,
-}: {
-  readonly connected: boolean;
-  readonly latestReceipt: TableReceipt | undefined;
-  readonly onCommand: (command: TableCommandEnvelope["command"]) => void;
-  readonly snapshot: ViewerSafeTableSnapshot;
-}) {
-  const game = snapshot.view.game;
-  if (game === undefined) return null;
-  const viewer = snapshot.view.viewer;
-  const isTurn = viewer.role === "player" && viewer.seat === game.turn;
-  const canDraw = isTurn && game.phase === "awaiting-draw";
-  const canDiscard =
-    isTurn &&
-    (game.phase === "awaiting-discard" ||
-      game.phase === "awaiting-dealer-discard");
-  const rejected = latestReceipt?.outcome === "rejected" ? latestReceipt : null;
-  return (
-    <section aria-labelledby="game-title" className="panel game-panel">
-      <div className="panel__heading">
-        <div>
-          <p className="section-kicker">
-            Live hand · wall {game.wallRemaining}
-          </p>
-          <h2 id="game-title">
-            {game.phase === "exhausted"
-              ? "The wall is exhausted"
-              : `${game.turn} to ${game.phase === "awaiting-draw" ? "draw" : "discard"}`}
-          </h2>
-        </div>
-        {canDraw ? (
-          <button
-            className="lobby-button draw-button"
-            disabled={!connected}
-            onClick={() => {
-              onCommand({ type: "game/draw" });
-            }}
-          >
-            Draw tile
-          </button>
-        ) : null}
-      </div>
-      {rejected ? (
-        <p className="command-error" role="alert">
-          {rejected.error?.message ?? "The table rejected that game action."}
-        </p>
-      ) : null}
-      <ol className="game-players" aria-label="Public table state">
-        {game.players.map((player) => (
-          <li key={player.seat}>
-            <strong>{player.seat}</strong>
-            <span>{player.concealedCount} concealed</span>
-            <span>{player.bonuses.length} bonuses</span>
-            <span>{player.discards.length} discards</span>
-            {player.bonuses.length > 0 ? (
-              <ul
-                className="public-tiles"
-                aria-label={`${player.seat} exposed bonuses`}
-              >
-                {player.bonuses.map((tile) => (
-                  <li key={tile.id}>{tileLabel(tile)}</li>
-                ))}
-              </ul>
-            ) : null}
-            {player.discards.length > 0 ? (
-              <ul
-                className="public-tiles"
-                aria-label={`${player.seat} discards`}
-              >
-                {player.discards.map((tile) => (
-                  <li key={tile.id}>{tileLabel(tile)}</li>
-                ))}
-              </ul>
-            ) : null}
-          </li>
-        ))}
-      </ol>
-      {game.viewerHand ? (
-        <div className="private-hand">
-          <h3>Your private hand</h3>
-          <ul aria-label="Your concealed tiles">
-            {game.viewerHand.map((tile) => (
-              <li key={tile.id}>
-                <button
-                  aria-label={`Discard ${tileLabel(tile)}`}
-                  disabled={!connected || !canDiscard}
-                  onClick={() => {
-                    onCommand({ type: "game/discard", tileId: tile.id });
-                  }}
-                >
-                  <span>{tileLabel(tile)}</span>
-                  <small>#{tile.id}</small>
-                </button>
-              </li>
-            ))}
-          </ul>
-        </div>
-      ) : (
-        <p className="privacy-note">
-          Spectators receive public tiles and concealed counts only.
         </p>
       )}
     </section>
@@ -354,23 +240,27 @@ export function App({ config }: AppProps) {
   const snapshot = status.tableSnapshot;
   const lobbyConnected = status.complete && snapshot !== undefined;
 
-  const sendLobbyCommand = (command: TableCommandEnvelope["command"]): void => {
+  const sendLobbyCommand = (
+    command: TableCommandEnvelope["command"],
+  ): boolean => {
     if (!lobbyConnected) {
-      return;
+      return false;
     }
     try {
       dependencies.socket.sendCommand({
         type: "table/command",
-        protocolVersion: 1,
+        protocolVersion: TABLE_PROTOCOL_VERSION,
         commandId: crypto.randomUUID(),
         expectedStateVersion: snapshot.stateVersion,
         command,
-      } as TableCommandEnvelope);
+      });
       setCommandFailure(undefined);
+      return true;
     } catch (error) {
       setCommandFailure(
         error instanceof Error ? error.message : "Unable to send table action.",
       );
+      return false;
     }
   };
 
@@ -392,7 +282,18 @@ export function App({ config }: AppProps) {
       </header>
 
       <main>
-        {snapshot?.view.phase === "lobby" ? (
+        {snapshot?.view.phase === "abandoned" &&
+        snapshot.view.game === undefined ? (
+          <section
+            className="panel lobby-panel"
+            aria-labelledby="abandoned-title"
+          >
+            <p className="section-kicker">Table closed</p>
+            <h2 id="abandoned-title">
+              This table was abandoned after everyone disconnected.
+            </h2>
+          </section>
+        ) : snapshot?.view.phase === "lobby" ? (
           <LobbyPanel
             connected={lobbyConnected}
             latestReceipt={status.latestReceipt}

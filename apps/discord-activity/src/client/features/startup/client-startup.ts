@@ -103,6 +103,11 @@ function socketCheck(status: SocketStatus): StartupCheck {
         state: "failed",
         detail: "The table sent an invalid or unsupported snapshot.",
       };
+    case "upgrade-required":
+      return {
+        state: "failed",
+        detail: "This client must be refreshed to use gameplay protocol v2.",
+      };
     case "stopped":
       return { state: "warning", detail: "Table connection stopped." };
   }
@@ -224,7 +229,8 @@ export function startClientStartup({
       stopSocket = socket.start((socketStatus) => {
         const terminalSession =
           socketStatus.state === "session-replaced" ||
-          socketStatus.state === "authentication-required";
+          socketStatus.state === "authentication-required" ||
+          socketStatus.state === "upgrade-required";
         publish({
           complete:
             socketStatus.state === "connected" &&
@@ -244,7 +250,9 @@ export function startClientStartup({
                   detail:
                     socketStatus.state === "session-replaced"
                       ? "This session was replaced. Authenticate again."
-                      : "Table authorization expired or changed. Authenticate again.",
+                      : socketStatus.state === "upgrade-required"
+                        ? "This client must be refreshed for gameplay protocol v2."
+                        : "Table authorization expired or changed. Authenticate again.",
                 },
               }
             : {}),
