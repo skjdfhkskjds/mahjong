@@ -1,6 +1,6 @@
 # Implementation roadmap
 
-Last reviewed: 2026-08-23
+Last reviewed: 2026-09-01
 
 ## Goal and release boundary
 
@@ -227,17 +227,27 @@ Evidence:
 
 ## Milestone 5 — Claims, kongs, and deadlines
 
-Status: not started
+Status: not started — rules and implementation plan accepted 2026-09-01
 
-Rules gate: claim priority, tie-breaking, multiple winners, all kong forms, robbing behavior, passed-win behavior, and exhaustion boundaries must be accepted.
+Rules gate: accepted. Claim priority, highest-faan/nearest tie-breaking,
+single-winner behavior, all kong forms, added-kong robbing, no continuing
+passed-win restriction, and replacement exhaustion are fixed in the
+[decision register](rules/hong-kong-v1/decision-register.md).
+
+Implementation is coupled to Milestone 6 so a release never exposes a
+provisional win that cannot be authoritatively validated. The frozen sequence,
+schema/protocol migration, deadlines, delegation boundaries, and evidence are in
+the [Milestones 5–6 plan](implementation-plans/milestones-5-6.md).
 
 Deliverables:
 
 - Legal reaction calculation and private prompts.
-- Persisted reaction windows and player intents.
+- Canonical v2 reaction state with hash-linked authority-only intent events;
+  private submissions do not advance public room `stateVersion` or broadcast.
 - Deterministic resolution independent of arrival order.
 - Pass, chow, pung, kong, and provisional win intentions.
-- Alarm-backed turn, reaction, disconnect, and abandonment deadlines.
+- Alarm-backed 60-second connected turns, eight-second reactions, 15-second
+  zero-valid-socket autopilot grace, and recoverable 15-minute abandonment.
 - Explicit system commands for every timeout; alarm handlers never mutate game state directly.
 
 Exit criteria:
@@ -246,13 +256,19 @@ Exit criteria:
 - Higher-priority claims override earlier lower-priority submissions.
 - Timeout and alarm retry tests are idempotent immediately before, at, and after deadlines.
 - Kong replacement and robbing transitions conserve tiles.
-- Eviction during an open reaction window preserves all committed intents without disclosing them.
+- Eviction during an open reaction window preserves all committed intents and
+  verifies their canonical hashes without disclosing them.
 
 ## Milestone 6 — Winning hands and scoring
 
-Status: not started
+Status: not started — rules and implementation plan accepted 2026-09-01
 
-Rules gate: the pattern catalog, special hands, stacking/supersession graph, minimum fan, cap/limits, payments, and responsibility rules must be accepted.
+Rules gate: accepted. The finite pattern catalog, Seven Pairs and Thirteen
+Orphans, interaction/supersession graph, three-faan non-bonus minimum, 13-faan
+cap, Half Spicy conversion, discarder-pays-all, self-pick payments, and explicit
+exclusions are fixed in the
+[decision register](rules/hong-kong-v1/decision-register.md) and
+[Milestones 5–6 plan](implementation-plans/milestones-5-6.md).
 
 Deliverables:
 
@@ -337,13 +353,16 @@ Only after Hong Kong matches are reliable, add `rules-japanese` and a ruleset re
 
 Every completed milestone must link to automated tests or recorded manual evidence for each exit criterion. Across milestones, the recurring gates are determinism, idempotency, projection privacy, eviction recovery, persisted-fixture compatibility, and documented failure behavior.
 
-## Platform baseline verified on 2026-08-23
+## Platform baseline verified on 2026-09-01
 
 - Discord Activities remain iframe-hosted behind a proxy; WebSockets are supported and WebRTC is not.
 - Discord documents `SameSite=None` and `Partitioned` for Activity cookies and warns not to trust client-provided Discord data.
 - Discord exposes `instanceId` immediately after SDK construction and recommends backend Activity Instance verification.
 - Discord's current authentication flow still requires returning the exchanged short-lived access token to `discordSdk.commands.authenticate`; the application cookie is a separate credential.
 - Cloudflare recommends the Hibernation WebSocket API and SQLite-backed Durable Objects; one alarm per object requires a persisted deadline queue.
+- Cloudflare documents Durable Object alarms as at-least-once, with automatic
+  exponential retries, so Milestone 5 uses durable system-command receipts and
+  treats the platform alarm only as a wake-up signal.
 - The current Workers test integration package is `@cloudflare/vitest-plugin` (renamed from `@cloudflare/vitest-pool-workers` in August 2026).
 
 Re-check these claims against primary documentation at each platform milestone because platform behavior and package APIs can change.
