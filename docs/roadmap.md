@@ -227,7 +227,7 @@ Evidence:
 
 ## Milestone 5 — Claims, kongs, and deadlines
 
-Status: not started — rules and implementation plan accepted 2026-09-01
+Status: complete
 
 Rules gate: accepted. Claim priority, highest-faan/nearest tie-breaking,
 single-winner behavior, all kong forms, added-kong robbing, no continuing
@@ -259,9 +259,30 @@ Exit criteria:
 - Eviction during an open reaction window preserves all committed intents and
   verifies their canonical hashes without disclosing them.
 
+Evidence:
+
+- Canonical state v2 and batch-only command application enumerate exact
+  physical chow/pung/kong actions, normalize every responder in turn order, and
+  replay concealed, exposed, added, robbed, chained, bonus-chain, and exhausted
+  kong paths while conserving all 144 tiles.
+- Authority-only reaction-intent events advance canonical sequence, hash, and
+  checkpoint without advancing public `stateVersion`. The resolving response
+  persists its intent and normalized resolution in one transaction before a
+  viewer-safe broadcast. Actor/opponent/spectator noninterference survives
+  forced eviction and reconnect.
+- SQLite schema v4 owns validated deadlines and idempotent system receipts.
+  Workers-runtime fixtures cover the half-open deadline boundary, bounded
+  ordering, duplicate/late alarms, transaction rollback, stale generation,
+  reconnect cancellation, constructor alarm repair, immediate deterministic
+  autopilot, and recoverable abandonment without deletion.
+- Permanent fixtures `tests/fixtures/table-room-v1-schema.ts` and
+  `tests/fixtures/table-room-v3-active-v1-game.ts` prove the oldest room
+  migration root and an active canonical-v1 hash chain upgrade through schema
+  v4, including continued play after eviction.
+
 ## Milestone 6 — Winning hands and scoring
 
-Status: not started — rules and implementation plan accepted 2026-09-01
+Status: complete
 
 Rules gate: accepted. The finite pattern catalog, Seven Pairs and Thirteen
 Orphans, interaction/supersession graph, three-faan non-bonus minimum, 13-faan
@@ -286,6 +307,66 @@ Exit criteria:
 - Metamorphic tests preserve results across irrelevant tile-copy, ordering, and seat-rotation changes.
 - The server never offers an illegal win action.
 - Score explanations exactly reproduce payments.
+
+Evidence:
+
+- The compact scoring fixture DSL records physical tiles, declared meld
+  provenance, winner/source, winds, bonuses, wall position, replacement/kong
+  history, patterns, and payments. Fixtures cover every catalog entry and
+  near-miss, Seven Pairs' seven distinct kinds, Thirteen Orphans, invalid
+  provenance, and all implication/exclusion/supersession edges.
+- Ambiguous decompositions choose the highest legal capped score and use stable
+  pattern/decomposition tie-breaks. Metamorphic fixtures cover concealed order,
+  equivalent physical copies, and seat/wind/payment rotation.
+- The engine offers and accepts a win only after the non-bonus three-faan
+  minimum succeeds. It selects exactly one reaction winner by capped faan then
+  turn distance, independently verifies terminal provenance and payments on
+  replay, and rejects forged completions without a public transition.
+- Protocol v2 strictly decodes viewer-safe melds, legal actions, deadlines, and
+  score results; rejects version 1, unknown fields, duplicate visible IDs, and
+  incoherent private actions; cross-checks the terminal result against the
+  public winner's meld, bonus, and concealed-count projection plus the winner
+  viewer's hand; and renders all exact controls plus a reproducible zero-sum
+  explanation.
+
+Compatibility and release evidence:
+
+- Rules semantics change only `hong-kong/v1` behavior newly introduced by
+  Milestones 5–6; the accepted decisions, Worked Examples 2–6, and permanent
+  traceability fixtures define that compatibility promise.
+- Wire protocol changes from the historical v1 fixture to strict v2 with no
+  live dual-reader window. Client and Worker ship atomically from one deployment
+  using content-hashed assets; rollback restores both wire halves together.
+- Persisted room storage advances to schema v4 and canonical game state to v2.
+  Historical event hashes retain encoding v1, and upgrade is an explicit,
+  hash-linked event rather than reinterpretation. A code rollback must remain
+  schema-v4-aware or restore the complete pre-migration deployment and backup.
+- Privacy boundaries remain viewer-projected: no opponent action eligibility,
+  response status, losing score, concealed tile, canonical event/hash, wall
+  order, or raw deadline receipt crosses the live socket.
+- Deliberately excluded are multiple winners, passed-win lockout, false-win
+  penalties, instant bonus wins, immediate kong payments, pao, dealer
+  multipliers, alternate scoring tables, match balances/progression, next hand,
+  full loser reveal, archives/cleanup, AI players, matchmaking, Japanese rules,
+  collaborative entropy, and live hidden-event commitments.
+
+Local verification on 2026-09-01 covers 198 pure/domain tests, 53 client tests,
+and 155 Worker/Durable Object tests, plus formatting, lint, strict typechecks,
+boundaries, exports, and the production-style client/Worker build. The
+developer's ignored Discord-mode `.dev.vars` is intentionally excluded from
+release evidence; all 155 Worker tests pass with the committed mock
+configuration. Credentialed Discord proxy smoke remains Milestone 1 evidence
+and was not performed by this local release.
+
+The development-only viewer fixture was exercised in the in-app browser at
+1280×900 and 390×844. Across those viewport passes the real controls emitted
+exact protocol-v2 claim/kong/win command bodies, the structured result rendered
+awarded patterns and zero-sum payments, and reconnect preserved the result
+projection. Each viewport measured zero pixels of horizontal overflow and had
+no browser-console errors or warnings. A separate clean mock-mode Activity
+session claimed a seat, reloaded, opened a new real WebSocket, and
+resynchronized the same player at the same `stateVersion`. Production build
+inspection found no local fixture marker or fixture bytes.
 
 ## Milestone 7 — Match progression and history
 

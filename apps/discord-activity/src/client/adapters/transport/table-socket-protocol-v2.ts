@@ -460,6 +460,69 @@ function parseReactionAction(value: unknown): ReactionAction {
   throw new Error("Table game view has an invalid reaction action.");
 }
 
+function sameTileIds(
+  left: readonly number[],
+  right: readonly number[],
+): boolean {
+  const sortedLeft = [...left].sort((a, b) => a - b);
+  const sortedRight = [...right].sort((a, b) => a - b);
+  return (
+    sortedLeft.length === sortedRight.length &&
+    sortedLeft.every((id, index) => id === sortedRight[index])
+  );
+}
+
+function completedResultPublicMismatch(
+  result: CompletedHandResult,
+  players: GameView["players"],
+  viewerSeat: TableSeat | undefined,
+  viewerHand: readonly PublicTileView[] | undefined,
+): string | null {
+  const winner = players.find(({ seat }) => seat === result.winnerSeat);
+  if (winner === undefined) return "winner seat";
+  if (winner.concealedCount !== result.winningHand.concealedTileIds.length)
+    return "concealed count";
+  if (
+    !sameTileIds(
+      winner.bonuses.map(({ id }) => id),
+      result.winningHand.bonusTileIds,
+    )
+  )
+    return "bonus tiles";
+  if (winner.melds.length !== result.winningHand.declaredMelds.length)
+    return "meld count";
+  const publicMelds = new Map(winner.melds.map((meld) => [meld.id, meld]));
+  if (
+    result.winningHand.declaredMelds.some((meld) => {
+      const projected = publicMelds.get(meld.id);
+      if (projected === undefined) return true;
+      return (
+        projected.kind !== meld.kind ||
+        projected.exposure !== meld.exposure ||
+        projected.claimedTileId !== meld.claimedTileId ||
+        projected.kongKind !== meld.kongKind ||
+        projected.sourceSeat !== meld.sourceSeat ||
+        !sameTileIds(
+          projected.tileIds.map(({ id }) => id),
+          meld.tileIds,
+        )
+      );
+    })
+  ) {
+    return "meld provenance";
+  }
+  if (
+    viewerSeat === result.winnerSeat &&
+    (viewerHand === undefined ||
+      !sameTileIds(
+        viewerHand.map(({ id }) => id),
+        result.winningHand.concealedTileIds,
+      ))
+  )
+    return "winner hand";
+  return null;
+}
+
 function parseSelfAction(value: unknown): SelfTableCommand {
   if (!isRecord(value) || typeof value["type"] !== "string") {
     throw new Error("Table game view has an invalid self action.");
@@ -737,6 +800,15 @@ function parseGameView(
   ) {
     throw new Error(
       "Table snapshot game phase or private actions are incoherent.",
+    );
+  }
+  const resultMismatch =
+    result === undefined
+      ? null
+      : completedResultPublicMismatch(result, players, viewerSeat, viewerHand);
+  if (resultMismatch !== null) {
+    throw new Error(
+      `Completed result does not match its public winner projection (${resultMismatch}).`,
     );
   }
   if (viewerHand !== undefined && viewerActions !== undefined) {

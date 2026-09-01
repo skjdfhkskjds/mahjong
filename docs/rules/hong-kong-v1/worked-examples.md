@@ -69,14 +69,17 @@ draw turn.
 
 ## Example 3: Added kong, robbing, and replacement exhaustion
 
-1. South previously exposed a red-dragon pung claimed from East and later draws
-   the fourth red dragon.
+1. South previously exposed a circles 5 pung claimed from East and later draws
+   the fourth circles 5.
 2. South proposes an added kong. The pung does not become a kong yet; the fourth
    tile remains identifiable as the reaction source.
-3. East and North pass. West can legally win using that red dragon and submits
-   win. West wins, the exposed pung remains a pung, and the fourth red dragon
-   moves from South's concealed hand into West's completed hand. West also
-   receives the 1-faan Robbing Kong condition.
+3. East and North pass. West is waiting on circles 5 to complete a circles
+   3–4–5 chow and submits win. West wins, the exposed pung remains a pung, and
+   the fourth circles 5 moves from South's concealed hand into West's completed
+   hand. West also receives the 1-faan Robbing Kong condition. This suited-tile
+   wait matters: an honor pung plus its proposed fourth copy consumes every
+   physical copy of that honor, so an opponent could not use the proposed honor
+   in a pair or pung.
 
 In the alternate path where every opponent passes, South's pung becomes an
 added kong and South draws from the wall tail. If that tile is a bonus, South

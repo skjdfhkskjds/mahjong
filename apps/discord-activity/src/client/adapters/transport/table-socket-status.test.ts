@@ -84,6 +84,147 @@ function completedResult(): CompletedHandResult {
   };
 }
 
+function completedMeldResult(): CompletedHandResult {
+  const declaredMelds = [
+    {
+      claimedTileId: scoringTileId(
+        { type: "suited", suit: "characters", rank: 1 },
+        0,
+      ),
+      exposure: "exposed",
+      id: "meld:terminal:pung",
+      kind: "pung",
+      sourceSeat: "east",
+      tileIds: [0, 1, 2],
+    },
+  ] as const;
+  const concealedTileIds = [
+    scoringTileId({ type: "suited", suit: "characters", rank: 2 }, 0),
+    scoringTileId({ type: "suited", suit: "characters", rank: 2 }, 1),
+    scoringTileId({ type: "suited", suit: "characters", rank: 2 }, 2),
+    scoringTileId({ type: "suited", suit: "characters", rank: 3 }, 0),
+    scoringTileId({ type: "suited", suit: "characters", rank: 3 }, 1),
+    scoringTileId({ type: "suited", suit: "characters", rank: 3 }, 2),
+    scoringTileId({ type: "suited", suit: "characters", rank: 4 }, 0),
+    scoringTileId({ type: "suited", suit: "characters", rank: 4 }, 1),
+    scoringTileId({ type: "suited", suit: "characters", rank: 4 }, 2),
+    scoringTileId({ type: "dragon", dragon: "red" }, 0),
+    scoringTileId({ type: "dragon", dragon: "red" }, 1),
+  ] as const;
+  const fixture = createScoringHandFixture({
+    concealedTileIds,
+    declaredMelds,
+    prevailingWind: "east",
+    winnerSeat: "west",
+    winningConditions: {
+      opening: "none",
+      replacement: "none",
+      wallPosition: "ordinary",
+    },
+    winningTileId: concealedTileIds[10],
+    winningTileSource: { type: "self-pick" },
+  } as unknown as Parameters<typeof createScoringHandFixture>[0]);
+  const score = scoreHongKongHand(fixture);
+  if (score === null) throw new Error("Declared-meld fixture did not score.");
+  return {
+    ...score,
+    isLegalWin: true,
+    source: fixture.winningTileSource,
+    winnerSeat: fixture.winnerSeat,
+    winningConditions: fixture.winningConditions,
+    winningHand: {
+      bonusTileIds: [],
+      concealedTileIds: fixture.concealedTileIds,
+      declaredMelds: fixture.declaredMelds,
+    },
+    winningTileId: fixture.winningTileId,
+  };
+}
+
+function completedConcealedKongResult(): CompletedHandResult {
+  const concealedTileIds = [
+    scoringTileId({ type: "suited", suit: "characters", rank: 2 }, 0),
+    scoringTileId({ type: "suited", suit: "characters", rank: 2 }, 1),
+    scoringTileId({ type: "suited", suit: "characters", rank: 2 }, 2),
+    scoringTileId({ type: "suited", suit: "characters", rank: 3 }, 0),
+    scoringTileId({ type: "suited", suit: "characters", rank: 3 }, 1),
+    scoringTileId({ type: "suited", suit: "characters", rank: 3 }, 2),
+    scoringTileId({ type: "suited", suit: "characters", rank: 4 }, 0),
+    scoringTileId({ type: "suited", suit: "characters", rank: 4 }, 1),
+    scoringTileId({ type: "suited", suit: "characters", rank: 4 }, 2),
+    scoringTileId({ type: "dragon", dragon: "red" }, 0),
+    scoringTileId({ type: "dragon", dragon: "red" }, 1),
+  ] as const;
+  const declaredMelds = [
+    {
+      exposure: "concealed",
+      id: "meld:terminal:kong",
+      kind: "kong",
+      kongKind: "concealed",
+      tileIds: [0, 1, 2, 3],
+    },
+  ] as const;
+  const fixture = createScoringHandFixture({
+    concealedTileIds,
+    declaredMelds,
+    prevailingWind: "east",
+    winnerSeat: "west",
+    winningConditions: {
+      opening: "none",
+      replacement: "none",
+      wallPosition: "ordinary",
+    },
+    winningTileId: concealedTileIds[10],
+    winningTileSource: { type: "self-pick" },
+  } as unknown as Parameters<typeof createScoringHandFixture>[0]);
+  const score = scoreHongKongHand(fixture);
+  if (score === null) throw new Error("Concealed-kong fixture did not score.");
+  return {
+    ...score,
+    isLegalWin: true,
+    source: fixture.winningTileSource,
+    winnerSeat: fixture.winnerSeat,
+    winningConditions: fixture.winningConditions,
+    winningHand: {
+      bonusTileIds: [],
+      concealedTileIds: fixture.concealedTileIds,
+      declaredMelds: fixture.declaredMelds,
+    },
+    winningTileId: fixture.winningTileId,
+  };
+}
+
+function projectedTile(id: number) {
+  if (id < 108) {
+    const suits = ["characters", "circles", "bamboo"] as const;
+    return {
+      id,
+      kind: {
+        rank: Math.floor((id % 36) / 4) + 1,
+        suit: suits[Math.floor(id / 36)],
+        type: "suited",
+      },
+    } as const;
+  }
+  if (id < 124) {
+    const winds = ["east", "south", "west", "north"] as const;
+    return {
+      id,
+      kind: { type: "wind", wind: winds[Math.floor((id - 108) / 4)] },
+    } as const;
+  }
+  if (id < 136) {
+    const dragons = ["red", "green", "white"] as const;
+    return {
+      id,
+      kind: { dragon: dragons[Math.floor((id - 124) / 4)], type: "dragon" },
+    } as const;
+  }
+  throw new Error(
+    "The terminal projection fixture uses structural tiles only.",
+  );
+}
+
 class FakeSocket {
   public closed = false;
   public closeCode: number | undefined;
@@ -700,6 +841,9 @@ describe("viewer-safe table snapshots", () => {
           ...spectatorSnapshot.view.game,
           deadlineAt: null,
           phase: "complete",
+          players: spectatorSnapshot.view.game.players.map((player) =>
+            player.seat === "west" ? { ...player, concealedCount: 14 } : player,
+          ),
           result: completedResult(),
           viewerActions: undefined,
           viewerHand: undefined,
@@ -731,6 +875,270 @@ describe("viewer-safe table snapshots", () => {
         view: { ...gameSnapshot.view, phase: "exhausted" },
       }),
     ).toThrow("phase");
+  });
+
+  it("cross-checks terminal results against the public winner projection", () => {
+    const seats = ["east", "south", "west", "north"] as const;
+    const actors = seats.map((seat) => ({
+      displayName: `${seat} player`,
+      id: `mock:${seat}`,
+    }));
+    const result = completedResult();
+    const viewerHand = result.winningHand.concealedTileIds.map((id) =>
+      projectedTile(id),
+    );
+    const completeSnapshot = {
+      protocolVersion: 2,
+      stateVersion: 20,
+      type: "table/snapshot",
+      view: {
+        game: {
+          deadlineAt: null,
+          phase: "complete",
+          players: seats.map((seat) => ({
+            bonuses: [],
+            concealedCount: seat === "west" ? viewerHand.length : 13,
+            discards: [],
+            melds: [],
+            seat,
+          })),
+          result,
+          turn: "west",
+          viewerActions: { self: [] },
+          viewerHand,
+          wallRemaining: 40,
+        },
+        phase: "complete",
+        seats: seats.map((seat, index) => ({
+          autopilot: false,
+          occupant: actors[index],
+          ready: true,
+          seat,
+        })),
+        spectators: [],
+        tableId: "terminal-projection",
+        viewer: { actor: actors[2], role: "player", seat: "west" },
+      },
+    } as const;
+
+    expect(parseTableSnapshot(completeSnapshot).view.game?.result).toEqual(
+      result,
+    );
+
+    const spectator = { displayName: "Spectator", id: "mock:spectator" };
+    expect(
+      parseTableSnapshot({
+        ...completeSnapshot,
+        view: {
+          ...completeSnapshot.view,
+          game: {
+            ...completeSnapshot.view.game,
+            viewerActions: undefined,
+            viewerHand: undefined,
+          },
+          spectators: [spectator],
+          viewer: { actor: spectator, role: "spectator" },
+        },
+      }).view.game?.result,
+    ).toEqual(result);
+
+    const mismatchedWinner = (changes: Record<string, unknown>) => ({
+      ...completeSnapshot,
+      view: {
+        ...completeSnapshot.view,
+        game: {
+          ...completeSnapshot.view.game,
+          players: completeSnapshot.view.game.players.map((player) =>
+            player.seat === "west" ? { ...player, ...changes } : player,
+          ),
+        },
+      },
+    });
+    expect(() =>
+      parseTableSnapshot(mismatchedWinner({ concealedCount: 13 })),
+    ).toThrow("public winner projection");
+    expect(() =>
+      parseTableSnapshot(
+        mismatchedWinner({
+          bonuses: [
+            {
+              id: 136,
+              kind: {
+                family: "season",
+                matchingSeat: "east",
+                name: "spring",
+                number: 1,
+                type: "bonus",
+              },
+            },
+          ],
+        }),
+      ),
+    ).toThrow("public winner projection");
+    expect(() =>
+      parseTableSnapshot(
+        mismatchedWinner({
+          melds: [
+            {
+              claimedTileId: 56,
+              exposure: "exposed",
+              id: "meld:forged",
+              kind: "pung",
+              sourceSeat: "east",
+              tileIds: [56, 57, 58].map(projectedTile),
+            },
+          ],
+        }),
+      ),
+    ).toThrow("public winner projection");
+    expect(() =>
+      parseTableSnapshot({
+        ...completeSnapshot,
+        view: {
+          ...completeSnapshot.view,
+          game: {
+            ...completeSnapshot.view.game,
+            viewerHand: [...viewerHand.slice(0, -1), projectedTile(126)],
+          },
+        },
+      }),
+    ).toThrow("public winner projection");
+
+    const meldResult = completedMeldResult();
+    const scoredMeld = meldResult.winningHand.declaredMelds[0];
+    if (scoredMeld === undefined)
+      throw new Error("Terminal meld fixture is missing its declared pung.");
+    const publicMeld = {
+      claimedTileId: scoredMeld.claimedTileId,
+      exposure: scoredMeld.exposure,
+      id: scoredMeld.id,
+      kind: scoredMeld.kind,
+      sourceSeat: scoredMeld.sourceSeat,
+      tileIds: scoredMeld.tileIds.map(projectedTile),
+    } as const;
+    const meldViewerHand = meldResult.winningHand.concealedTileIds.map((id) =>
+      projectedTile(id),
+    );
+    const meldSnapshot = {
+      ...completeSnapshot,
+      view: {
+        ...completeSnapshot.view,
+        game: {
+          ...completeSnapshot.view.game,
+          players: completeSnapshot.view.game.players.map((player) =>
+            player.seat === "west"
+              ? {
+                  ...player,
+                  concealedCount: meldViewerHand.length,
+                  melds: [publicMeld],
+                }
+              : player,
+          ),
+          result: meldResult,
+          viewerHand: meldViewerHand,
+        },
+      },
+    } as const;
+    expect(parseTableSnapshot(meldSnapshot).view.game?.result).toEqual(
+      meldResult,
+    );
+
+    const withPublicMeld = (meld: unknown) => ({
+      ...meldSnapshot,
+      view: {
+        ...meldSnapshot.view,
+        game: {
+          ...meldSnapshot.view.game,
+          players: meldSnapshot.view.game.players.map((player) =>
+            player.seat === "west" ? { ...player, melds: [meld] } : player,
+          ),
+        },
+      },
+    });
+    for (const forgedMeld of [
+      { ...publicMeld, id: "meld:other" },
+      { ...publicMeld, claimedTileId: 1 },
+      { ...publicMeld, sourceSeat: "north" },
+      {
+        ...publicMeld,
+        kind: "kong",
+        kongKind: "exposed",
+        tileIds: [...publicMeld.tileIds, projectedTile(3)],
+      },
+      {
+        ...publicMeld,
+        claimedTileId: 1,
+        tileIds: [1, 2, 3].map(projectedTile),
+      },
+    ]) {
+      expect(() => parseTableSnapshot(withPublicMeld(forgedMeld))).toThrow(
+        "public winner projection",
+      );
+    }
+
+    const concealedKongResult = completedConcealedKongResult();
+    const scoredKong = concealedKongResult.winningHand.declaredMelds[0];
+    if (scoredKong === undefined)
+      throw new Error("Terminal kong fixture is missing its declared kong.");
+    const publicKong = {
+      exposure: scoredKong.exposure,
+      id: scoredKong.id,
+      kind: scoredKong.kind,
+      kongKind: scoredKong.kongKind,
+      tileIds: scoredKong.tileIds.map(projectedTile),
+    } as const;
+    const kongViewerHand =
+      concealedKongResult.winningHand.concealedTileIds.map(projectedTile);
+    const kongSnapshot = {
+      ...completeSnapshot,
+      view: {
+        ...completeSnapshot.view,
+        game: {
+          ...completeSnapshot.view.game,
+          players: completeSnapshot.view.game.players.map((player) =>
+            player.seat === "west"
+              ? {
+                  ...player,
+                  concealedCount: kongViewerHand.length,
+                  melds: [publicKong],
+                }
+              : player,
+          ),
+          result: concealedKongResult,
+          viewerHand: kongViewerHand,
+        },
+      },
+    } as const;
+    expect(parseTableSnapshot(kongSnapshot).view.game?.result).toEqual(
+      concealedKongResult,
+    );
+    expect(() =>
+      parseTableSnapshot({
+        ...kongSnapshot,
+        view: {
+          ...kongSnapshot.view,
+          game: {
+            ...kongSnapshot.view.game,
+            players: kongSnapshot.view.game.players.map((player) =>
+              player.seat === "west"
+                ? {
+                    ...player,
+                    melds: [
+                      {
+                        ...publicKong,
+                        claimedTileId: 0,
+                        exposure: "exposed",
+                        kongKind: "exposed",
+                        sourceSeat: "east",
+                      },
+                    ],
+                  }
+                : player,
+            ),
+          },
+        },
+      }),
+    ).toThrow("public winner projection");
   });
 
   it.each([

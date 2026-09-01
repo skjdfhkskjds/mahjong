@@ -31,11 +31,31 @@ if (!rootElement) {
 const root = createRoot(rootElement);
 try {
   const config = readBrowserRuntimeConfig();
-  root.render(
-    <StrictMode>
-      <App config={config} />
-    </StrictMode>,
-  );
+  const localEvidenceRequested =
+    import.meta.env.DEV &&
+    config.mode === "mock" &&
+    new URLSearchParams(window.location.search).get("localEvidence") ===
+      "gameplay";
+  if (localEvidenceRequested) {
+    void import("../evidence/local-gameplay-evidence.js").then(
+      ({ LocalGameplayEvidence }) => {
+        root.render(
+          <StrictMode>
+            <LocalGameplayEvidence />
+          </StrictMode>,
+        );
+      },
+      (error: unknown) => {
+        root.render(<ConfigurationFailure error={error} />);
+      },
+    );
+  } else {
+    root.render(
+      <StrictMode>
+        <App config={config} />
+      </StrictMode>,
+    );
+  }
 } catch (error) {
   root.render(<ConfigurationFailure error={error} />);
 }
