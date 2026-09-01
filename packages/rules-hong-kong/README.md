@@ -2,11 +2,11 @@
 
 ## Owns
 
-The project-defined, accepted Hong Kong rules profile and its pure implementation. The Milestone 4 surface includes canonical physical tiles, deterministic shuffle from explicit random bytes, dealer selection, the initial deal, recursive bonus replacement, draw/discard decisions and events, replay, viewer projections, and invariants.
+The project-defined, accepted Hong Kong rules profile and its pure implementation. The canonical schema-v2 surface includes physical tiles, deterministic shuffle from explicit random bytes, dealer selection, the initial deal, recursive bonus replacement, draw/discard decisions, private reaction intentions, chow/pung/kong claims, every kong form, replay, viewer projections, and invariants.
 
 ## Does not own
 
-Discord, Cloudflare, storage, networking, UI, room membership, table access, or operational timeout policy. Claims, kongs, scoring, and match progression are added only after their rules gates are accepted.
+Discord, Cloudflare, storage, networking, UI, room membership, table access, operational timeout policy, scoring, or match progression. Structurally eligible wins are authority-only until the scorer can enforce the minimum and produce payments.
 
 ## Dependencies
 
@@ -24,4 +24,6 @@ Only `@mahjong/rules-hong-kong` is public. Consumers may not deep-import impleme
 - The initial deal assigns 14 raw tile slots to East and 13 to every other seat; bonus replacement then restores those structural counts.
 - Bonus tiles never enter the structural hand and replacements come from the wall tail.
 - Canonical events replay to byte-equivalent state and preserve all 144 physical tiles in exactly one location.
-- Projections expose a player's own hand, public bonuses and discards, and concealed counts without exposing opponents' hands or the wall.
+- Historical schema-v1 state and event bytes retain strict decoding and replay. The existing unversioned starter and command surface remain schema v1 for deployed callers; new integrations opt into schema v2 explicitly and upgrade verified v1 histories only through a deterministic event.
+- Public melds preserve exact physical IDs and provenance; kongs count as three structural tiles despite containing four physical tiles.
+- Projections expose a player's own hand/actions, public bonuses, discards and melds, and concealed counts without exposing opponents' hands, intentions, eligibility, or the wall.
