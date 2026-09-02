@@ -2,7 +2,10 @@ import { describe, expect, it, vi } from "vitest";
 
 import type { DiscordBridge } from "../../adapters/discord/discord-bridge.js";
 import type { ActivityApi } from "../../adapters/transport/activity-api-client.js";
-import type { SocketStatusMonitor } from "../../adapters/transport/table-socket-status.js";
+import type {
+  SocketStatusMonitor,
+  ViewerSafeTableSnapshot,
+} from "../../adapters/transport/table-socket-status.js";
 import type { RuntimeConfig } from "../../bootstrap/runtime-config.js";
 import {
   startClientStartup,
@@ -69,32 +72,36 @@ function createApi(overrides: Partial<ActivityApi> = {}): ActivityApi {
   };
 }
 
+function connectedSnapshot(): ViewerSafeTableSnapshot {
+  return {
+    type: "table/snapshot",
+    protocolVersion: 2,
+    stateVersion: 0,
+    view: {
+      phase: "lobby",
+      tableId: "walking-skeleton",
+      seats: [
+        { seat: "east", occupant: null, autopilot: false, ready: false },
+        { seat: "south", occupant: null, autopilot: false, ready: false },
+        { seat: "west", occupant: null, autopilot: false, ready: false },
+        { seat: "north", occupant: null, autopilot: false, ready: false },
+      ],
+      spectators: [{ id: "server-id", displayName: "Local Player" }],
+      viewer: {
+        role: "spectator",
+        actor: { id: "server-id", displayName: "Local Player" },
+      },
+    },
+  };
+}
+
 function connectedSocket(): SocketStatusMonitor {
   return {
     start: (onStatus) => {
       onStatus({
         state: "connected",
         attempt: 0,
-        snapshot: {
-          type: "table/snapshot",
-          protocolVersion: 1,
-          stateVersion: 0,
-          view: {
-            phase: "lobby",
-            tableId: "walking-skeleton",
-            seats: [
-              { seat: "east", occupant: null, ready: false },
-              { seat: "south", occupant: null, ready: false },
-              { seat: "west", occupant: null, ready: false },
-              { seat: "north", occupant: null, ready: false },
-            ],
-            spectators: [{ id: "server-id", displayName: "Local Player" }],
-            viewer: {
-              role: "spectator",
-              actor: { id: "server-id", displayName: "Local Player" },
-            },
-          },
-        },
+        snapshot: connectedSnapshot(),
       });
       return vi.fn();
     },
@@ -209,16 +216,36 @@ describe("client startup", () => {
           attempt: 0,
           snapshot: {
             type: "table/snapshot",
-            protocolVersion: 1,
+            protocolVersion: 2,
             stateVersion: 0,
             view: {
               phase: "lobby",
               tableId,
               seats: [
-                { seat: "east", occupant: null, ready: false },
-                { seat: "south", occupant: null, ready: false },
-                { seat: "west", occupant: null, ready: false },
-                { seat: "north", occupant: null, ready: false },
+                {
+                  seat: "east",
+                  occupant: null,
+                  autopilot: false,
+                  ready: false,
+                },
+                {
+                  seat: "south",
+                  occupant: null,
+                  autopilot: false,
+                  ready: false,
+                },
+                {
+                  seat: "west",
+                  occupant: null,
+                  autopilot: false,
+                  ready: false,
+                },
+                {
+                  seat: "north",
+                  occupant: null,
+                  autopilot: false,
+                  ready: false,
+                },
               ],
               spectators: [{ id: "server-id", displayName: "Local Player" }],
               viewer: {
@@ -248,5 +275,39 @@ describe("client startup", () => {
       socket: { state: "failed" },
     });
     expect(statuses.at(-1)?.tableSnapshot).toBeUndefined();
+  });
+
+  it("clears the table and asks for refresh after a protocol upgrade control", async () => {
+    const statuses: ClientStartupStatus[] = [];
+    const socket: SocketStatusMonitor = {
+      start: (onStatus) => {
+        onStatus({
+          state: "connected",
+          attempt: 0,
+          snapshot: connectedSnapshot(),
+        });
+        onStatus({ state: "upgrade-required", attempt: 0 });
+        return vi.fn();
+      },
+    };
+
+    startClientStartup({
+      config,
+      bridge,
+      api: createApi(),
+      socket,
+      onStatus: (status) => statuses.push(status),
+    });
+    await flushPromises();
+
+    const finalStatus = statuses.at(-1);
+    expect(finalStatus).toMatchObject({
+      complete: false,
+      session: { state: "failed" },
+      socket: { state: "failed" },
+    });
+    expect(finalStatus?.session.detail).toContain("protocol v2");
+    expect(finalStatus?.socket.detail).toContain("protocol v2");
+    expect(finalStatus?.tableSnapshot).toBeUndefined();
   });
 });

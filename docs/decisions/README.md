@@ -16,5 +16,7 @@ Accepted baseline decisions:
 | [0010](0010-table-access-and-instance-binding.md)        | Keep table access separate from Activity instance binding            | accepted |
 | [0011](0011-version-room-state-and-lobby-protocol.md)    | Version persistent room state and viewer-safe lobby messages         | accepted |
 | [0012](0012-canonical-game-encoding-and-event-hashes.md) | Canonicalize game state and hash-link authoritative events           | accepted |
+| [0013](0013-private-reactions-and-deadline-commands.md)  | Persist private reactions and execute deadlines as commands          | accepted |
+| [0014](0014-canonical-game-v2-and-protocol-v2.md)        | Upgrade canonical game state and gameplay protocol to v2             | accepted |
 
 New ADRs use `NNNN-short-title.md` and contain context, decision, consequences, status, and date. Superseded ADRs remain in history and link to their replacement.

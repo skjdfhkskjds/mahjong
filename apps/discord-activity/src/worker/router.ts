@@ -719,8 +719,14 @@ async function connectTable(request: Request, env: Env): Promise<Response> {
   );
   headers.set("X-Mahjong-Table-Id", validated.binding.tableId);
   const stub = env.TABLE_ROOM.getByName(validated.binding.tableId);
+  const tableRoomUrl = new URL("https://table-room.internal/connect");
+  for (const requestedVersion of new URL(request.url).searchParams.getAll(
+    "protocolVersion",
+  )) {
+    tableRoomUrl.searchParams.append("protocolVersion", requestedVersion);
+  }
   return stub.fetch(
-    new Request("https://table-room.internal/connect", {
+    new Request(tableRoomUrl, {
       headers,
       method: "GET",
     }),

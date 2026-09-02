@@ -540,6 +540,77 @@ footer {
   font-size: clamp(2rem, 7vw, 4rem);
 }
 
+.deadline-status {
+  margin: 8px 0 0;
+  color: var(--muted);
+  font-size: 0.8rem;
+}
+
+.automation-chip {
+  border-radius: 999px;
+  padding: 3px 7px;
+  color: #092016;
+  background: var(--gold);
+  font-size: 0.68rem;
+  font-weight: 750;
+}
+
+.public-meld,
+.reaction-window,
+.hand-result {
+  border: 1px solid var(--line);
+  border-radius: 14px;
+  padding: 14px;
+  background: rgba(8, 24, 18, 0.45);
+}
+
+.reaction-window,
+.hand-result {
+  margin-top: 18px;
+}
+
+.game-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-top: 12px;
+}
+
+.game-actions button {
+  border: 0;
+  border-radius: 10px;
+  padding: 9px 12px;
+  color: #092016;
+  background: var(--jade);
+  cursor: pointer;
+  font-weight: 750;
+}
+
+.game-actions button:disabled {
+  cursor: not-allowed;
+  opacity: 0.45;
+}
+
+.score-summary,
+.payments {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(110px, 1fr));
+  gap: 8px;
+}
+
+.score-summary div,
+.payments div {
+  border-radius: 10px;
+  padding: 9px;
+  background: var(--surface-raised);
+}
+
+.score-summary dd,
+.payments dd {
+  margin: 4px 0 0;
+  font-weight: 750;
+}
+
 @media (max-width: 760px) {
   .hero {
     flex-direction: column-reverse;

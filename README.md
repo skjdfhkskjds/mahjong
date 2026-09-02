@@ -4,11 +4,20 @@ A four-player Hong Kong Mahjong Discord Activity, built as a TypeScript monorepo
 
 ## Status
 
-Milestone 4 is complete locally. Four authenticated table members can occupy persistent seats, ready up, receive distinct private hands, and play deterministic draw/discard turns through wall exhaustion. Spectators receive public tiles and concealed counts only. Canonical state, hash-linked events, actor-scoped command receipts, viewer-specific snapshots, reconnects, schema migration, and replay verification all survive forced Durable Object eviction.
+Milestones 5 and 6 are complete locally. Four authenticated table members can
+play claims, all three kong forms, rob an added kong, use deadline-backed
+autopilot, and finish a hand with one authoritatively selected winner. The
+Hong Kong v1 scorer recognizes the accepted standard and special structures,
+enforces the non-bonus three-faan minimum, caps at 13 faan, and publishes a
+structured Half Spicy score and zero-sum payment explanation. Private reaction
+intent, canonical hash/replay, actor-scoped receipts, viewer projections,
+schema migration, reconnect, alarms, and forced Durable Object eviction are
+covered by permanent local fixtures and runtime tests.
 
 Milestone 1 still requires credentialed deployment smoke evidence through Discord's proxy on desktop/web and mobile; that external evidence is tracked separately from the completed local implementation.
 
-Claims, kongs, winning hands, and scoring remain gated to later milestones.
+Match progression, cumulative balances, next-hand behavior, and long-term
+history policy remain gated to Milestone 7.
 
 ## Planning documents
 

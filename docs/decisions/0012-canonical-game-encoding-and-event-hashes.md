@@ -21,6 +21,11 @@ first 32-bit word is domain-isolated for uniform dealer selection; subsequent
 words feed rejection-sampled descending Fisher–Yates. No low-state seeded PRNG
 is used. Any semantic change requires a new algorithm or encoding version.
 
+ADR 0014 extends this decision for Milestones 5–6. Canonical state schema v1
+and every existing event/hash remain immutable. New games use state schema v2,
+and existing live games reach it only through an appended deterministic upgrade
+event. Canonical JSON ordering and hash-payload version 1 remain unchanged.
+
 ## Consequences
 
 The Durable Object can verify and replay its persisted event stream across

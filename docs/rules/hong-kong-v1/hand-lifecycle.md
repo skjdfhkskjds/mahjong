@@ -1,6 +1,9 @@
 # Foundational hand lifecycle
 
-This document covers only setup, bonus replacement, ordinary draws/discards, and exhaustion. Claims and scoring remain gated.
+This document records the accepted foundational setup, bonus replacement,
+ordinary draw/discard, and exhaustion behavior. Claims, kongs, and scoring now
+continue this lifecycle under the frozen
+[Milestones 5–6 plan](../../implementation-plans/milestones-5-6.md).
 
 ## Seat assignment
 
@@ -55,4 +58,27 @@ On an ordinary turn:
 
 A player normally has 13 structural tiles between turns and 14 immediately before discarding. Bonus tiles are public, cannot be discarded, and never count toward the structural total.
 
-Drawing the final available structural tile is successful: the active player still receives the later-defined opportunity for self-actions and, if none ends the hand, discards normally. That discard still opens the later-defined claim window. The hand becomes exhaustive only when subsequent play requires an ordinary or bonus-replacement draw and no tile is available.
+Drawing the final available structural tile is successful: the active player
+receives the accepted win/kong self-action opportunity and, if none ends the
+hand, discards normally. That discard opens the accepted eight-second reaction
+window and may still be claimed as the last discard. The hand becomes exhaustive
+only when subsequent play requires an ordinary, bonus-replacement, or
+kong-replacement draw and no tile is available.
+
+## Claims and meld turns
+
+Every discard opens a reaction window before turn order advances. An unclaimed
+discard advances to the next seat's ordinary draw. A chow or pung claim makes
+the claimant active and requires a discard without a head draw. An exposed kong
+claim instead draws and recursively replaces from the tail before the claimant
+discards. Claimed physical tiles leave the discard location and become part of
+an immutable public meld.
+
+Concealed and added kongs are self-actions before discard. A concealed kong
+commits immediately; an added kong first opens its robbing window. Every
+committed kong uses the same tail and recursive bonus-replacement boundary as
+the rest of `hong-kong/v1`.
+
+A legal self-draw, discard, or robbed-kong win ends the hand with one scored
+result. Match continuation after `complete`, and continuation after `exhausted`,
+remain Milestone 7 concerns.

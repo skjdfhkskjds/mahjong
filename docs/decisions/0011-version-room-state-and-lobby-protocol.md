@@ -14,6 +14,10 @@ Canonical room data and future rules events may contain facts that a viewer must
 
 `protocolVersion` is the WebSocket wire major version. Milestone 3 continues at version `1`; clients and the Worker reject any other value. The Activity client and Worker ship in one deployment, so this version has no rolling mixed-version overlap window. A future incompatible wire format uses a new major version and requires an explicitly dual-reading deployment if overlap becomes necessary.
 
+ADR 0014 records that Milestones 5–6 precede external deployment, so gameplay
+protocol v2 replaces v1 atomically without a dual-reading overlap. Protocol-v1
+requests are rejected and closed; v1 remains only a historical fixture.
+
 `storageSchemaVersion` is the `TableRoom` SQLite schema version. Construction transactionally migrates the Milestone 2 version-1 schema to version 2 while preserving access, binding, capability, session, and connection-grant records. Unknown future versions fail closed. The oldest committed schema fixture remains permanent migration evidence.
 
 `stateVersion` is the monotonic revision of persisted, viewer-visible `RoomState`. Table creation is genesis at revision zero. Each accepted atomic command that changes seats or readiness increments it exactly once. Adding a table member also increments it because membership changes the spectator projection. Rejected, duplicate, no-op, connection, disconnection, resync, session, capability, and binding-authority operations do not increment it. A client's `expectedStateVersion` is an optimistic-concurrency precondition; a stale command is rejected and followed by that viewer's current snapshot.
