@@ -44,13 +44,13 @@ The signed expiry remains bounded to one hour. `ActivityInstance` validates the 
 - Safe session/health reads do not mutate state.
 - Mutations accept only their documented media type and bounded runtime-validated body.
 - Authenticated mutations require the session's CSRF token in a request header.
-- Mutations reject missing or non-matching `Origin`; the accepted origin is the request's own externally visible origin.
+- Mutations reject missing or non-matching `Origin`. Mock mode accepts the request URL's exact origin. Discord mode derives the exact externally visible proxy origin, `https://<DISCORD_CLIENT_ID>.discordsays.com`, from the server-configured application ID rather than from forwarded request metadata.
 - Responses do not enable permissive CORS.
 - Authentication failures use generic error codes and never reveal cookie or signature details.
 
 ## WebSocket policy
 
-The Worker authenticates, refreshes Discord membership in Discord mode, checks exact origin, resolves the server-side instance binding, and then forwards an upgrade to `TableRoom`. No browser table locator is used. The object serializes a small attachment containing connection ID, actor ID, session expiry, and connection generation. It does not treat the attachment as table membership or gameplay authority.
+The Worker authenticates, refreshes Discord membership in Discord mode, applies the same exact mock-or-Discord-proxy origin policy as HTTP mutations, resolves the server-side instance binding, and then forwards an upgrade to `TableRoom`. No browser table locator is used. The object serializes a small attachment containing connection ID, actor ID, session expiry, and connection generation. It does not treat the attachment as table membership or gameplay authority.
 
 Every message validates the attachment shape and expiry because a message may wake a newly constructed object, then resolves the persisted connection grant and rechecks the active binding generation, table ACL, and actor session generation. Invalid, expired, replaced, or rebound connections close without processing. Authoritative state survives only in SQLite; connection attachments survive only while their sockets remain alive.
 

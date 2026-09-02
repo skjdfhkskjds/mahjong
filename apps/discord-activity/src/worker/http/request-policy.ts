@@ -1,4 +1,7 @@
+import type { AuthenticationMode } from "../env.js";
+
 const JSON_MEDIA_TYPE = "application/json";
+const DISCORD_CLIENT_ID_PATTERN = /^\d{1,32}$/u;
 
 export function hasJsonContentType(request: Request): boolean {
   const value = request.headers.get("Content-Type");
@@ -46,4 +49,24 @@ export function hasAllowedOrigin(
 
   const origin = normalizedOrigin(supplied);
   return origin !== undefined && allowedOrigins(configuration).has(origin);
+}
+
+export function hasExpectedActivityOrigin(
+  request: Request,
+  mode: AuthenticationMode,
+  discordClientId?: string,
+): boolean {
+  if (mode === "mock") {
+    return hasAllowedOrigin(request, new URL(request.url).origin);
+  }
+  if (
+    discordClientId === undefined ||
+    !DISCORD_CLIENT_ID_PATTERN.test(discordClientId)
+  ) {
+    return false;
+  }
+  return hasAllowedOrigin(
+    request,
+    `https://${discordClientId}.discordsays.com`,
+  );
 }

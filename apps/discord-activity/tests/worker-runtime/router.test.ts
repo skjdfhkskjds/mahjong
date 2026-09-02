@@ -4,6 +4,8 @@ import type { Env } from "../../src/worker/env.js";
 import { routeRequest } from "../../src/worker/router.js";
 
 const origin = "https://activity.example";
+const discordClientId = "123";
+const discordProxyOrigin = `https://${discordClientId}.discordsays.com`;
 const tableId = "dGVzdC10YWJsZS1pZC0xNg";
 const bindingProof = "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA";
 const sessionId = "c2Vzc2lvbi1pZC13aXRoLWV4YWN0bHktMzItYnl0ZXM";
@@ -319,13 +321,13 @@ describe("Worker router", () => {
         body: JSON.stringify({ code: "code", instanceId: "instance" }),
         headers: {
           "Content-Type": "application/json",
-          Origin: origin,
+          Origin: discordProxyOrigin,
         },
         method: "POST",
       }),
       testEnv({
         APP_MODE: "discord",
-        DISCORD_CLIENT_ID: "123",
+        DISCORD_CLIENT_ID: discordClientId,
         DISCORD_CLIENT_SECRET: "secret",
         SESSION_COOKIE_NAME: "__Host-mahjong_session",
       }),
@@ -334,6 +336,42 @@ describe("Worker router", () => {
     await expect(response.json()).resolves.toMatchObject({
       error: { code: "invalid-configuration" },
     });
+  });
+
+  it("rejects non-proxy Discord origins for exchange and socket requests", async () => {
+    const currentEnv = testEnv({
+      APP_MODE: "discord",
+      DISCORD_CLIENT_ID: discordClientId,
+      SESSION_COOKIE_NAME: "__Host-mahjong_session",
+    });
+    const exchange = await routeRequest(
+      new Request(`${origin}/api/auth/discord/exchange`, {
+        body: JSON.stringify({ code: "code", instanceId: "instance" }),
+        headers: {
+          "Content-Type": "application/json",
+          Origin: origin,
+        },
+        method: "POST",
+      }),
+      currentEnv,
+    );
+    expect(exchange.status).toBe(403);
+
+    const socket = await routeRequest(
+      new Request(`${origin}/api/table/socket`, {
+        headers: { Origin: origin, Upgrade: "websocket" },
+      }),
+      currentEnv,
+    );
+    expect(socket.status).toBe(403);
+
+    const allowedSocket = await routeRequest(
+      new Request(`${origin}/api/table/socket`, {
+        headers: { Origin: discordProxyOrigin, Upgrade: "websocket" },
+      }),
+      currentEnv,
+    );
+    expect(allowedSocket.status).toBe(401);
   });
 
   it("preserves typed ActivityInstance binding failures after Discord verification", async () => {
@@ -369,7 +407,7 @@ describe("Worker router", () => {
         }),
         headers: {
           "Content-Type": "application/json",
-          Origin: origin,
+          Origin: discordProxyOrigin,
         },
         method: "POST",
       }),
@@ -381,7 +419,7 @@ describe("Worker router", () => {
         ),
         APP_MODE: "discord",
         DISCORD_BOT_TOKEN: "bot-token",
-        DISCORD_CLIENT_ID: "123",
+        DISCORD_CLIENT_ID: discordClientId,
         DISCORD_CLIENT_SECRET: "client-secret",
         SESSION_COOKIE_NAME: "__Host-mahjong_session",
       }),
