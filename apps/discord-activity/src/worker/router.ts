@@ -12,7 +12,10 @@ import {
   validateInstanceSession,
 } from "./auth/activity-instance-session.js";
 import type { AuthenticationMode, Env } from "./env.js";
-import { hasAllowedOrigin, hasJsonContentType } from "./http/request-policy.js";
+import {
+  hasExpectedActivityOrigin,
+  hasJsonContentType,
+} from "./http/request-policy.js";
 import {
   emptyJsonResponse,
   jsonResponse,
@@ -46,8 +49,12 @@ function authenticationMode(env: Env): AuthenticationMode | undefined {
   return value === "mock" || value === "discord" ? value : undefined;
 }
 
-function originRejected(request: Request): Response | undefined {
-  if (!hasAllowedOrigin(request, new URL(request.url).origin)) {
+function originRejected(
+  request: Request,
+  env: Env,
+  mode: AuthenticationMode,
+): Response | undefined {
+  if (!hasExpectedActivityOrigin(request, mode, env.DISCORD_CLIENT_ID)) {
     return problemResponse(
       403,
       "origin-not-allowed",
@@ -209,10 +216,11 @@ async function signedSession(
 
 function authenticatedPolicyFailure(
   request: Request,
+  env: Env,
   session: ApplicationSession,
 ): Response | undefined {
   return (
-    originRejected(request) ??
+    originRejected(request, env, session.mode) ??
     jsonRequired(request) ??
     (hasValidCsrfToken(request, session)
       ? undefined
@@ -300,7 +308,8 @@ async function createMockSession(
       "The requested resource was not found.",
     );
   }
-  const policyFailure = originRejected(request) ?? jsonRequired(request);
+  const policyFailure =
+    originRejected(request, env, mode) ?? jsonRequired(request);
   if (policyFailure !== undefined) {
     return policyFailure;
   }
@@ -382,7 +391,8 @@ async function reserveDiscordExchange(
       "The requested resource was not found.",
     );
   }
-  const policyFailure = originRejected(request) ?? jsonRequired(request);
+  const policyFailure =
+    originRejected(request, env, mode) ?? jsonRequired(request);
   if (policyFailure !== undefined) {
     return policyFailure;
   }
@@ -509,7 +519,7 @@ async function authenticatedMutationSession(
       "An application session is required.",
     );
   }
-  return authenticatedPolicyFailure(request, session) ?? session;
+  return authenticatedPolicyFailure(request, env, session) ?? session;
 }
 
 async function logoutSession(
@@ -647,11 +657,15 @@ async function tableCapabilityMutation(
   );
 }
 
-async function connectTable(request: Request, env: Env): Promise<Response> {
+async function connectTable(
+  request: Request,
+  env: Env,
+  mode: AuthenticationMode,
+): Promise<Response> {
   if (request.method !== "GET") {
     return methodNotAllowed(["GET"]);
   }
-  const policyFailure = originRejected(request);
+  const policyFailure = originRejected(request, env, mode);
   if (policyFailure !== undefined) {
     return policyFailure;
   }
@@ -673,7 +687,7 @@ async function connectTable(request: Request, env: Env): Promise<Response> {
       "Session configuration is invalid.",
     );
   }
-  const session = await signedSession(request, env, env.APP_MODE);
+  const session = await signedSession(request, env, mode);
   if (session === undefined) {
     return problemResponse(
       401,
@@ -759,7 +773,7 @@ export async function routeRequest(
     case "/api/auth/discord/exchange":
       return reserveDiscordExchange(request, env, mode);
     case "/api/table/socket":
-      return connectTable(request, env);
+      return connectTable(request, env, mode);
     case "/api/table/invitations":
       return tableCapabilityMutation(request, env, mode, "create-invitation");
     case "/api/table/invitations/redeem":

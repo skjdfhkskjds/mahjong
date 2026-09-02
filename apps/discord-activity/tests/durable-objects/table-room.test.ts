@@ -2057,14 +2057,6 @@ describe("TableRoom authority", () => {
       ];
       const automated =
         coverage === "all" ? responderActors : responderActors.slice(0, 1);
-      await runInDurableObject(stub, (_instance, state) => {
-        for (const actorId of automated) {
-          state.storage.sql.exec(
-            "UPDATE player_automation SET autopilot = 1 WHERE actor_id = ?",
-            actorId,
-          );
-        }
-      });
       const tileId = connection.initial.view.game?.viewerHand?.[0]?.id;
       if (tileId === undefined)
         throw new Error("Automatic dealer has no tile.");
@@ -2072,12 +2064,26 @@ describe("TableRoom authority", () => {
         connection.socket,
         2,
       );
-      connection.socket.send(
-        commandMessage(`automatic-window-${coverage}`, version, {
-          type: "game/discard",
-          tileId,
-        }),
-      );
+      const message = commandMessage(`automatic-window-${coverage}`, version, {
+        type: "game/discard",
+        tileId,
+      });
+      await runInDurableObject(stub, async (instance, state) => {
+        for (const actorId of automated) {
+          const updated = state.storage.sql.exec(
+            "UPDATE player_automation SET autopilot = 1 WHERE actor_id = ?",
+            actorId,
+          );
+          if (updated.rowsWritten !== 1) {
+            throw new Error("Automatic responder fixture is missing.");
+          }
+        }
+        const serverSocket = state.getWebSockets()[0];
+        if (serverSocket === undefined) {
+          throw new Error("Automatic reaction fixture has no server socket.");
+        }
+        await instance.webSocketMessage(serverSocket, message);
+      });
       expect((await messages)[0]).toMatchObject({
         outcome: "applied",
         stateVersion: version + 1,
@@ -3544,7 +3550,7 @@ describe("TableRoom authority", () => {
           .one().state_version,
       }));
 
-    const simulatedExpiry = Date.now() - 15_001;
+    const simulatedExpiry = Date.now() - 1;
     await runInDurableObject(stub, async (instance, state) => {
       const remainingSocket = state.getWebSockets().find((socket) => {
         const attachment = socket.deserializeAttachment() as {
@@ -3610,6 +3616,13 @@ describe("TableRoom authority", () => {
         due_at: simulatedExpiry + 15_000,
         status: "pending",
       },
+    });
+    await runInDurableObject(stub, (_instance, state) => {
+      state.storage.sql.exec(
+        "UPDATE deadlines SET due_at = ? WHERE deadline_id = ?",
+        Date.now() - 1,
+        after.disconnectDue.deadline_id,
+      );
     });
     await evictDurableObject(stub);
     await runInDurableObject(stub, (instance) => instance.alarm());
