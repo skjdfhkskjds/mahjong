@@ -3544,7 +3544,7 @@ describe("TableRoom authority", () => {
           .one().state_version,
       }));
 
-    const simulatedExpiry = Date.now() - 15_001;
+    const simulatedExpiry = Date.now() - 1;
     await runInDurableObject(stub, async (instance, state) => {
       const remainingSocket = state.getWebSockets().find((socket) => {
         const attachment = socket.deserializeAttachment() as {
@@ -3610,6 +3610,13 @@ describe("TableRoom authority", () => {
         due_at: simulatedExpiry + 15_000,
         status: "pending",
       },
+    });
+    await runInDurableObject(stub, (_instance, state) => {
+      state.storage.sql.exec(
+        "UPDATE deadlines SET due_at = ? WHERE deadline_id = ?",
+        Date.now() - 1,
+        after.disconnectDue.deadline_id,
+      );
     });
     await evictDurableObject(stub);
     await runInDurableObject(stub, (instance) => instance.alarm());
