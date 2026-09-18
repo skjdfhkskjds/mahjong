@@ -3,6 +3,10 @@ import {
   isValidApplicationDisplayName,
   type ApplicationActor,
 } from "../../auth/application-session.js";
+import {
+  fetchDiscordAuthentication,
+  reportDiscordAuthenticationFailure,
+} from "./discord-authentication-diagnostics.js";
 
 const DISCORD_API = "https://discord.com/api/v10";
 const MAX_RESPONSE_BYTES = 64 * 1_024;
@@ -34,17 +38,21 @@ export async function exchangeDiscordIdentity(
   clientId: string,
   clientSecret: string,
 ): Promise<{ readonly accessToken: string; readonly actor: ApplicationActor }> {
-  const tokenResponse = await fetch(`${DISCORD_API}/oauth2/token`, {
-    body: new URLSearchParams({
-      client_id: clientId,
-      client_secret: clientSecret,
-      code,
-      grant_type: "authorization_code",
-    }),
-    headers: { "Content-Type": "application/x-www-form-urlencoded" },
-    method: "POST",
-    redirect: "error",
-  });
+  const tokenResponse = await fetchDiscordAuthentication(
+    "oauth-token",
+    `${DISCORD_API}/oauth2/token`,
+    {
+      body: new URLSearchParams({
+        client_id: clientId,
+        client_secret: clientSecret,
+        code,
+        grant_type: "authorization_code",
+      }),
+      headers: { "Content-Type": "application/x-www-form-urlencoded" },
+      method: "POST",
+      redirect: "manual",
+    },
+  );
   const token = record(await responseJson(tokenResponse));
   const accessToken = token?.["access_token"];
   if (
@@ -53,13 +61,29 @@ export async function exchangeDiscordIdentity(
     accessToken.length < 1 ||
     accessToken.length > 4_096
   ) {
+    const reason = tokenResponse.ok
+      ? "invalid-response"
+      : token?.["error"] === "invalid_client"
+        ? "invalid-client"
+        : token?.["error"] === "invalid_grant"
+          ? "invalid-grant"
+          : "http-error";
+    reportDiscordAuthenticationFailure(
+      "oauth-token",
+      reason,
+      tokenResponse.status,
+    );
     throw new Error("Discord OAuth exchange failed.");
   }
 
-  const userResponse = await fetch(`${DISCORD_API}/users/@me`, {
-    headers: { Authorization: `Bearer ${accessToken}` },
-    redirect: "error",
-  });
+  const userResponse = await fetchDiscordAuthentication(
+    "oauth-user",
+    `${DISCORD_API}/users/@me`,
+    {
+      headers: { Authorization: `Bearer ${accessToken}` },
+      redirect: "manual",
+    },
+  );
   const user = record(await responseJson(userResponse));
   const id = user?.["id"];
   const username = user?.["username"];
@@ -74,6 +98,11 @@ export async function exchangeDiscordIdentity(
     !/^\d{1,32}$/u.test(id) ||
     !isValidApplicationActor(actor)
   ) {
+    reportDiscordAuthenticationFailure(
+      "oauth-user",
+      userResponse.ok ? "invalid-response" : "http-error",
+      userResponse.status,
+    );
     throw new Error("Discord user lookup failed.");
   }
   return { accessToken, actor };

@@ -36,6 +36,22 @@ afterEach(() => {
 });
 
 describe("Discord Activity instance verification", () => {
+  it("uses request options accepted by the native Worker runtime", async () => {
+    const requests: Request[] = [];
+    vi.stubGlobal(
+      "fetch",
+      vi.fn<typeof fetch>().mockImplementation((input, init) => {
+        requests.push(new Request(input, init));
+        return Promise.resolve(Response.json(validInstance));
+      }),
+    );
+
+    await expect(verifyDiscordActivityInstance(request)).resolves.toMatchObject(
+      { instanceId: request.instanceId },
+    );
+    expect(requests.map((outbound) => outbound.redirect)).toEqual(["manual"]);
+  });
+
   it("encodes the opaque instance ID and authenticates with the Bot scheme", async () => {
     const fetchImplementation = stubDiscord(Response.json(validInstance));
 
@@ -49,7 +65,7 @@ describe("Discord Activity instance verification", () => {
       {
         headers: { Authorization: "Bot discord-bot-token" },
         method: "GET",
-        redirect: "error",
+        redirect: "manual",
       },
     );
   });
@@ -91,14 +107,20 @@ describe("Discord Activity instance verification", () => {
     );
   });
 
-  it.each([400, 401, 403, 404, 429, 500])(
+  it.each([301, 302, 303, 307, 308, 400, 401, 403, 404, 429, 500])(
     "rejects HTTP %i even when the body looks valid",
     async (status) => {
-      stubDiscord(Response.json(validInstance, { status }));
+      const fetchImplementation = stubDiscord(
+        Response.json(validInstance, {
+          status,
+          headers: { Location: "https://untrusted.example/instance" },
+        }),
+      );
 
       await expect(verifyDiscordActivityInstance(request)).rejects.toThrow(
         "Discord Activity instance verification failed.",
       );
+      expect(fetchImplementation).toHaveBeenCalledTimes(1);
     },
   );
 

@@ -18,6 +18,11 @@ This contract separates Discord SDK authentication, verified Activity membership
 
 The browser-supplied instance ID is only lookup input. It grants no authority until the bot-authenticated response verifies it. Table discovery through a verified instance remains separate from `TableRoom` ACL membership.
 
+Outbound Discord requests use the Workers-supported `redirect: "manual"` mode
+and reject every non-success response, including redirects. This prevents
+forwarding credentials to a redirect target. Runtime tests construct native
+Worker requests so unsupported request options cannot be hidden by fetch mocks.
+
 ## Session payload
 
 ```text
@@ -47,6 +52,10 @@ The signed expiry remains bounded to one hour. `ActivityInstance` validates the 
 - Mutations reject missing or non-matching `Origin`. Mock mode accepts the request URL's exact origin. Discord mode derives the exact externally visible proxy origin, `https://<DISCORD_CLIENT_ID>.discordsays.com`, from the server-configured application ID rather than from forwarded request metadata.
 - Responses do not enable permissive CORS.
 - Authentication failures use generic error codes and never reveal cookie or signature details.
+- Server-side Discord authentication diagnostics record only an allowlisted stage
+  (`oauth-token`, `oauth-user`, or `activity-instance`), failure reason, and
+  upstream HTTP status when available. Request bodies, response bodies, caught
+  exceptions, credentials, and actor/instance identifiers are never logged.
 
 ## WebSocket policy
 

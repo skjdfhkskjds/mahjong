@@ -7,6 +7,29 @@ afterEach(() => {
 });
 
 describe("Discord OAuth identity exchange", () => {
+  it("uses request options accepted by the native Worker runtime", async () => {
+    const requests: Request[] = [];
+    vi.stubGlobal(
+      "fetch",
+      vi.fn<typeof fetch>().mockImplementation((input, init) => {
+        requests.push(new Request(input, init));
+        return Promise.resolve(
+          requests.length === 1
+            ? Response.json({ access_token: "access-token" })
+            : Response.json({ id: "123", username: "east" }),
+        );
+      }),
+    );
+
+    await expect(
+      exchangeDiscordIdentity("code", "123", "secret"),
+    ).resolves.toMatchObject({ actor: { id: "123" } });
+    expect(requests.map((request) => request.redirect)).toEqual([
+      "manual",
+      "manual",
+    ]);
+  });
+
   it("exchanges form data and resolves the trusted user", async () => {
     const fetchImplementation = vi.fn<typeof fetch>();
     fetchImplementation
@@ -30,7 +53,10 @@ describe("Discord OAuth identity exchange", () => {
     });
     const tokenCall = fetchImplementation.mock.calls[0];
     expect(tokenCall?.[0]).toBe("https://discord.com/api/v10/oauth2/token");
-    expect(tokenCall?.[1]).toMatchObject({ method: "POST", redirect: "error" });
+    expect(tokenCall?.[1]).toMatchObject({
+      method: "POST",
+      redirect: "manual",
+    });
     expect(tokenCall?.[1]?.body).toBeInstanceOf(URLSearchParams);
     expect(
       (tokenCall?.[1]?.body as URLSearchParams | undefined)?.get("grant_type"),
@@ -39,7 +65,7 @@ describe("Discord OAuth identity exchange", () => {
       "https://discord.com/api/v10/users/@me",
       {
         headers: { Authorization: "Bearer short-lived-access-token" },
-        redirect: "error",
+        redirect: "manual",
       },
     );
   });
@@ -60,6 +86,48 @@ describe("Discord OAuth identity exchange", () => {
       exchangeDiscordIdentity("authorization-code", "123", "client-secret"),
     ).rejects.toThrow("Discord OAuth exchange failed.");
     expect(fetchImplementation).toHaveBeenCalledTimes(1);
+  });
+
+  it.each([301, 302, 303, 307, 308])(
+    "rejects token exchange redirect %i even with a valid-looking body",
+    async (status) => {
+      const fetchImplementation = vi.fn<typeof fetch>().mockResolvedValue(
+        Response.json(
+          { access_token: "private-token" },
+          {
+            status,
+            headers: { Location: "https://untrusted.example/token" },
+          },
+        ),
+      );
+      vi.stubGlobal("fetch", fetchImplementation);
+
+      await expect(
+        exchangeDiscordIdentity("code", "123", "secret"),
+      ).rejects.toThrow("Discord OAuth exchange failed.");
+      expect(fetchImplementation).toHaveBeenCalledTimes(1);
+    },
+  );
+
+  it("rejects a user lookup redirect even with valid-looking identity data", async () => {
+    const fetchImplementation = vi
+      .fn<typeof fetch>()
+      .mockResolvedValueOnce(Response.json({ access_token: "private-token" }))
+      .mockResolvedValueOnce(
+        Response.json(
+          { id: "123", username: "east" },
+          {
+            status: 302,
+            headers: { Location: "https://untrusted.example/user" },
+          },
+        ),
+      );
+    vi.stubGlobal("fetch", fetchImplementation);
+
+    await expect(
+      exchangeDiscordIdentity("code", "123", "secret"),
+    ).rejects.toThrow("Discord user lookup failed.");
+    expect(fetchImplementation).toHaveBeenCalledTimes(2);
   });
 
   it("rejects an invalid trusted user response", async () => {
