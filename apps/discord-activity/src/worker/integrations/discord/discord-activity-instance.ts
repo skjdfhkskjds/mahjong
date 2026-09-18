@@ -1,3 +1,5 @@
+import { reportDiscordAuthenticationFailure } from "./discord-authentication-diagnostics.js";
+
 const DISCORD_API = "https://discord.com/api/v10";
 const DISCORD_SNOWFLAKE = /^\d{1,32}$/u;
 const VERIFICATION_ERROR = "Discord Activity instance verification failed.";
@@ -81,18 +83,21 @@ export async function verifyDiscordActivityInstance(
   request: DiscordActivityInstanceVerification,
 ): Promise<VerifiedDiscordActivityInstance> {
   if (!validRequest(request)) {
+    reportDiscordAuthenticationFailure("activity-instance", "invalid-request");
     throw verificationError();
   }
 
+  let status: number | undefined;
   try {
     const response = await fetch(
       `${DISCORD_API}/applications/${request.applicationId}/activity-instances/${encodeURIComponent(request.instanceId)}`,
       {
         headers: { Authorization: `Bot ${request.botToken}` },
         method: "GET",
-        redirect: "error",
+        redirect: "manual",
       },
     );
+    status = response.status;
     if (!response.ok) {
       throw verificationError();
     }
@@ -106,6 +111,15 @@ export async function verifyDiscordActivityInstance(
     }
     return verified;
   } catch {
+    reportDiscordAuthenticationFailure(
+      "activity-instance",
+      status === undefined
+        ? "network-error"
+        : status >= 200 && status < 300
+          ? "invalid-response"
+          : "http-error",
+      status,
+    );
     throw verificationError();
   }
 }
