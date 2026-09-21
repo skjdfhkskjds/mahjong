@@ -165,6 +165,51 @@ preserves the actor, seat, and hand while a bot takes control. WebSocket attachm
 connection/session identity; room/game authority, deadlines, revisions, and
 receipts remain in SQLite.
 
+### Client connection lifecycle
+
+The browser owns one native WebSocket at a time. Every authorized initial,
+retried, or explicitly restarted connection follows the same path:
+`connecting` → `awaiting-snapshot` → `connected`. Opening the socket alone
+never enables commands. Each open requests `table/resync` using the last
+received snapshot revision (zero for a new run), and the existing server also
+sends a fresh viewer-specific snapshot on authorization. Either fresh snapshot
+satisfies initialization; the client does not reconstruct state from history.
+Receipts alone cannot complete initialization, including private reaction
+receipts that share the current public revision.
+
+`SocketStatus` contains only lifecycle data. Connecting, waiting, and
+interrupted states carry attempt data; `reconnecting` additionally carries the
+bounded retry delay. A transport error enters `disconnecting` while awaiting
+the close code, preserving authorization/replacement/upgrade close semantics.
+An ordinary close retires listeners and schedules a retry. Authentication,
+replacement, upgrade, malformed protocol, and explicit stop are terminal for
+that run. The application clears its snapshot and receipt whenever connection
+usability is lost. Only `connected` permits a validated command send, and no
+command is queued or automatically replayed.
+
+`subscribe(type, listener)` derives each callback payload from the existing
+validated wire union. A single synchronous queue preserves message arrival
+order across all types, including reentrant callbacks. A fresh initialization
+snapshot is delivered to application subscribers before the `connected`
+lifecycle notification enables controls. Subsequent receipts and snapshots are
+delivered in wire order even when their public revisions are equal. Terminal
+control messages first change lifecycle state and retire the socket, then reach
+control subscribers. A callback that stops or replaces the run cancels the
+remaining delivery for that run. Subscriber exceptions are isolated, never
+classified as malformed wire data, and never logged with message contents.
+
+The `start` callback observes lifecycle changes only. Starting again retires
+the previous run; its old stop handle and socket callbacks cannot affect the
+new run. Message subscriptions survive stops/restarts until their returned
+unsubscribe function is called; application disposal removes them and stops
+the run. Unsubscribe takes effect during an in-progress delivery. The startup
+feature owns the current snapshot and receipt; feature controllers own command
+interpretation and pending UI state.
+
+This client refactor leaves protocol v2, server authorization/snapshot behavior,
+and persisted formats unchanged. Existing client and server v2 deployments
+remain wire compatible; no new deployment overlap or migration is required.
+
 Schema v6 adds persisted player/controller generations and generation-bound
 bot work for both dedicated bots and substituted humans. It retains the permanent migration roots
 `tests/fixtures/table-room-v1-schema.ts` and

@@ -248,6 +248,18 @@ class FakeSocket {
     this.listeners.set(type, listeners);
   }
 
+  public removeEventListener(
+    type: string,
+    listener: (event: Event) => void,
+  ): void {
+    this.listeners.set(
+      type,
+      (this.listeners.get(type) ?? []).filter(
+        (candidate) => candidate !== listener,
+      ),
+    );
+  }
+
   public close(code?: number): void {
     this.closed = true;
     this.closeCode = code;
@@ -1269,6 +1281,7 @@ describe("viewer-safe table snapshots", () => {
       "message",
       new MessageEvent("message", { data: JSON.stringify(snapshot) }),
     );
+    socket.sent.length = 0;
 
     monitor.sendCommand({
       type: "table/command",
@@ -1409,7 +1422,7 @@ describe("viewer-safe table snapshots", () => {
     ]);
   });
 
-  it("publishes receipts without treating them as protocol errors", () => {
+  it("delivers receipts without treating them as protocol errors", () => {
     vi.stubGlobal("window", globalThis);
     const socket = new FakeSocket();
     const statuses: Parameters<
@@ -1419,12 +1432,10 @@ describe("viewer-safe table snapshots", () => {
       "ws://activity.test/api/table/socket?protocolVersion=2",
       () => socket as unknown as WebSocket,
     );
+    const receipts: unknown[] = [];
+    monitor.subscribe("table/receipt", (receipt) => receipts.push(receipt));
     monitor.start((status) => statuses.push(status));
     socket.emit("open", new Event("open"));
-    socket.emit(
-      "message",
-      new MessageEvent("message", { data: JSON.stringify(snapshot) }),
-    );
     socket.emit(
       "message",
       new MessageEvent("message", {
@@ -1439,9 +1450,11 @@ describe("viewer-safe table snapshots", () => {
     );
 
     expect(statuses.at(-1)).toMatchObject({
-      state: "connected",
-      latestReceipt: { commandId: "command-1", outcome: "applied" },
+      state: "awaiting-snapshot",
     });
+    expect(receipts).toMatchObject([
+      { commandId: "command-1", outcome: "applied" },
+    ]);
     expect(socket.closed).toBe(false);
   });
 
@@ -1458,6 +1471,7 @@ describe("viewer-safe table snapshots", () => {
       "message",
       new MessageEvent("message", { data: JSON.stringify(snapshot) }),
     );
+    socket.sent.length = 0;
     const commands = [
       { type: "game/start" },
       { type: "game/draw" },
@@ -1535,7 +1549,7 @@ describe("viewer-safe table snapshots", () => {
         lastSeenStateVersion: 0,
       }),
     ]);
-    expect(states.at(-1)).toBe("reconnecting");
+    expect(states.at(-1)).toBe("awaiting-snapshot");
     expect(() => {
       monitor.sendCommand({
         type: "table/command",
@@ -1597,7 +1611,6 @@ describe("viewer-safe table snapshots", () => {
 
     expect(statuses.at(-1)).toMatchObject({
       state: "connected",
-      snapshot: { stateVersion: 7 },
     });
     expect(createSocket).toHaveBeenCalledTimes(2);
     monitor.sendCommand({
