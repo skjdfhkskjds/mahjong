@@ -2,7 +2,10 @@ import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, it } from "vitest";
 
 import type { GameAssetSet } from "./assets/game-asset-set.js";
-import { defaultGameAssetSet } from "./assets/sample-asset-sets.js";
+import {
+  defaultGameAssetSet,
+  sampleGameAssetSet,
+} from "./assets/sample-asset-sets.js";
 import { BoardSurface } from "./board-surface.js";
 import { GameAssetsProvider } from "./game-assets-provider.js";
 import { GameIcon } from "./game-icon.js";
@@ -18,6 +21,32 @@ const emptyPack: GameAssetSet = {
 };
 
 describe("game presentation", () => {
+  it("uses the selected identity defaults while preserving a supplied avatar across packs", () => {
+    const avatar = { src: "/personal-avatar.png", width: 80, height: 80 };
+    for (const assets of [defaultGameAssetSet, sampleGameAssetSet]) {
+      const { human, bot } = assets.players;
+      if (human === undefined || bot === undefined) {
+        throw new Error("Sample identity artwork is missing.");
+      }
+      const markup = renderToStaticMarkup(
+        <GameAssetsProvider assets={assets}>
+          <PlayerIcon displayName="Ada" kind="human" />
+          <PlayerIcon displayName="Practice bot" kind="bot" />
+          <PlayerIcon
+            displayName="Personal avatar"
+            kind="human"
+            avatar={avatar}
+          />
+        </GameAssetsProvider>,
+      );
+      expect(markup).toContain(`src="${human.src}"`);
+      expect(markup).toContain(`src="${bot.src}"`);
+      expect(markup).toContain('src="/personal-avatar.png"');
+      expect(markup).toContain('aria-label="Ada, human"');
+      expect(markup).toContain('aria-label="Practice bot, bot"');
+    }
+  });
+
   it("retains labels, initials, content, and state when a pack omits art", () => {
     const markup = renderToStaticMarkup(
       <GameAssetsProvider assets={emptyPack}>
