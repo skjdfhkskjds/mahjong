@@ -72,12 +72,14 @@ function formatExpiry(value: string | undefined): string {
       }).format(date);
 }
 
-function LobbyPanel({
+export function LobbyPanel({
+  canManageBots = false,
   connected,
   latestReceipt,
   onCommand,
   snapshot,
 }: {
+  readonly canManageBots?: boolean;
   readonly connected: boolean;
   readonly latestReceipt: TableReceipt | undefined;
   readonly onCommand: (command: TableCommandEnvelope["command"]) => boolean;
@@ -100,6 +102,12 @@ function LobbyPanel({
         </p>
       </div>
 
+      {canManageBots ? (
+        <p>
+          Claim a seat, then add bots to empty seats to play solo or with
+          friends. Bots make random legal moves and are ready automatically.
+        </p>
+      ) : null}
       {snapshot ? (
         <>
           {rejected ? (
@@ -141,6 +149,26 @@ function LobbyPanel({
                       {viewer.role === "player" ? "Move to" : "Claim"}{" "}
                       {seat.seat} seat
                     </button>
+                  ) : null}
+                  {canManageBots && !seat.occupant ? (
+                    <TableCommandButton
+                      className="lobby-button"
+                      disabled={!connected || viewer?.role !== "player"}
+                      command={{ type: "lobby/add-bot", seat: seat.seat }}
+                      onCommand={onCommand}
+                    >
+                      Add bot
+                    </TableCommandButton>
+                  ) : null}
+                  {canManageBots && seat.occupant?.id.startsWith("bot:") ? (
+                    <TableCommandButton
+                      className="lobby-button lobby-button--quiet"
+                      disabled={!connected || viewer?.role !== "player"}
+                      command={{ type: "lobby/remove-bot", seat: seat.seat }}
+                      onCommand={onCommand}
+                    >
+                      Remove bot
+                    </TableCommandButton>
                   ) : null}
                   {isViewerSeat ? (
                     <div className="seat-actions">
@@ -295,6 +323,10 @@ export function App({ config }: AppProps) {
           </section>
         ) : snapshot?.view.phase === "lobby" ? (
           <LobbyPanel
+            canManageBots={
+              status.sessionResponse?.access === "member" &&
+              status.sessionResponse.role === "owner"
+            }
             connected={lobbyConnected}
             latestReceipt={status.latestReceipt}
             onCommand={sendLobbyCommand}
@@ -309,6 +341,10 @@ export function App({ config }: AppProps) {
           />
         ) : (
           <LobbyPanel
+            canManageBots={
+              status.sessionResponse?.access === "member" &&
+              status.sessionResponse.role === "owner"
+            }
             connected={lobbyConnected}
             latestReceipt={status.latestReceipt}
             onCommand={sendLobbyCommand}

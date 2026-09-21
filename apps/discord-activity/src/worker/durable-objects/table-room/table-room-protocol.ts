@@ -16,6 +16,8 @@ const SEATS = ["east", "south", "west", "north"] as const;
 export type TableSeat = (typeof SEATS)[number];
 
 export type TableCommand =
+  | { readonly type: "lobby/add-bot"; readonly seat: TableSeat }
+  | { readonly type: "lobby/remove-bot"; readonly seat: TableSeat }
   | { readonly type: "lobby/claim-seat"; readonly seat: TableSeat }
   | { readonly type: "lobby/leave-seat" }
   | { readonly type: "lobby/set-ready"; readonly ready: boolean }
@@ -169,11 +171,13 @@ function parseReactionResponse(
 function parseCommand(value: unknown): TableCommand | undefined {
   if (!isRecord(value) || typeof value["type"] !== "string") return undefined;
   if (
-    value["type"] === "lobby/claim-seat" &&
+    (value["type"] === "lobby/claim-seat" ||
+      value["type"] === "lobby/add-bot" ||
+      value["type"] === "lobby/remove-bot") &&
     hasExactKeys(value, ["seat", "type"]) &&
     SEATS.includes(value["seat"] as TableSeat)
   ) {
-    return { type: "lobby/claim-seat", seat: value["seat"] as TableSeat };
+    return { type: value["type"], seat: value["seat"] as TableSeat };
   }
   if (
     (value["type"] === "lobby/leave-seat" ||

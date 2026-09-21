@@ -1,6 +1,6 @@
 import { env } from "cloudflare:workers";
 import { evictDurableObject, runInDurableObject } from "cloudflare:test";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import {
   applyGameCommand,
   applyGameCommandV2,
@@ -10,6 +10,7 @@ import {
   canonicalGameJson,
   decideReactionExpiration,
   decodeCanonicalVersionedGameJson,
+  projectGameV2,
   reduceVersionedGameEvent,
   startHongKongV1Game,
   startHongKongV2Game,
@@ -22,7 +23,13 @@ import { scheduleDeadline } from "../../src/worker/durable-objects/table-room/de
 import {
   persistPreparedGameBatch,
   prepareGameEventBatch,
+  verifyStoredGame,
 } from "../../src/worker/durable-objects/table-room/table-room-game-store.js";
+import {
+  chooseBotMove,
+  readBotIds,
+  readBotWork,
+} from "../../src/worker/durable-objects/table-room/table-room-bots.js";
 import { tableRoomV1Schema } from "../fixtures/table-room-v1-schema.js";
 
 interface Binding {
@@ -1760,7 +1767,7 @@ describe("TableRoom authority", () => {
     ).resolves.toMatchObject({
       events: 7,
       hashesValid: true,
-      schemaVersion: 4,
+      schemaVersion: 5,
     });
     spectator.socket.close(1000, "test complete");
     south.socket.close(1000, "test complete");
@@ -2430,6 +2437,8 @@ describe("TableRoom authority", () => {
     };
     await runInDurableObject(stub, (_instance, state) => {
       for (const table of [
+        "bot_work",
+        "bot_players",
         "system_command_receipts",
         "deadlines",
         "player_automation",
@@ -2544,7 +2553,7 @@ describe("TableRoom authority", () => {
       capabilities: 1,
       connectionGrant: "fixture-connection",
       members: 2,
-      schemaVersion: 4,
+      schemaVersion: 5,
       stateVersion: 0,
       tables: 1,
     });
@@ -2571,6 +2580,8 @@ describe("TableRoom authority", () => {
     await messages;
     connection.socket.close(1000, "downgrade fixture");
     await runInDurableObject(stub, (_instance, state) => {
+      state.storage.sql.exec("DROP TABLE bot_work");
+      state.storage.sql.exec("DROP TABLE bot_players");
       state.storage.sql.exec("DROP TABLE system_command_receipts");
       state.storage.sql.exec("DROP TABLE deadlines");
       state.storage.sql.exec("DROP TABLE player_automation");
@@ -2603,7 +2614,7 @@ describe("TableRoom authority", () => {
             )
             .one().schema_version,
       ),
-    ).resolves.toBe(4);
+    ).resolves.toBe(5);
     migrated.socket.close(1000, "test complete");
   });
 
@@ -2647,6 +2658,8 @@ describe("TableRoom authority", () => {
           );
         }
       });
+      state.storage.sql.exec("DROP TABLE bot_work");
+      state.storage.sql.exec("DROP TABLE bot_players");
       state.storage.sql.exec("DROP TABLE system_command_receipts");
       state.storage.sql.exec("DROP TABLE deadlines");
       state.storage.sql.exec("DROP TABLE player_automation");
@@ -2690,7 +2703,7 @@ describe("TableRoom authority", () => {
         "disconnect",
         "disconnect",
       ],
-      schemaVersion: 4,
+      schemaVersion: 5,
     });
 
     const playerById = new Map<
@@ -4150,4 +4163,503 @@ describe("TableRoom authority", () => {
     expect(await resyncMessage).toEqual(currentInitial);
     currentSocket.close(1000, "test complete");
   });
+});
+
+describe("persistent bot players", () => {
+  async function currentCommand(
+    stub: DurableObjectStub<TableRoom>,
+    socket: WebSocket,
+    command: object,
+    commandId = crypto.randomUUID(),
+  ): Promise<ReceiptMessage> {
+    const version = await runInDurableObject(
+      stub,
+      (_instance, state) =>
+        state.storage.sql
+          .exec<{ state_version: number }>(
+            "SELECT state_version FROM lobby_state WHERE singleton = 1",
+          )
+          .one().state_version,
+    );
+    const receipt = nextReceipt(socket);
+    socket.send(commandMessage(commandId, version, command));
+    return receipt;
+  }
+
+  async function setupBots() {
+    const tableId = `bots-${crypto.randomUUID()}`;
+    const stub = tableRoom(tableId);
+    const { binding } = await createTable(stub, tableId);
+    const activated = await activateSession(stub, binding, owner.id, 1);
+    await activated.body?.cancel();
+    const { socket } = await openSocket(stub, binding, 1);
+    expect(
+      await currentCommand(stub, socket, {
+        type: "lobby/add-bot",
+        seat: "south",
+      }),
+    ).toMatchObject({
+      outcome: "rejected",
+      error: { code: "owner-must-be-seated" },
+    });
+    expect(
+      await currentCommand(stub, socket, {
+        type: "lobby/claim-seat",
+        seat: "east",
+      }),
+    ).toMatchObject({ outcome: "applied" });
+    for (const seat of ["south", "west", "north"]) {
+      expect(
+        await currentCommand(stub, socket, { type: "lobby/add-bot", seat }),
+      ).toMatchObject({ outcome: "applied" });
+    }
+    return { stub, binding, socket };
+  }
+
+  it("authorizes only a seated owner, preserves receipt idempotency, and removes only bots", async () => {
+    const { stub, binding, socket } = await setupBots();
+    try {
+      expect(
+        await currentCommand(stub, socket, {
+          type: "lobby/add-bot",
+          seat: "east",
+        }),
+      ).toMatchObject({
+        outcome: "rejected",
+        error: { code: "seat-unavailable" },
+      });
+      expect(
+        await currentCommand(stub, socket, {
+          type: "lobby/remove-bot",
+          seat: "east",
+        }),
+      ).toMatchObject({ outcome: "rejected", error: { code: "bot-required" } });
+      await addMember(stub, binding, member);
+      const joined = await openSocket(stub, binding, 1, member);
+      try {
+        expect(
+          await currentCommand(stub, joined.socket, {
+            type: "lobby/remove-bot",
+            seat: "south",
+          }),
+        ).toMatchObject({
+          outcome: "rejected",
+          error: { code: "owner-required" },
+        });
+      } finally {
+        joined.socket.close();
+      }
+      const before = await runInDurableObject(stub, (_instance, state) => [
+        ...readBotIds(state.storage.sql),
+      ]);
+      const bot = before[0];
+      if (!bot) throw new Error("Missing bot fixture.");
+      const deniedSession = await activateSession(stub, binding, bot, 1);
+      expect(deniedSession.status).toBe(403);
+      await deniedSession.body?.cancel();
+      const deniedSocket = await connect(stub, binding, 1, {
+        id: bot,
+        displayName: "Bot",
+      });
+      expect(deniedSocket.status).toBe(403);
+      await deniedSocket.body?.cancel();
+      const commandId = crypto.randomUUID();
+      const removed = await currentCommand(
+        stub,
+        socket,
+        { type: "lobby/remove-bot", seat: "south" },
+        commandId,
+      );
+      expect(removed.outcome).toBe("applied");
+      const replay = nextReceipt(socket);
+      socket.send(
+        commandMessage(commandId, removed.stateVersion - 1, {
+          type: "lobby/remove-bot",
+          seat: "south",
+        }),
+      );
+      expect(await replay).toEqual(removed);
+      expect(
+        await runInDurableObject(
+          stub,
+          (_instance, state) => readBotIds(state.storage.sql).size,
+        ),
+      ).toBe(2);
+      expect(
+        await currentCommand(stub, socket, {
+          type: "lobby/add-bot",
+          seat: "south",
+        }),
+      ).toMatchObject({ outcome: "applied" });
+      await evictDurableObject(stub);
+      const resync = nextMessage(socket);
+      socket.send(
+        JSON.stringify({
+          type: "table/resync",
+          protocolVersion: 2,
+          lastSeenStateVersion: removed.stateVersion,
+        }),
+      );
+      const snapshot = await resync;
+      expect(
+        snapshot.view.seats.filter(({ occupant }) =>
+          occupant?.id.startsWith("bot:"),
+        ),
+      ).toHaveLength(3);
+      expect(snapshot.view.seats.filter(({ ready }) => ready)).toHaveLength(3);
+      expect(snapshot.view.seats.every(({ autopilot }) => !autopilot)).toBe(
+        true,
+      );
+      expect(
+        await runInDurableObject(
+          stub,
+          (_instance, state) =>
+            state.storage.sql
+              .exec<{ count: number }>(
+                "SELECT count(*) AS count FROM player_automation WHERE actor_id LIKE 'bot:%'",
+              )
+              .one().count,
+        ),
+      ).toBe(0);
+    } finally {
+      socket.close();
+    }
+  });
+
+  it("persists private bot reactions once without broadcasting, and pauses abandoned rooms", async () => {
+    const { stub, binding, socket } = await setupBots();
+    try {
+      const seats = await runInDurableObject(stub, (_instance, state) =>
+        state.storage.sql
+          .exec<{ seat: GameSeatName; actor_id: string }>(
+            "SELECT seat, actor_id FROM lobby_seats",
+          )
+          .toArray(),
+      );
+      const actors = Object.fromEntries(
+        seats.map((row) => [row.seat, row.actor_id]),
+      ) as Record<GameSeatName, string>;
+      const started = startHongKongV2Game(
+        actors,
+        Uint8Array.from(
+          { length: 1_028 },
+          (_, index) => (index * 73 + 202) & 0xff,
+        ),
+      );
+      const tileId = started.state.players.east.hand[0];
+      if (tileId === undefined) throw new Error("Dealer has no tile.");
+      const discarded = applyGameCommandV2(
+        started.state,
+        started.state.players.east.actorId,
+        { type: "game/discard", tileId },
+      );
+      if (!discarded.accepted || !discarded.state?.reactionWindow)
+        throw new Error("Missing reaction fixture.");
+      const prepared = await prepareGameEventBatch(undefined, [
+        started.event,
+        ...discarded.events,
+      ]);
+      await runInDurableObject(stub, (_instance, state) => {
+        persistPreparedGameBatch(state.storage, prepared, () => {
+          // setupBots already persisted the seats used by this fixture.
+        });
+      });
+      await evictDurableObject(stub);
+      const before = await runInDurableObject(
+        stub,
+        async (_instance, state) => {
+          const jobs = readBotWork(state.storage.sql);
+          const job = jobs[0];
+          if (!job) throw new Error("No reacting bot.");
+          state.storage.sql.exec(
+            "UPDATE bot_work SET due_at = ?",
+            Date.now() + 60_000,
+          );
+          state.storage.sql.exec(
+            "UPDATE bot_work SET due_at = 0 WHERE actor_id = ?",
+            job.actor_id,
+          );
+          return {
+            job,
+            sequence: (await verifyStoredGame(state.storage.sql))?.state
+              .sequence,
+            version: state.storage.sql
+              .exec("SELECT state_version FROM lobby_state")
+              .one(),
+            others: readBotWork(state.storage.sql).filter(
+              (work) => work.actor_id !== job.actor_id,
+            ),
+          };
+        },
+      );
+      const messages: unknown[] = [];
+      socket.addEventListener("message", (event) => {
+        messages.push(JSON.parse(String(event.data)) as unknown);
+      });
+      await runInDurableObject(stub, async (instance, state) => {
+        await state.storage.deleteAlarm();
+        await instance.alarm();
+        const after = await verifyStoredGame(state.storage.sql);
+        expect(after?.state.sequence).toBe((before.sequence ?? 0) + 1);
+        expect(
+          state.storage.sql.exec("SELECT state_version FROM lobby_state").one(),
+        ).toEqual(before.version);
+        expect(readBotWork(state.storage.sql)).toEqual(before.others);
+        await instance.alarm();
+        expect((await verifyStoredGame(state.storage.sql))?.lastEventHash).toBe(
+          after?.lastEventHash,
+        );
+      });
+      const resync = nextMessage(socket);
+      socket.send(
+        JSON.stringify({
+          type: "table/resync",
+          protocolVersion: 2,
+          lastSeenStateVersion: 0,
+        }),
+      );
+      const snapshot = await resync;
+      expect(messages).toEqual([snapshot]);
+      expect(
+        snapshot.view.game?.players?.every((player) => !("hand" in player)),
+      ).toBe(true);
+      await evictDurableObject(stub);
+      await runInDurableObject(stub, async (instance, state) => {
+        const stored = await verifyStoredGame(state.storage.sql);
+        if (stored?.state.schemaVersion !== 2)
+          throw new Error("Missing v2 game.");
+        expect(
+          projectGameV2(stored.state, before.job.actor_id).viewerActions
+            ?.reaction?.status,
+        ).toBe("submitted");
+        state.storage.sql.exec(
+          "UPDATE room_lifecycle SET abandoned = 1 WHERE singleton = 1",
+        );
+        state.storage.sql.exec("UPDATE bot_work SET due_at = 0");
+        await instance.alarm();
+        expect(readBotWork(state.storage.sql)).toEqual([]);
+        expect((await verifyStoredGame(state.storage.sql))?.lastEventHash).toBe(
+          stored.lastEventHash,
+        );
+      });
+      const reconnect = await openSocket(stub, binding, 1);
+      expect(reconnect.initial.view.phase).toBe("playing");
+      reconnect.socket.close();
+      expect(
+        await runInDurableObject(
+          stub,
+          (_instance, state) => readBotWork(state.storage.sql).length,
+        ),
+      ).toBeGreaterThan(0);
+    } finally {
+      socket.close();
+    }
+  });
+
+  it("rolls back bot state, receipts, and queued work together before retrying", async () => {
+    const { stub, socket } = await setupBots();
+    try {
+      expect(
+        await currentCommand(stub, socket, {
+          type: "lobby/set-ready",
+          ready: true,
+        }),
+      ).toMatchObject({ outcome: "applied" });
+      expect(
+        await currentCommand(stub, socket, { type: "game/start" }),
+      ).toMatchObject({ outcome: "applied" });
+      const discard = await runInDurableObject(
+        stub,
+        async (_instance, state) => {
+          const game = await verifyStoredGame(state.storage.sql);
+          if (game?.state.schemaVersion !== 2) throw new Error("Missing game.");
+          expect(game.state.phase).toBe("awaiting-dealer-discard");
+          return projectGameV2(game.state, owner.id).viewerActions?.self.find(
+            (command) => command.type === "game/discard",
+          );
+        },
+      );
+      if (discard) {
+        expect(await currentCommand(stub, socket, discard)).toMatchObject({
+          outcome: "applied",
+        });
+      }
+      await runInDurableObject(stub, async (instance, state) => {
+        const sql = state.storage.sql;
+        await state.storage.deleteAlarm();
+        sql.exec("UPDATE bot_work SET due_at = ?", Date.now() + 60_000);
+        const job = readBotWork(sql)[0];
+        if (!job) throw new Error("Missing bot work.");
+        sql.exec(
+          "UPDATE bot_work SET due_at = 0 WHERE actor_id = ?",
+          job.actor_id,
+        );
+        const before = {
+          game: await verifyStoredGame(sql),
+          events: sql
+            .exec("SELECT * FROM game_events ORDER BY sequence")
+            .toArray(),
+          receipts: sql
+            .exec("SELECT * FROM lobby_command_receipts ORDER BY command_id")
+            .toArray(),
+          version: sql.exec("SELECT * FROM lobby_state").one(),
+          work: readBotWork(sql),
+        };
+        sql.exec(
+          "CREATE TRIGGER fail_bot_receipt BEFORE INSERT ON lobby_command_receipts WHEN NEW.actor_id LIKE 'bot:%' BEGIN SELECT RAISE(ABORT, 'injected bot receipt failure'); END",
+        );
+        // Bypass only the outer concurrency gate: an alarm exception resets the
+        // object, preventing inspection of the transaction that just rolled back.
+        const dispatcher = instance as unknown as {
+          drainDueDeadlines(now: number): Promise<boolean>;
+        };
+        try {
+          await expect(
+            dispatcher.drainDueDeadlines(Date.now()),
+          ).rejects.toThrow("injected bot receipt failure");
+          expect(await verifyStoredGame(sql)).toEqual(before.game);
+          expect(
+            sql.exec("SELECT * FROM game_events ORDER BY sequence").toArray(),
+          ).toEqual(before.events);
+          expect(
+            sql
+              .exec("SELECT * FROM lobby_command_receipts ORDER BY command_id")
+              .toArray(),
+          ).toEqual(before.receipts);
+          expect(sql.exec("SELECT * FROM lobby_state").one()).toEqual(
+            before.version,
+          );
+          expect(readBotWork(sql)).toEqual(before.work);
+        } finally {
+          sql.exec("DROP TRIGGER fail_bot_receipt");
+        }
+        await instance.alarm();
+        expect(
+          sql
+            .exec(
+              "SELECT command_id FROM lobby_command_receipts WHERE command_id = ?",
+              job.command_id,
+            )
+            .toArray(),
+        ).toEqual([{ command_id: job.command_id }]);
+        expect(
+          readBotWork(sql).some((work) => work.command_id === job.command_id),
+        ).toBe(false);
+        const recovered = await verifyStoredGame(sql);
+        expect(recovered?.state.sequence).toBeGreaterThan(
+          before.game?.state.sequence ?? 0,
+        );
+        await instance.alarm();
+        expect((await verifyStoredGame(sql))?.lastEventHash).toBe(
+          recovered?.lastEventHash,
+        );
+      });
+    } finally {
+      socket.close();
+    }
+  });
+
+  it("plays a full hand through server alarms and recovers queued work after eviction", async () => {
+    const { stub, binding, socket } = await setupBots();
+    let seed = 21;
+    const random = vi
+      .spyOn(crypto, "getRandomValues")
+      .mockImplementation((array) => {
+        // Bot choices must not depend on the UUID order used to drain jobs.
+        if (array instanceof Uint32Array && array.length === 1) {
+          array[0] = 0;
+          return array;
+        }
+        const bytes = new Uint8Array(
+          array.buffer,
+          array.byteOffset,
+          array.byteLength,
+        );
+        for (let index = 0; index < bytes.length; index += 1) {
+          seed = (Math.imul(seed, 1_664_525) + 1_013_904_223) >>> 0;
+          bytes[index] = seed >>> 24;
+        }
+        return array;
+      });
+    try {
+      expect(
+        await currentCommand(stub, socket, {
+          type: "lobby/set-ready",
+          ready: true,
+        }),
+      ).toMatchObject({ outcome: "applied" });
+      expect(
+        await currentCommand(stub, socket, { type: "game/start" }),
+      ).toMatchObject({ outcome: "applied" });
+      expect(
+        await currentCommand(stub, socket, {
+          type: "lobby/remove-bot",
+          seat: "south",
+        }),
+      ).toMatchObject({ outcome: "rejected", error: { code: "lobby-closed" } });
+      const identities = await runInDurableObject(stub, (_instance, state) => [
+        ...readBotIds(state.storage.sql),
+      ]);
+      await evictDurableObject(stub);
+      expect(
+        await runInDurableObject(stub, (_instance, state) => [
+          ...readBotIds(state.storage.sql),
+        ]),
+      ).toEqual(identities);
+      const reconnect = await openSocket(stub, binding, 1);
+      expect(reconnect.initial.view.phase).toBe("playing");
+      reconnect.socket.close();
+      let finished = false;
+      for (let index = 0; index < 600; index += 1) {
+        const view = await runInDurableObject(
+          stub,
+          async (_instance, state) => {
+            const game = await verifyStoredGame(state.storage.sql);
+            if (game?.state.schemaVersion !== 2)
+              throw new Error("Missing game.");
+            return projectGameV2(game.state, owner.id);
+          },
+        );
+        if (view.phase === "complete" || view.phase === "exhausted") {
+          finished = true;
+          break;
+        }
+        const command = chooseBotMove(view, (index % 17) / 17);
+        if (command) {
+          const receipt = await currentCommand(stub, socket, command);
+          expect(["applied", "rejected"]).toContain(receipt.outcome);
+          if (receipt.outcome === "rejected")
+            expect(receipt.error?.code).toBe("stale-state-version");
+        }
+        await runInDurableObject(stub, async (instance, state) => {
+          await state.storage.deleteAlarm();
+          state.storage.sql.exec("UPDATE bot_work SET due_at = 0");
+          await instance.alarm();
+        });
+      }
+      expect(finished).toBe(true);
+      const terminal = await runInDurableObject(
+        stub,
+        async (instance, state) => {
+          const game = await verifyStoredGame(state.storage.sql);
+          if (!game) throw new Error("Missing terminal game.");
+          const hash = game.lastEventHash;
+          expect(readBotWork(state.storage.sql)).toEqual([]);
+          await instance.alarm();
+          expect(
+            (await verifyStoredGame(state.storage.sql))?.lastEventHash,
+          ).toBe(hash);
+          return state.storage.sql
+            .exec<{ count: number }>(
+              "SELECT count(*) AS count FROM lobby_command_receipts WHERE actor_id LIKE 'bot:%'",
+            )
+            .one().count;
+        },
+      );
+      expect(terminal).toBeGreaterThan(0);
+    } finally {
+      socket.close();
+      random.mockRestore();
+    }
+  }, 30_000);
 });

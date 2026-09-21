@@ -8,6 +8,7 @@ import type {
 } from "../adapters/transport/table-socket-status.js";
 import {
   GamePanel,
+  LobbyPanel,
   reactionSubmissionPending,
   TableCommandButton,
 } from "./app.js";
@@ -100,6 +101,8 @@ describe("GamePanel", () => {
       return true;
     });
     const commands = [
+      { type: "lobby/add-bot", seat: "south" },
+      { type: "lobby/remove-bot", seat: "west" },
       { type: "game/start" },
       { type: "game/draw" },
       {
@@ -510,5 +513,67 @@ describe("GamePanel", () => {
     expect(markup).toContain("fully-concealed suppressed by all-triplets");
     expect(markup).toContain("Exact seat payments");
     expect(markup).toContain("<dt>Total</dt><dd>+0</dd>");
+  });
+});
+
+describe("LobbyPanel bot controls", () => {
+  const lobby: ViewerSafeTableSnapshot = {
+    ...snapshot,
+    view: {
+      ...snapshot.view,
+      phase: "lobby",
+      seats: snapshot.view.seats.map((seat) =>
+        seat.seat === "east"
+          ? seat
+          : {
+              ...seat,
+              ready: seat.seat === "south",
+              occupant:
+                seat.seat === "south"
+                  ? {
+                      id: "bot:00000000-0000-4000-8000-000000000000",
+                      displayName: "Bot South",
+                    }
+                  : null,
+            },
+      ),
+    },
+  };
+  it("shows normal lobby bot controls only to the owner", () => {
+    const render = (canManageBots: boolean, connected: boolean) =>
+      renderToStaticMarkup(
+        <LobbyPanel
+          canManageBots={canManageBots}
+          connected={connected}
+          latestReceipt={undefined}
+          onCommand={vi.fn()}
+          snapshot={lobby}
+        />,
+      );
+    const owner = render(true, true);
+    expect(owner.match(/>Add bot</gu)).toHaveLength(2);
+    expect(owner.match(/>Remove bot</gu)).toHaveLength(1);
+    expect(owner).toContain("Bot South");
+    expect(render(false, true)).not.toContain(">Add bot<");
+    expect(render(false, true)).not.toContain(">Remove bot<");
+    expect(render(true, false)).toMatch(/disabled="">Add bot/gu);
+    const spectator = {
+      ...lobby,
+      view: {
+        ...lobby.view,
+        viewer: { actor: actors[0], role: "spectator" as const },
+      },
+    };
+    expect(
+      renderToStaticMarkup(
+        <LobbyPanel
+          canManageBots
+          connected
+          latestReceipt={undefined}
+          onCommand={vi.fn()}
+          snapshot={spectator}
+        />,
+      ),
+    ).toMatch(/disabled="">Add bot/gu);
   });
 });

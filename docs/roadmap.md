@@ -2,6 +2,19 @@
 
 Last reviewed: 2026-09-01
 
+## Bot-player feature (issue #21)
+
+Owners can add/remove random legal-move bots before a hand in Discord and
+browser tables, including mixed human/bot games. This supersedes the earlier
+exclusion of computer players for this limited random policy; strategic AI
+remains out of scope. Server-owned bot identities and queued actions persist
+in storage schema v5. Canonical rules state remains v2 and the wire change is
+additive within protocol v2. See [ADR 0015](decisions/0015-persistent-bot-players.md)
+for recovery, privacy, and deployment overlap. Focused evidence covers a full
+hand, eviction, private reaction retries, abandonment, access controls, strict
+commands, and permanent v1/v3/v4 migration fixtures. Next-hand progression is
+still Milestone 7.
+
 ## Goal and release boundary
 
 Build a private four-player Discord Activity for the project-defined `hong-kong/v1` profile. The authoritative table lives in one SQLite-backed `TableRoom` Durable Object; a separate `ActivityInstance` Durable Object binds a live Discord Activity instance to a persistent table. One Worker serves the React client, HTTP API, OAuth exchange, and WebSocket routing.

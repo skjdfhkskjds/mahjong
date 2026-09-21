@@ -1,3 +1,4 @@
+import { createBotTables, verifyBotPersistence } from "./table-room-bots.js";
 import {
   canonicalVersionedEventHashPayload,
   canonicalVersionedGameEventJson,
@@ -56,7 +57,7 @@ export interface VerifiedStoredGame {
 
 export type EventDigest = (payload: string) => Promise<string>;
 
-const V4_SCHEMA_VERSION = 4;
+const CURRENT_SCHEMA_VERSION = 5;
 
 interface SchemaVersionRow {
   readonly [key: string]: SqlStorageValue;
@@ -393,10 +394,10 @@ function requireV4Tables(sql: SqlStorage): void {
 }
 
 /**
- * Transactionally advances every supported TableRoom schema root to v4. This
- * path-isolated migration is invoked by TableRoom construction in Stage 5.
+ * Transactionally advances every supported TableRoom schema root to v5.
+ * TableRoom construction validates the complete schema before recovery.
  */
-export function migrateTableRoomStorageToV4(
+export function migrateTableRoomStorageToV5(
   storage: DurableObjectStorage,
 ): void {
   storage.sql.exec("PRAGMA foreign_keys = ON");
@@ -418,7 +419,7 @@ export function migrateTableRoomStorageToV4(
     if (
       !Number.isSafeInteger(metadata.schema_version) ||
       metadata.schema_version < 1 ||
-      metadata.schema_version > V4_SCHEMA_VERSION
+      metadata.schema_version > CURRENT_SCHEMA_VERSION
     ) {
       throw new Error("Unsupported TableRoom storage schema version.");
     }
@@ -480,8 +481,15 @@ export function migrateTableRoomStorageToV4(
       );
     }
     requireV4Tables(sql);
+    if (version <= 4) {
+      createBotTables(sql);
+      sql.exec(
+        "UPDATE storage_metadata SET schema_version = 5 WHERE singleton = 1",
+      );
+    }
+    verifyBotPersistence(sql);
     if (sql.exec("PRAGMA foreign_key_check").toArray().length !== 0) {
-      throw new Error("TableRoom storage violates schema-v4 foreign keys.");
+      throw new Error("TableRoom storage violates schema-v5 foreign keys.");
     }
   });
 }

@@ -34,10 +34,14 @@ The roadmap is the source of truth for sequence and status. The rules decision r
 
 ## Fixed product boundaries
 
-The first release is a private, four-seat Hong Kong Mahjong game with spectators, reconnect support, full-hand scoring explanations, and virtual scores. It excludes public matchmaking, ranking, computer players, monetization, Japanese rules, companion-bot UX/processes, and fully trustless cryptography. A Discord bot API credential is still required for backend Activity Instance verification.
+The first release is a private, four-seat Hong Kong Mahjong game with spectators, reconnect support, full-hand scoring explanations, and virtual scores. Owners can fill empty seats with random-move bots for solo or mixed human/bot games. It excludes public matchmaking, ranking, strategic AI, monetization, Japanese rules, companion-bot UX/processes, and fully trustless cryptography. A Discord bot API credential is still required for backend Activity Instance verification.
 
 The server is authoritative for ordering and hidden state. Clients receive viewer-specific projections and may independently verify public transitions, scores, and post-hand fairness evidence.
 
 ## Local application
 
-Run `corepack pnpm app:dev` for standalone mock mode. See [the Activity application guide](apps/discord-activity/README.md) for Discord-proxied development, required secrets, verification, and the guarded production deployment workflow.
+Run `corepack pnpm app:dev` for standalone mock mode, or
+`corepack pnpm app:dev:solo` to try the same bot-player feature without Discord credentials
+in a temporary local table. See [the Activity application guide](apps/discord-activity/README.md)
+for setup, reset behavior, Discord-proxied development, verification, and the
+guarded production deployment workflow.
