@@ -280,6 +280,52 @@ describe("TableRoom authority persistence primitives", () => {
     });
   });
 
+  it("rejects reuse of a committed prepared batch through event sequence uniqueness", async () => {
+    const stub = tableRoom(`authority-stale-batch-${crypto.randomUUID()}`);
+    await runInDurableObject(stub, async (_instance, state) => {
+      const sql = state.storage.sql;
+      installActiveV3Fixture(sql);
+      migrateTableRoomStorageToV4(state.storage);
+      const legacy = await verifyStoredGame(sql);
+      if (legacy === undefined) throw new Error("Fixture game is absent.");
+      const upgrade = await prepareV1GameUpgrade(legacy);
+      persistPreparedGameBatch(state.storage, upgrade, (transaction) => {
+        transaction.exec(
+          "UPDATE lobby_state SET state_version = state_version + 1 WHERE singleton = 1",
+        );
+        transaction.exec(
+          "INSERT INTO lobby_command_receipts (command_id, actor_id, request_json, response_json, created_at) VALUES ('committed-upgrade', 'actor:east', '{}', '{}', 100)",
+        );
+      });
+      const readCommittedRows = () => ({
+        checkpoint: sql.exec("SELECT * FROM canonical_game_state").toArray(),
+        events: sql
+          .exec("SELECT * FROM game_events ORDER BY sequence")
+          .toArray(),
+        receipts: sql
+          .exec("SELECT * FROM lobby_command_receipts ORDER BY command_id")
+          .toArray(),
+        version: sql
+          .exec("SELECT state_version FROM lobby_state WHERE singleton = 1")
+          .one(),
+      });
+      const committed = readCommittedRows();
+      const verified = await verifyStoredGame(sql);
+
+      // Deliberate helper misuse: production serializes preparation through commit.
+      expect(() => {
+        persistPreparedGameBatch(state.storage, upgrade, (transaction) => {
+          transaction.exec("DELETE FROM lobby_command_receipts");
+          transaction.exec(
+            "UPDATE lobby_state SET state_version = state_version + 1 WHERE singleton = 1",
+          );
+        });
+      }).toThrow("UNIQUE constraint failed: game_events.sequence");
+      expect(readCommittedRows()).toEqual(committed);
+      await expect(verifyStoredGame(sql)).resolves.toEqual(verified);
+    });
+  });
+
   it("rolls back the event batch and checkpoint when a related write fails", async () => {
     const stub = tableRoom(`authority-rollback-${crypto.randomUUID()}`);
     await runInDurableObject(stub, async (_instance, state) => {

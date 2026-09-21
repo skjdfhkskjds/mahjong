@@ -37,8 +37,6 @@ export interface PreparedGameEventRow {
 }
 
 export interface PreparedGameEventBatch {
-  readonly expectedPreviousHash: string | null;
-  readonly expectedPreviousSequence: number;
   readonly finalState: VersionedCanonicalGameState;
   readonly finalStateJson: string;
   readonly lastEventHash: string;
@@ -173,7 +171,10 @@ export async function verifyStoredGame(
   return { events, lastEventHash: previousHash, state };
 }
 
-/** Prepares hashes and the reduced checkpoint before entering SQLite. */
+/**
+ * Prepares hashes and the reduced checkpoint before entering SQLite. The caller
+ * must serialize the verified read, preparation, and commit as one operation.
+ */
 export async function prepareGameEventBatch(
   prior: VerifiedStoredGame | undefined,
   events: NonEmptyGameEventBatch,
@@ -203,8 +204,6 @@ export async function prepareGameEventBatch(
     throw new Error("A persisted game batch must be nonempty.");
   }
   return {
-    expectedPreviousHash: prior?.lastEventHash ?? null,
-    expectedPreviousSequence: prior?.state.sequence ?? 0,
     finalState: state,
     finalStateJson: canonicalVersionedGameJson(state),
     lastEventHash: previousHash,
@@ -212,39 +211,12 @@ export async function prepareGameEventBatch(
   };
 }
 
-function assertBatchPrecondition(
-  sql: SqlStorage,
-  batch: PreparedGameEventBatch,
-): void {
-  const checkpoint = persistedCheckpoint(sql);
-  const tail = sql
-    .exec<{
-      [key: string]: SqlStorageValue;
-      event_hash: string;
-      sequence: number;
-    }>(
-      "SELECT sequence, event_hash FROM game_events ORDER BY sequence DESC LIMIT 1",
-    )
-    .toArray()[0];
-  if (batch.expectedPreviousHash === null) {
-    if (checkpoint !== undefined || tail !== undefined) {
-      throw new Error("The game persistence precondition is stale.");
-    }
-    return;
-  }
-  if (
-    checkpoint?.last_event_hash !== batch.expectedPreviousHash ||
-    tail?.event_hash !== batch.expectedPreviousHash ||
-    tail.sequence !== batch.expectedPreviousSequence
-  ) {
-    throw new Error("The game persistence precondition is stale.");
-  }
-}
-
 /**
  * Appends a prepared event batch and its final checkpoint atomically. The
  * optional callback runs inside the same SQLite transaction so TableRoom can
  * persist command receipts, deadline mutations, and room state before publish.
+ * This transaction does not serialize earlier async preparation; the caller
+ * owns that scope, just as for the in-transaction writer.
  */
 export function persistPreparedGameBatch<Result = void>(
   storage: DurableObjectStorage,
@@ -257,12 +229,16 @@ export function persistPreparedGameBatch<Result = void>(
   });
 }
 
-/** Writes a prepared batch inside an existing TableRoom SQLite transaction. */
+/**
+ * Writes a prepared batch inside an existing TableRoom SQLite transaction.
+ * Production callers hold blockConcurrencyWhile from verified read through
+ * commit (commands, deadlines, and constructor upgrade). Do not independently
+ * prepare competing batches and hand them to this writer.
+ */
 export function persistPreparedGameBatchInTransaction(
   sql: SqlStorage,
   batch: PreparedGameEventBatch,
 ): void {
-  assertBatchPrecondition(sql, batch);
   for (const row of batch.rows) {
     sql.exec(
       "INSERT INTO game_events (sequence, event_json, previous_hash, event_hash) VALUES (?, ?, ?, ?)",

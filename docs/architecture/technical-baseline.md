@@ -95,6 +95,12 @@ Editorial clarification that does not change fixture outcomes does not require a
 
 ## Storage and recovery
 
+The [table mutation serialization audit](table-mutation-serialization-audit.md)
+records supported callers, runtime gates, transaction ownership, and the
+minimal storage boundary. Async canonical preparation and commit share one
+caller-owned concurrency gate; client freshness and persisted-history
+validation remain separate from internal concurrency checks.
+
 The working model is an append-only event log plus an eagerly maintained current-state snapshot, command receipts, deadlines, and fairness records. Add a dedicated reaction-intent table if reaction choices are not canonical domain events.
 
 An accepted state transition is one atomic storage operation:
