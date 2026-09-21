@@ -11,7 +11,7 @@ import {
   type TableCommand,
   type ViewerSafeTableSnapshot,
 } from "../adapters/transport/table-socket-status.js";
-import { GamePanel } from "../features/gameplay/game-panel.js";
+import { GameController } from "../features/gameplay/game-controller.js";
 
 /*
  * This module is loaded only by the DEV + mock + explicit-query branch in
@@ -364,7 +364,7 @@ export function LocalGameplayEvidence() {
         {status}
       </p>
       <main>
-        <GamePanel
+        <GameController
           connected={connected}
           latestReceipt={undefined}
           onCommand={onCommand}

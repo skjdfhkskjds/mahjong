@@ -12,6 +12,45 @@ This application is the single deployable React client and Cloudflare Worker. Th
   authority for game creation, ordering, private reactions, deadlines, and
   scored completion.
 
+### Client presentation and feature controllers
+
+`features/lobby/LobbyController` and `features/gameplay/GameController` adapt
+validated viewer snapshots into display props and semantic callbacks for
+`LobbyPanel` and `GamePanel`. The panels receive labels, structured tile kinds,
+public player information, result summaries, and available controls; they can
+render with display fixtures and callback spies without a socket. They do not
+consume receipts or construct protocol commands.
+
+The feature layer owns phase/status text, grouping the server's exact actions,
+seat/readiness hints, receipt feedback, and local reaction submission state.
+An accepted private reaction stays pending until the next projection; a rejected
+receipt, changed window, disconnect, or replacement snapshot releases the local
+hint. The server's submitted reaction status then takes precedence. A local
+deadline only disables controls and displays “waiting for the server outcome”;
+it never advances the game. Server snapshots remain the source of truth after
+reconnect or rejection.
+
+Application wiring owns authentication, command IDs, expected state versions,
+and command envelopes. Transport owns serialization, runtime wire/result
+validation, and socket lifecycle. The Worker and rules engine retain all move
+legality, start permissions, authoritative deadlines, and scoring decisions.
+Client readiness/ownership checks are usability hints and cannot grant authority.
+
+The player-identity feature mapper interprets the reserved dedicated-bot actor
+namespace and supplies `human`/`bot` display kinds to lobby and gameplay.
+Temporary autopilot never changes a human's identity. The lobby controller maps
+the session-owner hint to add/remove-bot callbacks; owner spectators and
+disconnected owners see those controls disabled. Bot occupancy and readiness
+remain snapshot-owned, including after rejection or reconnect.
+
+For example, a concealed-kong control starts with an exact action already offered
+by the server. The gameplay mapper creates a labeled choice with an opaque ID;
+the panel emits `onConcealedKong(choiceId)`. The feature callback looks up that
+offered action and passes its typed command to application wiring, which adds
+the current version and command ID before transport sends it. Add mapper tests
+for the choice and command, then a panel test using display props and a callback
+spy. Any new rules or wire behavior requires its own domain/protocol work.
+
 ## Standalone development
 
 From the repository root:
