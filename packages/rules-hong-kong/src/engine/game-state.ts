@@ -1,4 +1,4 @@
-import type { Seat, TileId } from "@mahjong/game-core";
+import type { GameParticipant, Seat, TileId } from "@mahjong/game-core";
 
 import type { DeclaredMeld } from "../melds/meld.js";
 import type { CompletedHandResult } from "./win-resolution.js";
@@ -37,12 +37,10 @@ export function playerAt<Value>(players: SeatMap<Value>, value: Seat): Value {
   return players[seatName(value)];
 }
 
-export interface CanonicalPlayerStateV1 {
-  readonly actorId: string;
+export interface CanonicalPlayerStateV1 extends GameParticipant {
   readonly bonuses: readonly TileId[];
   readonly discards: readonly TileId[];
   readonly hand: readonly TileId[];
-  readonly seat: Seat;
 }
 
 export interface CanonicalPlayerStateV2 extends CanonicalPlayerStateV1 {

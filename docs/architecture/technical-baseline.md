@@ -52,6 +52,15 @@ ADR 0009 selects a versioned, one-hour maximum HMAC-SHA256 application session c
 
 Pure packages may depend on other pure packages through declared public entry points. They may not import React, Discord, Workers, Durable Objects, WebSocket, storage, process globals, the ambient clock, or ambient randomness.
 
+`game-core` now implements the shared gameplay engine. A ruleset policy evaluates
+legal moves and returns typed effects, semantic outcomes, and flow directives;
+the engine gates participants and turns, tracks reaction submissions, resolves
+completed windows, applies effects, and checks explicit logical expiry. Hong
+Kong supplies the concrete policy, scoring, projections, and versioned replay
+codec. See the [behavior mapping and ownership boundaries](shared-game-engine.md).
+Application controller/presence state and actual alarm scheduling stay outside
+this domain contract.
+
 The engine operations have separate responsibilities:
 
 ```text
@@ -94,6 +103,12 @@ The concrete Milestone 3 choices are recorded in [ADR 0011](../decisions/0011-ve
 Editorial clarification that does not change fixture outcomes does not require a new ruleset version. Any semantic fixture change does.
 
 ## Storage and recovery
+
+The [table mutation serialization audit](table-mutation-serialization-audit.md)
+records supported callers, runtime gates, transaction ownership, and the
+minimal storage boundary. Async canonical preparation and commit share one
+caller-owned concurrency gate; client freshness and persisted-history
+validation remain separate from internal concurrency checks.
 
 The working model is an append-only event log plus an eagerly maintained current-state snapshot, command receipts, deadlines, and fairness records. Add a dedicated reaction-intent table if reaction choices are not canonical domain events.
 
