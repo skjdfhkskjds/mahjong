@@ -929,6 +929,7 @@ export class TableRoom extends DurableObject<Env> {
     }
   }
 
+  /** Caller holds blockConcurrencyWhile across preparation and atomic commit. */
   private async applyTableCommand(
     actorId: string,
     envelope: TableCommandEnvelope,
@@ -1091,36 +1092,23 @@ export class TableRoom extends DurableObject<Env> {
             message: "The game state changed; resynchronize and retry.",
           };
         } else {
-          const current = this.gameState();
-          const validPrevious =
-            preparedGame.expectedPreviousHash === null
-              ? current === undefined
-              : current?.lastEventHash === preparedGame.expectedPreviousHash;
-          if (!validPrevious) {
-            stale = true;
-            rejection = {
-              code: "stale-state-version",
-              message: "The table state changed; resynchronize and retry.",
+          persistPreparedGameBatchInTransaction(
+            this.ctx.storage.sql,
+            preparedGame,
+          );
+          applied = true;
+          publicTransition = !preparedGame.rows.every((row) => {
+            const event = JSON.parse(row.eventJson) as {
+              readonly type?: unknown;
             };
-          } else {
-            persistPreparedGameBatchInTransaction(
+            return event.type === "game/reaction-intent-submitted";
+          });
+          if (publicTransition) {
+            this.replaceGameDeadlines(
               this.ctx.storage.sql,
-              preparedGame,
+              preparedGame.finalState,
+              now,
             );
-            applied = true;
-            publicTransition = !preparedGame.rows.every((row) => {
-              const event = JSON.parse(row.eventJson) as {
-                readonly type?: unknown;
-              };
-              return event.type === "game/reaction-intent-submitted";
-            });
-            if (publicTransition) {
-              this.replaceGameDeadlines(
-                this.ctx.storage.sql,
-                preparedGame.finalState,
-                now,
-              );
-            }
           }
         }
       } else if (this.gameState() !== undefined) {
