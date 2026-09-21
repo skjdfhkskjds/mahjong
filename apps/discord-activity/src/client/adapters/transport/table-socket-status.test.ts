@@ -13,13 +13,13 @@ import {
   ReconnectingSocketStatusMonitor,
   type TableCommand,
 } from "./table-socket-status.js";
-
-import { validateCommand } from "./table-socket-protocol-v2.js";
 import {
   TABLE_HEARTBEAT_READY,
   TABLE_HEARTBEAT_REQUEST,
   TABLE_HEARTBEAT_RESPONSE,
 } from "./table-socket-heartbeat.js";
+
+import { validateCommand } from "./table-socket-protocol-v2.js";
 
 const snapshot = {
   type: "table/snapshot",
@@ -1761,6 +1761,8 @@ describe("table heartbeat capability negotiation", () => {
     const states: string[] = [];
     const stop = monitor.start(({ state }) => states.push(state));
     first.emit("open", new Event("open"));
+    // Initialization resync is covered by the lifecycle suite.
+    first.sent.length = 0;
     return { first, second, createSocket, monitor, states, stop };
   };
 
@@ -1786,7 +1788,7 @@ describe("table heartbeat capability negotiation", () => {
     vi.advanceTimersByTime(0);
     expect(first.sent).toEqual([TABLE_HEARTBEAT_REQUEST]);
     message(first, TABLE_HEARTBEAT_RESPONSE);
-    expect(states.at(-1)).toBe("connecting");
+    expect(states.at(-1)).toBe("awaiting-snapshot");
     expect(() => {
       monitor.sendCommand(command);
     }).toThrow("not connected");
@@ -1798,6 +1800,40 @@ describe("table heartbeat capability negotiation", () => {
       TABLE_HEARTBEAT_REQUEST,
     ]);
     stop();
+    expect(vi.getTimerCount()).toBe(0);
+  });
+
+  it("retires the heartbeat when a snapshot subscriber restarts the run", () => {
+    const { first, second, createSocket, monitor, states, stop } = setup();
+    let stopReplacement: (() => void) | undefined;
+    const unsubscribe = monitor.subscribe("table/snapshot", () => {
+      unsubscribe();
+      stopReplacement = monitor.start(({ state }) => states.push(state));
+    });
+    message(first, TABLE_HEARTBEAT_READY);
+    vi.advanceTimersByTime(0);
+    message(first, JSON.stringify(snapshot));
+    expect(first.closed).toBe(true);
+    expect(createSocket).toHaveBeenCalledTimes(2);
+    expect(vi.getTimerCount()).toBe(0);
+    stop();
+    expect(second.closed).toBe(false);
+
+    second.emit("open", new Event("open"));
+    second.sent.length = 0;
+    message(second, TABLE_HEARTBEAT_READY);
+    vi.advanceTimersByTime(0);
+    expect(() => {
+      monitor.sendCommand(command);
+    }).toThrow("not connected");
+    message(second, JSON.stringify(snapshot));
+    vi.advanceTimersByTime(14_999);
+    message(first, TABLE_HEARTBEAT_RESPONSE);
+    expect(second.closed).toBe(false);
+    vi.advanceTimersByTime(1);
+    expect(second.closeCode).toBe(4000);
+    expect(first.sent).toEqual([TABLE_HEARTBEAT_REQUEST]);
+    stopReplacement?.();
     expect(vi.getTimerCount()).toBe(0);
   });
 
@@ -1848,7 +1884,7 @@ describe("table heartbeat capability negotiation", () => {
     vi.advanceTimersByTime(0);
     first.emit("close", Object.assign(new Event("close"), { code: 1000 }));
     vi.advanceTimersByTime(1_000);
-    expect(states.at(-1)).toBe("reconnecting");
+    expect(states.at(-1)).toBe("connecting");
     expect(createSocket).toHaveBeenCalledTimes(2);
     expect(first.sent).toEqual([TABLE_HEARTBEAT_REQUEST]);
     stop();

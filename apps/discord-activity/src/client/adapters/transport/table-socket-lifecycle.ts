@@ -21,6 +21,7 @@ export type SocketTransition =
   | { readonly type: "snapshot" }
   | { readonly type: "retry" }
   | { readonly type: "error" }
+  | { readonly type: "heartbeat-timeout" }
   | { readonly type: "close"; readonly code: number }
   | { readonly type: "session/replaced" }
   | { readonly type: "table/upgrade-required" }
@@ -97,6 +98,8 @@ export function transitionSocket(
       if (input.code === 1008) {
         return { state: "authentication-required" };
       }
+      return retryStatus(status);
+    case "heartbeat-timeout":
       return retryStatus(status);
     case "error":
       return status.state === "reconnecting"

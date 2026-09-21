@@ -6,6 +6,12 @@ import {
   type TableSocketMessage,
 } from "./table-socket-protocol-v2.js";
 import {
+  startTableSocketHeartbeat,
+  TABLE_HEARTBEAT_READY,
+  TABLE_HEARTBEAT_RESPONSE,
+  type TableSocketHeartbeat,
+} from "./table-socket-heartbeat.js";
+import {
   assertNever,
   isSocketTerminal,
   transitionSocket,
@@ -70,6 +76,7 @@ export function createTableSocketUrl(
   const url = new URL("/api/table/socket", base);
   url.protocol = url.protocol === "https:" ? "wss:" : "ws:";
   url.searchParams.set("protocolVersion", String(TABLE_PROTOCOL_VERSION));
+  url.searchParams.set("heartbeat", "1");
   return url.toString();
 }
 
@@ -84,6 +91,7 @@ interface SocketRun {
   connection: Connection | undefined;
   retryTimer: ReturnType<typeof setTimeout> | undefined;
   lastSeenStateVersion: number;
+  heartbeat: TableSocketHeartbeat | undefined;
 }
 
 /** One native connection with synchronous, ordered, separately typed delivery. */
@@ -92,6 +100,7 @@ export class ReconnectingSocketStatusMonitor
 {
   private readonly url: string;
   private readonly createSocket: SocketFactory;
+  private readonly heartbeatRequested: boolean;
   private run: SocketRun | undefined;
   private readonly messages: MessageListeners = {
     "table/snapshot": new Set(),
@@ -108,6 +117,9 @@ export class ReconnectingSocketStatusMonitor
   ) {
     this.url = url;
     this.createSocket = createSocket;
+    const heartbeatVersions = new URL(url).searchParams.getAll("heartbeat");
+    this.heartbeatRequested =
+      heartbeatVersions.length === 1 && heartbeatVersions[0] === "1";
   }
 
   /** Subscriptions survive a run restart; their owner must unsubscribe on disposal. */
@@ -150,6 +162,7 @@ export class ReconnectingSocketStatusMonitor
       connection: undefined,
       retryTimer: undefined,
       lastSeenStateVersion: 0,
+      heartbeat: undefined,
     };
     // Replace ownership before invoking callbacks: a reentrant start wins.
     this.run = run;
@@ -221,7 +234,13 @@ export class ReconnectingSocketStatusMonitor
     }
   }
 
-  private cleanup(run: SocketRun): void {
+  private stopHeartbeat(run: SocketRun): void {
+    run.heartbeat?.stop();
+    run.heartbeat = undefined;
+  }
+
+  private cleanup(run: SocketRun, closeCode?: number): void {
+    this.stopHeartbeat(run);
     const connection = run.connection;
     run.connection = undefined;
     if (run.retryTimer !== undefined) {
@@ -233,11 +252,12 @@ export class ReconnectingSocketStatusMonitor
     }
     connection.detach();
     const code =
-      run.status.state === "session-replaced"
+      closeCode ??
+      (run.status.state === "session-replaced"
         ? 4001
         : run.status.state === "upgrade-required"
           ? 4406
-          : 1000;
+          : 1000);
     // Browser clients may send only 1000 or application close codes (3000–4999).
     try {
       connection.socket.close(code);
@@ -256,7 +276,10 @@ export class ReconnectingSocketStatusMonitor
     }
     run.status = next;
     if (isSocketTerminal(next) || next.state === "reconnecting") {
-      this.cleanup(run);
+      this.cleanup(run, input.type === "heartbeat-timeout" ? 4000 : undefined);
+    }
+    if (next.state === "disconnecting") {
+      this.stopHeartbeat(run);
     }
     if (next.state === "reconnecting") {
       run.retryTimer = setTimeout(() => {
@@ -319,7 +342,23 @@ export class ReconnectingSocketStatusMonitor
     };
     const message = (event: MessageEvent): void => {
       this.enqueue(() => {
-        if (!current()) {
+        if (!current() || socket.readyState !== WebSocket.OPEN) {
+          return;
+        }
+        if (this.heartbeatRequested && event.data === TABLE_HEARTBEAT_READY) {
+          if (
+            run.status.state === "awaiting-snapshot" ||
+            run.status.state === "connected"
+          ) {
+            run.heartbeat ??= this.startHeartbeat(run, socket, current);
+          }
+          return;
+        }
+        if (
+          this.heartbeatRequested &&
+          event.data === TABLE_HEARTBEAT_RESPONSE
+        ) {
+          run.heartbeat?.acknowledge();
           return;
         }
         let parsed: TableSocketMessage;
@@ -359,6 +398,47 @@ export class ReconnectingSocketStatusMonitor
     socket.addEventListener("message", message);
     socket.addEventListener("error", error);
     socket.addEventListener("close", close);
+  }
+
+  private startHeartbeat(
+    run: SocketRun,
+    socket: WebSocket,
+    current: () => boolean,
+  ): TableSocketHeartbeat {
+    const heartbeat = startTableSocketHeartbeat({
+      send: (frame) => {
+        if (!current() || run.heartbeat !== heartbeat) {
+          heartbeat.stop();
+          return;
+        }
+        if (socket.readyState !== WebSocket.OPEN) {
+          this.advance(run, { type: "error" });
+          return;
+        }
+        socket.send(frame);
+      },
+      onTimeout: () => {
+        this.enqueue(() => {
+          if (!current() || run.heartbeat !== heartbeat) return;
+          // A pending native terminal close (including deliberate departure)
+          // must win over heartbeat retry while the handshake is closing.
+          this.advance(run, {
+            type:
+              socket.readyState === WebSocket.OPEN
+                ? "heartbeat-timeout"
+                : "error",
+          });
+        });
+      },
+      scheduler: {
+        now: () => performance.now(),
+        setTimeout: (callback, delay) => window.setTimeout(callback, delay),
+        clearTimeout: (timer) => {
+          window.clearTimeout(timer);
+        },
+      },
+    });
+    return heartbeat;
   }
 
   private deliverMessage(

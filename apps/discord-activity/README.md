@@ -177,6 +177,16 @@ satisfies initialization; the client does not reconstruct state from history.
 Receipts alone cannot complete initialization, including private reaction
 receipts that share the current public revision.
 
+The client advertises `heartbeat=1` and starts one run-owned heartbeat only
+after the server's exact `table/heartbeat-ready/1` frame. The inherited heartbeat
+helper sends transport-only pings every five seconds and bounds the oldest
+unacknowledged ping to fifteen seconds. Ready and acknowledgement frames pass
+through the same ordered connection guard as table messages, but do not enter
+application subscriptions or satisfy snapshot synchronization. Older Workers
+that omit the ready frame retain the legacy connection behavior. Stop, retry,
+terminal control, departure, and transport error cancel heartbeat timers;
+native closing handshakes retain their actual terminal close semantics.
+
 `SocketStatus` contains only lifecycle data. Connecting, waiting, and
 interrupted states carry attempt data; `reconnecting` additionally carries the
 bounded retry delay. A transport error enters `disconnecting` while awaiting
