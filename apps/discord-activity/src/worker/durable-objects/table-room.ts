@@ -1,30 +1,39 @@
+import { initializeTableRoomStorage } from "./table-room/table-room-schema.js";
+import {
+  activateTableConnection,
+  closeTableConnection,
+  connectionAuthorityIsCurrent,
+  reconcileTableWork,
+  type ConnectionGrant,
+} from "./table-room/table-connection-application.js";
+import { SqliteTableConnectionStore } from "./table-room/table-connection-store.js";
+import { executeTableCommand } from "./table-room/table-command-application.js";
+import { SqliteTableCommandStore } from "./table-room/table-command-store.js";
+import { processTableDeadline } from "./table-room/table-system-application.js";
 import { DurableObject } from "cloudflare:workers";
 import {
+  activateAccessSession,
+  applyAccessBinding,
+  issueAccessCapability,
+  redeemAccessInvitation,
+} from "./table-room/table-access-application.js";
+import { SqliteTableAccessStore } from "./table-room/table-access-store.js";
+import {
   decodeCanonicalVersionedGameJson,
-  HONG_KONG_V1_RANDOM_BYTES,
   type CanonicalGameStateV2,
   type GameViewV2,
-  type HongKongGameCommandV2,
-  type VersionedCanonicalGameState,
 } from "@mahjong/rules-hong-kong";
 
 import {
-  expireTableGame,
   projectTableGame,
-  startTableGame,
   tableGameActorAt,
-  tableGameDeadline,
-  tableGameDeadlineMatches,
-  tableGameEngine,
   tableGamePhase,
 } from "./table-room/table-room-game-engine.js";
 import {
   botWorkTarget,
-  changeBotSeat,
   chooseBotMove,
   readBotWork,
   readPlayerControls,
-  reconcileBotWork,
 } from "./table-room/table-room-bots.js";
 import {
   TablePlayers,
@@ -52,26 +61,19 @@ import {
   problemResponse,
 } from "../http/responses.js";
 import {
-  completeDeadlineWithReceipt,
   earliestPendingDeadline,
   MAX_DUE_DEADLINE_BATCH,
   planAlarmRepair,
   readDueDeadlines,
-  scheduleDeadline,
   verifyDeadlinePersistence,
   type PendingDeadline,
-  type SystemCommandResult,
 } from "./table-room/deadline-queue.js";
 import {
-  migrateTableRoomStorageToV6,
   persistPreparedGameBatchInTransaction,
-  prepareGameEventBatch,
   prepareV1GameUpgrade,
   verifyStoredGame,
-  type PreparedGameEventBatch,
 } from "./table-room/table-room-game-store.js";
 import {
-  canonicalTableRequest,
   parseTableCommand,
   parseTableResync,
   protocolUpgradeMessage,
@@ -84,21 +86,16 @@ import {
 import {
   readAutomationByActor,
   readRoomLifecycle,
-  reconcilePresenceDeadlines,
-  recordValidConnection,
   type PresenceObservation,
 } from "./table-room/table-room-presence.js";
 
 const MAX_MESSAGE_BYTES = 16_384;
 const MAX_INTERNAL_BODY_BYTES = 4_096;
-const CAPABILITY_LIFETIME_MS = 15 * 60 * 1_000;
 const MAX_CLOCK_SKEW_MS = 60_000;
 const TABLE_ID_PATTERN = /^[A-Za-z0-9_-]{1,64}$/u;
 const TOKEN_PATTERN = /^[A-Za-z0-9_-]{43}$/u;
 const SHORT_TOKEN_PATTERN = /^[A-Za-z0-9_-]{1,64}$/u;
 const CAPABILITY_ID_PATTERN = /^[A-Za-z0-9_-]{22}$/u;
-const TURN_DEADLINE_MS = 60_000;
-const REACTION_DEADLINE_MS = 8_000;
 
 const INTERNAL_ACTOR_ID = "X-Mahjong-Actor-Id";
 const INTERNAL_BINDING_GENERATION = "X-Mahjong-Binding-Generation";
@@ -164,47 +161,6 @@ interface ConnectionAttachment {
   readonly heartbeatAcceptedAt?: number;
 }
 
-interface ConnectionGrantRow {
-  readonly [key: string]: SqlStorageValue;
-  readonly actor_id: string;
-  readonly binding_generation: number;
-  readonly binding_proof: string;
-  readonly display_name: string;
-  readonly expires_at: number;
-  readonly instance_id: string;
-  readonly session_generation: number;
-  readonly table_id: string;
-}
-
-interface TableRow {
-  readonly [key: string]: SqlStorageValue;
-  readonly binding_generation: number;
-  readonly binding_operation_id: string;
-  readonly binding_proof: string;
-  readonly instance_id: string;
-  readonly owner_actor_id: string;
-  readonly table_id: string;
-}
-
-interface ReceiptRow {
-  readonly [key: string]: SqlStorageValue;
-  readonly http_status: number;
-  readonly request_json: string;
-  readonly response_json: string | null;
-  readonly status: string;
-}
-
-interface CapabilityRow {
-  readonly [key: string]: SqlStorageValue;
-  readonly consumed_actor_id: string | null;
-  readonly consumed_operation_id: string | null;
-  readonly expected_binding_generation: number;
-  readonly expires_at: number;
-  readonly kind: string;
-  readonly secret_hash: string;
-  readonly subject_actor_id: string;
-}
-
 interface StoredResult {
   readonly body: unknown;
   readonly status: number;
@@ -222,13 +178,6 @@ interface LobbySeatRow {
   readonly display_name: string;
   readonly ready: number;
   readonly seat: Seat;
-}
-
-interface LobbyReceiptRow {
-  readonly [key: string]: SqlStorageValue;
-  readonly actor_id: string;
-  readonly request_json: string;
-  readonly response_json: string;
 }
 
 interface ViewerSafeActor {
@@ -279,8 +228,6 @@ interface ViewerSafeSessionReplaced {
 type ViewerSafeServerMessage =
   ViewerSafeTableSnapshot | ViewerSafeTableReceipt | ViewerSafeSessionReplaced;
 
-class AtomicMutationConflict extends Error {}
-
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
@@ -293,12 +240,6 @@ function hasExactKeys(
     Object.keys(value).length === required.length &&
     required.every((key) => Object.hasOwn(value, key))
   );
-}
-
-function isGameCommand(
-  command: TableCommandEnvelope["command"],
-): command is HongKongGameCommandV2 {
-  return command.type.startsWith("game/") && command.type !== "game/start";
 }
 
 function validActorId(value: unknown): value is string {
@@ -581,23 +522,6 @@ function connectionAttachment(
   return value as unknown as ConnectionAttachment;
 }
 
-function lobbyReceipt(
-  commandId: string,
-  outcome: "applied" | "rejected",
-  stateVersion: number,
-  error?: { readonly code: string; readonly message: string },
-): string {
-  const message: ViewerSafeTableReceipt = {
-    type: "table/receipt",
-    protocolVersion: TABLE_PROTOCOL_VERSION,
-    commandId,
-    outcome,
-    stateVersion,
-    ...(error === undefined ? {} : { error }),
-  };
-  return serializeViewerMessage(message);
-}
-
 function serializeViewerMessage(message: ViewerSafeServerMessage): string {
   return JSON.stringify(message);
 }
@@ -649,8 +573,21 @@ function storedResponse(result: StoredResult): Response {
   return jsonResponse(result.body, result.status);
 }
 
-function problem(status: number, code: string, message: string): StoredResult {
-  return { body: { error: { code, message } }, status };
+function lobbyReceipt(
+  commandId: string,
+  outcome: "applied" | "rejected",
+  stateVersion: number,
+  error?: { readonly code: string; readonly message: string },
+): string {
+  const message: ViewerSafeTableReceipt = {
+    type: "table/receipt",
+    protocolVersion: TABLE_PROTOCOL_VERSION,
+    commandId,
+    outcome,
+    stateVersion,
+    ...(error === undefined ? {} : { error }),
+  };
+  return serializeViewerMessage(message);
 }
 
 export class TableRoom extends DurableObject<Env> {
@@ -718,48 +655,8 @@ export class TableRoom extends DurableObject<Env> {
           connectionId,
         ),
     });
+    initializeTableRoomStorage(this.ctx.storage);
     const sql = this.ctx.storage.sql;
-    const knownTables = sql
-      .exec<{ name: string }>(
-        "SELECT name FROM sqlite_master WHERE type = 'table' AND name IN ('storage_metadata', 'table_record', 'members', 'binding_receipts', 'capabilities', 'actor_sessions', 'connection_grants', 'lobby_state', 'lobby_seats', 'lobby_command_receipts', 'canonical_game_state', 'game_events')",
-      )
-      .toArray();
-    const freshStorage = knownTables.length === 0;
-    if (
-      !freshStorage &&
-      !knownTables.some(({ name }) => name === "storage_metadata")
-    ) {
-      throw new Error("TableRoom storage metadata is missing.");
-    }
-    if (freshStorage) {
-      this.ctx.storage.transactionSync(() => {
-        sql.exec(
-          "CREATE TABLE storage_metadata (singleton INTEGER PRIMARY KEY CHECK (singleton = 1), schema_version INTEGER NOT NULL)",
-        );
-        sql.exec(
-          "INSERT INTO storage_metadata (singleton, schema_version) VALUES (1, 1)",
-        );
-        sql.exec(
-          "CREATE TABLE table_record (singleton INTEGER PRIMARY KEY CHECK (singleton = 1), table_id TEXT NOT NULL UNIQUE, owner_actor_id TEXT NOT NULL, created_at INTEGER NOT NULL, instance_id TEXT NOT NULL, binding_generation INTEGER NOT NULL, binding_proof TEXT NOT NULL, binding_operation_id TEXT NOT NULL)",
-        );
-        sql.exec(
-          "CREATE TABLE members (actor_id TEXT PRIMARY KEY, display_name TEXT NOT NULL, role TEXT NOT NULL CHECK (role IN ('owner', 'member')), joined_at INTEGER NOT NULL)",
-        );
-        sql.exec(
-          "CREATE TABLE binding_receipts (operation_id TEXT PRIMARY KEY, request_json TEXT NOT NULL, status TEXT NOT NULL CHECK (status IN ('pending', 'applied', 'rejected')), response_json TEXT, http_status INTEGER NOT NULL, created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL)",
-        );
-        sql.exec(
-          "CREATE TABLE capabilities (capability_id TEXT PRIMARY KEY, kind TEXT NOT NULL CHECK (kind IN ('invitation', 'resume')), subject_actor_id TEXT NOT NULL, secret_hash TEXT NOT NULL, expected_binding_generation INTEGER NOT NULL, expires_at INTEGER NOT NULL, consumed_actor_id TEXT, consumed_operation_id TEXT)",
-        );
-        sql.exec(
-          "CREATE TABLE actor_sessions (actor_id TEXT PRIMARY KEY, session_generation INTEGER NOT NULL, activated_at INTEGER NOT NULL)",
-        );
-        sql.exec(
-          "CREATE TABLE connection_grants (connection_generation TEXT PRIMARY KEY, actor_id TEXT NOT NULL, display_name TEXT NOT NULL, instance_id TEXT NOT NULL, table_id TEXT NOT NULL, binding_generation INTEGER NOT NULL, binding_proof TEXT NOT NULL, session_generation INTEGER NOT NULL, expires_at INTEGER NOT NULL)",
-        );
-      });
-    }
-    migrateTableRoomStorageToV6(this.ctx.storage);
     void this.ctx.blockConcurrencyWhile(async () => {
       verifyDeadlinePersistence(sql);
       let game = await verifyStoredGame(sql);
@@ -771,16 +668,11 @@ export class TableRoom extends DurableObject<Env> {
         game = await verifyStoredGame(sql);
       }
       const now = Date.now();
-      this.ctx.storage.transactionSync(() => {
-        const canonical =
-          game?.state.schemaVersion === 2 ? game.state : undefined;
-        reconcilePresenceDeadlines(sql, {
-          now,
-          observations: this.presenceObservations(),
-        });
-        if (canonical !== undefined) {
-          this.replaceGameDeadlines(sql, canonical, now);
-        }
+      reconcileTableWork(new SqliteTableConnectionStore(this.ctx.storage), {
+        now,
+        observations: this.presenceObservations(),
+        game: game?.state.schemaVersion === 2 ? game.state : undefined,
+        createCommandId: () => crypto.randomUUID(),
       });
       await this.repairAlarm();
     });
@@ -856,14 +748,6 @@ export class TableRoom extends DurableObject<Env> {
       : undefined;
   }
 
-  private table(): TableRow | undefined {
-    return this.ctx.storage.sql
-      .exec<TableRow>(
-        "SELECT table_id, owner_actor_id, instance_id, binding_generation, binding_proof, binding_operation_id FROM table_record WHERE singleton = 1",
-      )
-      .toArray()[0];
-  }
-
   private stateVersion(): number {
     return this.ctx.storage.sql
       .exec<{ state_version: number }>(
@@ -917,17 +801,6 @@ export class TableRoom extends DurableObject<Env> {
     );
   }
 
-  private controllerIsCurrent(
-    actorId: string,
-    authority: ControllerAuthority,
-  ): boolean {
-    const control = this.playerControl(actorId);
-    return (
-      control.controller === authority.kind &&
-      control.generation === authority.generation
-    );
-  }
-
   private playerView(actorId: string): PlayerView {
     const game = this.gameState()?.state;
     let snapshot = "";
@@ -977,36 +850,9 @@ export class TableRoom extends DurableObject<Env> {
     });
   }
 
-  /** Controller changes and job cancellation share the caller's transaction. */
-  private substitutePlayer(actorId: string, now: number): boolean {
-    const sql = this.ctx.storage.sql;
-    const control = this.playerControl(actorId);
-    if (control.kind !== "HUMAN" || control.controller !== "HUMAN")
-      return false;
-    const changed = sql.exec(
-      "UPDATE player_automation SET autopilot = 1, connection_generation = connection_generation + 1, updated_at = ? WHERE actor_id = ? AND autopilot = 0",
-      now,
-      actorId,
-    );
-    if (changed.rowsWritten === 0) return false;
-    const game = this.gameState()?.state;
-    const target = game === undefined ? null : tableGameDeadline(game);
-    if (target?.kind === "turn" && target.actorId === actorId)
-      sql.exec(
-        "UPDATE deadlines SET status = 'cancelled' WHERE status = 'pending' AND kind = 'turn'",
-      );
-    reconcileBotWork(
-      sql,
-      this.gameState()?.state,
-      now,
-      this.roomLifecycle().abandoned,
-    );
-    return true;
-  }
-
   private snapshot(
     attachment: ConnectionAttachment,
-    grant: ConnectionGrantRow,
+    grant: ConnectionGrant,
   ): string {
     const seats = this.ctx.storage.sql
       .exec<LobbySeatRow>(
@@ -1077,7 +923,7 @@ export class TableRoom extends DurableObject<Env> {
           };
         }),
         spectators,
-        tableId: grant.table_id,
+        tableId: grant.tableId,
         viewer: {
           actor: { displayName: viewer.display_name, id: viewer.actor_id },
           ...(viewerSeat === undefined
@@ -1115,455 +961,37 @@ export class TableRoom extends DurableObject<Env> {
       this.players.publish(actorId, excludedConnectionId);
   }
 
-  /** Caller holds blockConcurrencyWhile across preparation and atomic commit. */
-  private async applyTableCommand(
+  /** Caller holds serialization across application preparation and atomic commit. */
+  private applyTableCommand(
     actorId: string,
     envelope: TableCommandEnvelope,
     now: number,
     authority: ControllerAuthority,
     connectionId?: string,
   ): Promise<PlayerCommandResult> {
-    const inactive = (): PlayerCommandResult => ({
-      applied: false,
-      broadcast: false,
-      senderSnapshot: true,
-      stale: false,
-      response: lobbyReceipt(
-        envelope.commandId,
-        "rejected",
-        this.stateVersion(),
-        {
-          code: "inactive-controller",
-          message:
-            "This player's active controller changed; reconnect to resume.",
-        },
-      ),
-    });
-    if (!this.controllerIsCurrent(actorId, authority)) return inactive();
-    const requestJson = canonicalTableRequest(envelope);
-    let preparedGame: PreparedGameEventBatch | undefined;
-    let preparedVisibility: "private" | "public" = "public";
-    let preparedRejection:
-      { readonly code: string; readonly message: string } | undefined;
-    if (envelope.expectedStateVersion === this.stateVersion()) {
-      if (envelope.command.type === "game/start") {
-        if (this.gameState() !== undefined) {
-          preparedRejection = {
-            code: "game-already-started",
-            message: "This game has already started.",
-          };
-        } else {
-          const rows = this.ctx.storage.sql
-            .exec<LobbySeatRow>(
-              "SELECT seat, actor_id, display_name, ready FROM lobby_seats",
-            )
-            .toArray();
-          if (rows.length !== 4 || rows.some(({ ready }) => ready !== 1)) {
-            preparedRejection = {
-              code: "table-not-ready",
-              message: "Four seated players must be ready before starting.",
-            };
-          } else if (!rows.some(({ actor_id }) => actor_id === actorId)) {
-            preparedRejection = {
-              code: "spectator-cannot-start",
-              message: "Only a seated player can start the game.",
-            };
-          } else {
-            const bySeat = new Map(rows.map((row) => [row.seat, row.actor_id]));
-            const east = bySeat.get("east");
-            const south = bySeat.get("south");
-            const west = bySeat.get("west");
-            const north = bySeat.get("north");
-            if (
-              east === undefined ||
-              south === undefined ||
-              west === undefined ||
-              north === undefined
-            ) {
-              throw new Error("A ready table has an incomplete seat map.");
-            }
-            const started = startTableGame(
-              { east, north, south, west },
-              crypto.getRandomValues(new Uint8Array(HONG_KONG_V1_RANDOM_BYTES)),
-            );
-            preparedGame = await prepareGameEventBatch(undefined, [
-              started.event,
-            ]);
-          }
-        }
-      } else if (isGameCommand(envelope.command)) {
-        const stored = await verifyStoredGame(this.ctx.storage.sql);
-        if (stored?.state.schemaVersion !== 2) {
-          preparedRejection = {
-            code: "game-not-started",
-            message: "The game has not started.",
-          };
-        } else {
-          const decision = tableGameEngine.execute(
-            stored.state,
-            actorId,
-            envelope.command,
-          );
-          if (decision.kind === "rejected") {
-            preparedRejection = decision.error;
-          } else {
-            preparedVisibility = decision.visibility;
-            preparedGame = await prepareGameEventBatch(stored, decision.events);
-          }
-        }
-      }
-    }
-    return this.ctx.storage.transactionSync(() => {
-      if (!this.controllerIsCurrent(actorId, authority)) return inactive();
-      const existing = this.ctx.storage.sql
-        .exec<LobbyReceiptRow>(
-          "SELECT actor_id, request_json, response_json FROM lobby_command_receipts WHERE command_id = ?",
-          envelope.commandId,
-        )
-        .toArray()[0];
-      if (existing !== undefined) {
-        if (
-          existing.actor_id === actorId &&
-          existing.request_json === requestJson
-        ) {
-          const replay = JSON.parse(existing.response_json) as unknown;
-          const stale =
-            isRecord(replay) &&
-            isRecord(replay["error"]) &&
-            replay["error"]["code"] === "stale-state-version";
-          return {
-            applied: false,
-            broadcast: false,
-            response: existing.response_json,
-            senderSnapshot: envelope.command.type === "game/react",
-            stale,
-          };
-        }
-        return {
-          applied: false,
-          response: lobbyReceipt(
-            envelope.commandId,
-            "rejected",
-            this.stateVersion(),
-            {
-              code: "command-id-collision",
-              message: "The command identifier was already used.",
-            },
-          ),
-          broadcast: false,
-          senderSnapshot: false,
-          stale: false,
-        };
-      }
-
-      const currentVersion = this.stateVersion();
-      let applied = false;
-      let publicTransition = false;
-      let stale = false;
-      let rejection:
-        { readonly code: string; readonly message: string } | undefined;
-      if (envelope.expectedStateVersion !== currentVersion) {
-        stale = true;
-        rejection = {
-          code: "stale-state-version",
-          message: "The table state changed; resynchronize and retry.",
-        };
-      } else if (
-        envelope.command.type === "game/start" ||
-        isGameCommand(envelope.command)
-      ) {
-        if (preparedGame === undefined) {
-          rejection = preparedRejection ?? {
-            code: "game-state-changed",
-            message: "The game state changed; resynchronize and retry.",
-          };
-        } else {
-          persistPreparedGameBatchInTransaction(
-            this.ctx.storage.sql,
-            preparedGame,
-          );
-          applied = true;
-          publicTransition = preparedVisibility === "public";
-          if (publicTransition) {
-            this.replaceGameDeadlines(
-              this.ctx.storage.sql,
-              preparedGame.finalState,
-              now,
-            );
-          }
-        }
-      } else if (
-        this.gameState() !== undefined &&
-        envelope.command.type === "lobby/leave-seat"
-      ) {
-        const seated = readPlayerControls(this.ctx.storage.sql).find(
-          (control) => control.actorId === actorId,
-        );
-        if (seated?.kind !== "HUMAN" || connectionId === undefined) {
-          rejection = {
-            code: "not-seated",
-            message: "Only a seated human can leave this hand.",
-          };
-        } else {
-          const departing = this.ctx
+    const departing =
+      envelope.command.type === "lobby/leave-seat" &&
+      this.gameState() !== undefined
+        ? this.ctx
             .getWebSockets()
             .map((socket) =>
               connectionAttachment(socket.deserializeAttachment()),
             )
-            .find((attachment) => attachment?.connectionId === connectionId);
-          if (departing !== undefined)
-            this.ctx.storage.sql.exec(
-              "DELETE FROM connection_grants WHERE connection_generation = ?",
-              departing.connectionGeneration,
-            );
-          applied = true;
-          publicTransition =
-            !this.hasValidSocket(actorId, now, connectionId) &&
-            this.substitutePlayer(actorId, now);
-        }
-      } else if (this.gameState() !== undefined) {
-        rejection = {
-          code: "lobby-closed",
-          message: "Seats and readiness are locked after the game starts.",
-        };
-      } else if (
-        envelope.command.type === "lobby/add-bot" ||
-        envelope.command.type === "lobby/remove-bot"
-      ) {
-        rejection = changeBotSeat(this.ctx.storage.sql, {
-          actorId,
-          ownerId: this.table()?.owner_actor_id,
-          seat: envelope.command.seat,
-          type: envelope.command.type,
-          now,
-        });
-        applied = rejection === undefined;
-        publicTransition = applied;
-      } else if (envelope.command.type === "lobby/claim-seat") {
-        const occupied = this.ctx.storage.sql
-          .exec<{ actor_id: string }>(
-            "SELECT actor_id FROM lobby_seats WHERE seat = ?",
-            envelope.command.seat,
-          )
-          .toArray()[0];
-        const currentSeat = this.ctx.storage.sql
-          .exec<{ seat: Seat }>(
-            "SELECT seat FROM lobby_seats WHERE actor_id = ?",
-            actorId,
-          )
-          .toArray()[0];
-        if (occupied !== undefined && occupied.actor_id !== actorId) {
-          rejection = {
-            code: "seat-unavailable",
-            message: "That seat is already occupied.",
-          };
-        } else if (currentSeat?.seat === envelope.command.seat) {
-          rejection = {
-            code: "no-state-change",
-            message: "The actor already occupies that seat.",
-          };
-        } else {
-          const member = this.ctx.storage.sql
-            .exec<{ display_name: string }>(
-              "SELECT display_name FROM members WHERE actor_id = ?",
-              actorId,
-            )
-            .one();
-          if (currentSeat === undefined) {
-            this.ctx.storage.sql.exec(
-              "INSERT INTO lobby_seats (seat, actor_id, display_name, ready) VALUES (?, ?, ?, 0)",
-              envelope.command.seat,
-              actorId,
-              member.display_name,
-            );
-          } else {
-            this.ctx.storage.sql.exec(
-              "UPDATE lobby_seats SET seat = ?, display_name = ?, ready = 0 WHERE actor_id = ?",
-              envelope.command.seat,
-              member.display_name,
-              actorId,
-            );
-          }
-          applied = true;
-          publicTransition = true;
-        }
-      } else if (envelope.command.type === "lobby/leave-seat") {
-        const currentSeat = this.ctx.storage.sql
-          .exec<{ seat: Seat }>(
-            "SELECT seat FROM lobby_seats WHERE actor_id = ?",
-            actorId,
-          )
-          .toArray()[0];
-        const removed = this.ctx.storage.sql.exec(
-          "DELETE FROM lobby_seats WHERE actor_id = ?",
-          actorId,
-        );
-        if (removed.rowsWritten === 1 && currentSeat !== undefined) {
-          applied = true;
-          publicTransition = true;
-        } else {
-          rejection = {
-            code: "not-seated",
-            message: "The actor does not occupy a seat.",
-          };
-        }
-      } else {
-        const seated = this.ctx.storage.sql
-          .exec<{ ready: number }>(
-            "SELECT ready FROM lobby_seats WHERE actor_id = ?",
-            actorId,
-          )
-          .toArray()[0];
-        if (seated === undefined) {
-          rejection = {
-            code: "not-seated",
-            message: "Only a seated player can change ready state.",
-          };
-        } else if (seated.ready === Number(envelope.command.ready)) {
-          rejection = {
-            code: "no-state-change",
-            message: "The requested ready state is already current.",
-          };
-        } else {
-          this.ctx.storage.sql.exec(
-            "UPDATE lobby_seats SET ready = ? WHERE actor_id = ?",
-            Number(envelope.command.ready),
-            actorId,
-          );
-          applied = true;
-          publicTransition = true;
-        }
-      }
-
-      if (
-        applied &&
-        (envelope.command.type === "lobby/claim-seat" ||
-          envelope.command.type === "lobby/leave-seat")
-      ) {
-        reconcilePresenceDeadlines(this.ctx.storage.sql, {
-          now,
-          observations: this.presenceObservations(),
-        });
-      }
-      let resultVersion = currentVersion;
-      if (applied && publicTransition) {
-        resultVersion += 1;
-        this.ctx.storage.sql.exec(
-          "UPDATE lobby_state SET state_version = ? WHERE singleton = 1",
-          resultVersion,
-        );
-      }
-      const response = lobbyReceipt(
-        envelope.commandId,
-        applied ? "applied" : "rejected",
-        resultVersion,
-        rejection,
-      );
-      if (applied) {
-        reconcileBotWork(
-          this.ctx.storage.sql,
-          this.gameState()?.state,
-          now,
-          this.roomLifecycle().abandoned,
-        );
-      }
-      this.ctx.storage.sql.exec(
-        "INSERT INTO lobby_command_receipts (command_id, actor_id, request_json, response_json, created_at) VALUES (?, ?, ?, ?, ?)",
-        envelope.commandId,
-        actorId,
-        requestJson,
-        response,
-        now,
-      );
-      return {
-        applied,
-        broadcast: applied && publicTransition,
-        response,
-        senderSnapshot: applied && !publicTransition,
-        stale,
-      };
+            .find((attachment) => attachment?.connectionId === connectionId)
+        : undefined;
+    return executeTableCommand(new SqliteTableCommandStore(this.ctx.storage), {
+      actorId,
+      envelope,
+      now,
+      authority,
+      observations: this.presenceObservations(departing?.connectionId),
+      randomBytes: (length) => crypto.getRandomValues(new Uint8Array(length)),
+      createCommandId: () => crypto.randomUUID(),
+      newBotActorId: () => `bot:${crypto.randomUUID()}`,
+      ...(departing === undefined
+        ? {}
+        : { departingConnectionGeneration: departing.connectionGeneration }),
     });
-  }
-
-  private replaceGameDeadlines(
-    sql: SqlStorage,
-    state: VersionedCanonicalGameState,
-    now: number,
-    processingDeadlineId = "",
-  ): void {
-    if (state.schemaVersion !== 2) {
-      sql.exec(
-        "UPDATE deadlines SET status = 'cancelled', processed_at = NULL WHERE status = 'pending' AND kind IN ('reaction', 'turn') AND deadline_id <> ?",
-        processingDeadlineId,
-      );
-      return;
-    }
-    const target = tableGameDeadline(state);
-    let deadlineId = target?.deadlineId ?? "";
-    if (target?.kind === "turn") {
-      const previous = sql
-        .exec<{ status: string }>(
-          "SELECT status FROM deadlines WHERE deadline_id = ?",
-          deadlineId,
-        )
-        .toArray()[0];
-      if (previous !== undefined && previous.status !== "pending")
-        deadlineId = `${deadlineId}:controller:${String(this.playerControl(target.actorId).generation)}`;
-    }
-    sql.exec(
-      "UPDATE deadlines SET status = 'cancelled', processed_at = NULL WHERE status = 'pending' AND kind IN ('reaction', 'turn') AND deadline_id <> ? AND deadline_id <> ?",
-      deadlineId,
-      processingDeadlineId,
-    );
-    if (target === null) return;
-    let dueAt = now + REACTION_DEADLINE_MS;
-    if (target.kind === "turn") {
-      if (this.playerControl(target.actorId).controller === "BOT") {
-        sql.exec(
-          "UPDATE deadlines SET status = 'cancelled' WHERE status = 'pending' AND kind = 'turn' AND deadline_id <> ?",
-          processingDeadlineId,
-        );
-        return;
-      }
-      const connected = this.hasValidSocket(target.actorId, now);
-      if (!connected) return;
-      dueAt = now + TURN_DEADLINE_MS;
-    }
-    const existing = sql
-      .exec<{ status: string }>(
-        "SELECT status FROM deadlines WHERE deadline_id = ?",
-        deadlineId,
-      )
-      .toArray()[0];
-    if (existing?.status === "pending") return;
-    scheduleDeadline(sql, {
-      deadlineId,
-      dueAt,
-      kind: target.kind,
-      payload: target.payload,
-      status: "pending",
-      targetGeneration: target.targetGeneration,
-    });
-  }
-
-  private hasValidSocket(
-    actorId: string,
-    now: number,
-    excludedConnectionId?: string,
-  ): boolean {
-    return this.presenceObservations(excludedConnectionId).some(
-      (observation) =>
-        observation.actorId === actorId && observation.expiresAt > now,
-    );
-  }
-
-  private hasAnyValidSocket(
-    now: number,
-    excludedConnectionId?: string,
-  ): boolean {
-    return this.presenceObservations(excludedConnectionId).some(
-      ({ expiresAt }) => expiresAt > now,
-    );
   }
 
   private presenceObservations(
@@ -1582,7 +1010,7 @@ export class TableRoom extends DurableObject<Env> {
       return grant !== undefined && this.grantAuthorityIsCurrent(grant)
         ? [
             {
-              actorId: grant.actor_id,
+              actorId: grant.actorId,
               expiresAt: this.socketPresenceExpiresAt(socket, attachment),
             },
           ]
@@ -1590,135 +1018,34 @@ export class TableRoom extends DurableObject<Env> {
     });
   }
 
-  private deadlineStillTargetsCurrent(
-    deadline: PendingDeadline,
-    state: CanonicalGameStateV2 | undefined,
-    now: number,
-  ): boolean {
-    const payload = deadline.payload;
-    switch (payload.type) {
-      case "system/reaction-expired":
-        return state !== undefined && tableGameDeadlineMatches(state, payload);
-      case "system/turn-expired":
-        return (
-          state !== undefined &&
-          tableGameDeadlineMatches(state, payload) &&
-          this.playerControl(tableGameActorAt(state, payload.seat))
-            .controller === "HUMAN"
-        );
-      case "system/disconnect-grace-expired": {
-        const row = this.ctx.storage.sql
-          .exec<{ connection_generation: number; autopilot: number }>(
-            "SELECT connection_generation, autopilot FROM player_automation WHERE actor_id = ?",
-            payload.actorId,
-          )
-          .toArray()[0];
-        return (
-          row?.connection_generation === payload.connectionGeneration &&
-          row.autopilot === 0 &&
-          this.players.health(payload.actorId).desiredController === "BOT" &&
-          !this.hasValidSocket(payload.actorId, now)
-        );
-      }
-      case "system/table-abandonment-expired": {
-        const lifecycle = this.roomLifecycle();
-        return (
-          lifecycle.roomActivityGeneration === payload.roomActivityGeneration &&
-          !lifecycle.abandoned &&
-          !this.hasAnyValidSocket(now)
-        );
-      }
-    }
-  }
-
-  private async processDeadline(
+  private processDeadline(
     deadline: PendingDeadline,
     now: number,
   ): Promise<boolean> {
-    const stored = await verifyStoredGame(this.ctx.storage.sql);
-    const state = stored?.state.schemaVersion === 2 ? stored.state : undefined;
-    let batch: PreparedGameEventBatch | undefined;
-    let batchVisibility: "private" | "public" = "private";
+    const payload = deadline.payload;
+    const desiredBotActorIds = new Set<string>();
     if (
-      state !== undefined &&
-      stored !== undefined &&
-      this.deadlineStillTargetsCurrent(deadline, state, now)
+      payload.type === "system/disconnect-grace-expired" &&
+      this.players.health(payload.actorId).desiredController === "BOT"
     ) {
-      const payload = deadline.payload;
-      const decision =
-        payload.type === "system/reaction-expired" ||
-        payload.type === "system/turn-expired"
-          ? expireTableGame(state, deadline, now)
-          : undefined;
-      if (decision !== undefined && decision.kind !== "rejected") {
-        batchVisibility = decision.visibility;
-        batch = await prepareGameEventBatch(stored, decision.events);
-      }
+      desiredBotActorIds.add(payload.actorId);
     }
-
-    const completion = completeDeadlineWithReceipt(
-      this.ctx.storage,
+    return processTableDeadline(
+      new SqliteTableCommandStore(this.ctx.storage),
       deadline.deadlineId,
       now,
-      (sql, currentDeadline): SystemCommandResult => {
-        const currentGame = this.gameState()?.state;
-        if (
-          !this.deadlineStillTargetsCurrent(currentDeadline, currentGame, now)
-        ) {
-          return { outcome: "no-op", reason: "stale-target" };
-        }
-        let publicTransition = false;
-        if (batch !== undefined) {
-          persistPreparedGameBatchInTransaction(sql, batch);
-          const gamePublic = batchVisibility === "public";
-          publicTransition ||= gamePublic;
-          if (gamePublic) {
-            this.replaceGameDeadlines(
-              sql,
-              batch.finalState,
-              now,
-              currentDeadline.deadlineId,
-            );
-          }
-        }
-        const payload = currentDeadline.payload;
-        if (payload.type === "system/disconnect-grace-expired") {
-          publicTransition = this.substitutePlayer(payload.actorId, now);
-        } else if (payload.type === "system/table-abandonment-expired") {
-          sql.exec(
-            "UPDATE room_lifecycle SET abandoned = 1, updated_at = ? WHERE singleton = 1 AND room_activity_generation = ? AND abandoned = 0",
-            now,
-            payload.roomActivityGeneration,
-          );
-          publicTransition = true;
-        }
-        if (publicTransition) {
-          sql.exec(
-            "UPDATE lobby_state SET state_version = state_version + 1 WHERE singleton = 1",
-          );
-        }
-        reconcileBotWork(
-          sql,
-          this.gameState()?.state,
-          now,
-          this.roomLifecycle().abandoned,
-        );
-        return { outcome: "processed", publicTransition };
-      },
-    );
-    return (
-      !completion.replayed &&
-      completion.receipt.result.outcome === "processed" &&
-      completion.receipt.result.publicTransition
+      this.presenceObservations(),
+      { desiredBotActorIds, createCommandId: () => crypto.randomUUID() },
     );
   }
 
   private async drainDueDeadlines(now: number): Promise<boolean> {
-    this.ctx.storage.transactionSync(() => {
-      reconcilePresenceDeadlines(this.ctx.storage.sql, {
-        now,
-        observations: this.presenceObservations(),
-      });
+    reconcileTableWork(new SqliteTableConnectionStore(this.ctx.storage), {
+      now,
+      observations: this.presenceObservations(),
+      game: this.gameState()?.state,
+      refreshGameDeadlines: false,
+      createCommandId: () => crypto.randomUUID(),
     });
     const due = readDueDeadlines(
       this.ctx.storage.sql,
@@ -1754,17 +1081,13 @@ export class TableRoom extends DurableObject<Env> {
 
   private async repairAlarm(): Promise<void> {
     const now = Date.now();
-    this.ctx.storage.transactionSync(() => {
-      reconcilePresenceDeadlines(this.ctx.storage.sql, {
-        now,
-        observations: this.presenceObservations(),
-      });
-      reconcileBotWork(
-        this.ctx.storage.sql,
-        this.gameState()?.state,
-        now,
-        this.roomLifecycle().abandoned,
-      );
+    // Fresh observations on every repair prevent ordinary traffic postponing health checks.
+    reconcileTableWork(new SqliteTableConnectionStore(this.ctx.storage), {
+      now,
+      observations: this.presenceObservations(),
+      game: this.gameState()?.state,
+      refreshGameDeadlines: false,
+      createCommandId: () => crypto.randomUUID(),
     });
     const current = await this.ctx.storage.getAlarm();
     const pending = [
@@ -1799,55 +1122,6 @@ export class TableRoom extends DurableObject<Env> {
     if (broadcast) this.broadcastSnapshots();
   }
 
-  private bindingAuthorized(
-    authorization: BindingAuthorization,
-    row = this.table(),
-  ): row is TableRow {
-    return (
-      row?.instance_id === authorization.instanceId &&
-      row.binding_generation === authorization.bindingGeneration &&
-      row.binding_proof === authorization.bindingProof
-    );
-  }
-
-  private sessionGenerationCurrent(
-    actorId: string,
-    sessionGeneration: number,
-  ): boolean {
-    return (
-      this.ctx.storage.sql
-        .exec<{ session_generation: number }>(
-          "SELECT session_generation FROM actor_sessions WHERE actor_id = ?",
-          actorId,
-        )
-        .toArray()[0]?.session_generation === sessionGeneration
-    );
-  }
-
-  private receipt(operationId: string): ReceiptRow | undefined {
-    return this.ctx.storage.sql
-      .exec<ReceiptRow>(
-        "SELECT request_json, status, response_json, http_status FROM binding_receipts WHERE operation_id = ?",
-        operationId,
-      )
-      .toArray()[0];
-  }
-
-  private finishReceipt(
-    operationId: string,
-    status: "applied" | "rejected",
-    result: StoredResult,
-  ): void {
-    this.ctx.storage.sql.exec(
-      "UPDATE binding_receipts SET status = ?, response_json = ?, http_status = ?, updated_at = ? WHERE operation_id = ?",
-      status,
-      JSON.stringify(result.body),
-      result.status,
-      Date.now(),
-      operationId,
-    );
-  }
-
   private async applyBinding(value: unknown): Promise<Response> {
     const body = parseApplyBindingRequest(value);
     const tableId = this.tableId();
@@ -1869,262 +1143,28 @@ export class TableRoom extends DurableObject<Env> {
         "The capability is invalid.",
       );
     }
-    const capabilitySecretHash =
-      capability === undefined ? undefined : await sha256(capability.secret);
-    const requestJson = JSON.stringify({
-      actor: body.actor,
-      deadlineAt: body.deadlineAt,
-      instanceId: body.instanceId,
-      intent:
-        capability === undefined
-          ? { kind: "create" }
-          : {
-              kind: "resume",
-              capabilityId: capability.capabilityId,
-              capabilitySecretHash,
-              tableId: capability.tableId,
-            },
-      operationId: body.operationId,
-      version: 1,
-    });
-    const existing = this.receipt(body.operationId);
-    if (existing !== undefined) {
-      if (existing.request_json !== requestJson) {
-        return problemResponse(
-          409,
-          "operation-collision",
-          "The operation identifier was already used for different input.",
-        );
-      }
-      if (existing.status !== "pending" && existing.response_json !== null) {
-        return storedResponse({
-          body: JSON.parse(existing.response_json) as unknown,
-          status: existing.http_status,
-        });
-      }
-      if (
-        body.deadlineAt <= Date.now() &&
-        this.table()?.binding_operation_id !== body.operationId
-      ) {
-        const expired = problem(
-          410,
-          "binding-expired",
-          "The pending binding operation expired before it committed.",
-        );
-        this.finishReceipt(body.operationId, "rejected", expired);
-        return storedResponse(expired);
-      }
-    } else {
-      if (body.deadlineAt <= Date.now()) {
-        return problemResponse(
-          410,
-          "binding-expired",
-          "The binding operation expired before it was admitted.",
-        );
-      }
-      const now = Date.now();
-      this.ctx.storage.sql.exec(
-        "INSERT INTO binding_receipts (operation_id, request_json, status, response_json, http_status, created_at, updated_at) VALUES (?, ?, 'pending', NULL, 0, ?, ?)",
-        body.operationId,
-        requestJson,
-        now,
-        now,
-      );
-    }
-    let result: StoredResult;
-    if (body.intent.kind === "create") {
-      result = this.applyCreate(body, tableId);
-    } else if (capability !== undefined && capabilitySecretHash !== undefined) {
-      result = this.applyResume(
-        body,
-        tableId,
-        capability,
-        capabilitySecretHash,
-      );
-    } else {
-      return problemResponse(
-        403,
-        "invalid-capability",
-        "The capability is invalid.",
-      );
-    }
-    this.finishReceipt(
-      body.operationId,
-      result.status >= 200 && result.status < 300 ? "applied" : "rejected",
-      result,
-    );
-    return storedResponse(result);
-  }
-
-  private applyCreate(
-    body: ApplyBindingRequest,
-    tableId: string,
-  ): StoredResult {
-    const existing = this.table();
-    if (existing?.binding_operation_id === body.operationId) {
-      return {
-        body: {
-          version: 1,
-          tableId,
-          bindingGeneration: existing.binding_generation,
-          bindingProof: existing.binding_proof,
-          role: "owner",
-        },
-        status: 200,
-      };
-    }
-    if (existing !== undefined) {
-      return problem(
-        409,
-        "table-already-created",
-        "The table has already been created.",
-      );
-    }
-    const proof = randomToken();
-    const now = Date.now();
-    this.ctx.storage.transactionSync(() => {
-      this.ctx.storage.sql.exec(
-        "INSERT INTO table_record (singleton, table_id, owner_actor_id, created_at, instance_id, binding_generation, binding_proof, binding_operation_id) VALUES (1, ?, ?, ?, ?, 1, ?, ?)",
-        tableId,
-        body.actor.id,
-        now,
-        body.instanceId,
-        proof,
-        body.operationId,
-      );
-      this.ctx.storage.sql.exec(
-        "INSERT INTO members (actor_id, display_name, role, joined_at) VALUES (?, ?, 'owner', ?)",
-        body.actor.id,
-        body.actor.displayName,
-        now,
-      );
-    });
-    return {
-      body: {
-        version: 1,
-        tableId,
-        bindingGeneration: 1,
-        bindingProof: proof,
-        role: "owner",
-      },
-      status: 200,
-    };
-  }
-
-  private applyResume(
-    body: ApplyBindingRequest,
-    tableId: string,
-    capability: ParsedCapability,
-    capabilitySecretHash: string,
-  ): StoredResult {
-    const proof = randomToken();
-    try {
-      return this.ctx.storage.transactionSync(() => {
-        const table = this.table();
-        if (table === undefined) {
-          return problem(404, "table-not-found", "The table does not exist.");
-        }
-        if (table.binding_operation_id === body.operationId) {
-          return {
-            body: {
-              version: 1,
-              tableId,
-              bindingGeneration: table.binding_generation,
-              bindingProof: table.binding_proof,
-              role: "owner",
-            },
-            status: 200,
+    const intent =
+      capability === undefined
+        ? { kind: "create" as const }
+        : {
+            kind: "resume" as const,
+            capabilityId: capability.capabilityId,
+            capabilitySecretHash: await sha256(capability.secret),
+            tableId: capability.tableId,
           };
-        }
-        if (table.owner_actor_id !== body.actor.id) {
-          return problem(
-            403,
-            "resume-not-authorized",
-            "Only the table owner may resume this table.",
-          );
-        }
-        const row = this.ctx.storage.sql
-          .exec<CapabilityRow>(
-            "SELECT kind, subject_actor_id, secret_hash, expected_binding_generation, expires_at, consumed_actor_id, consumed_operation_id FROM capabilities WHERE capability_id = ?",
-            capability.capabilityId,
-          )
-          .toArray()[0];
-        if (
-          row?.kind !== "resume" ||
-          row.subject_actor_id !== body.actor.id ||
-          row.secret_hash !== capabilitySecretHash
-        ) {
-          return problem(
-            403,
-            "invalid-capability",
-            "The capability is invalid.",
-          );
-        }
-        if (row.expires_at <= Date.now()) {
-          return problem(
-            410,
-            "capability-expired",
-            "The capability has expired.",
-          );
-        }
-        if (row.consumed_operation_id !== null) {
-          return problem(
-            410,
-            "capability-consumed",
-            "The capability was already used.",
-          );
-        }
-        if (row.expected_binding_generation !== table.binding_generation) {
-          return problem(
-            409,
-            "stale-binding-generation",
-            "The table binding changed after the capability was issued.",
-          );
-        }
-        const generation = table.binding_generation + 1;
-        const capabilityUpdate = this.ctx.storage.sql.exec(
-          "UPDATE capabilities SET consumed_actor_id = ?, consumed_operation_id = ? WHERE capability_id = ? AND consumed_operation_id IS NULL AND expected_binding_generation = ?",
-          body.actor.id,
-          body.operationId,
-          capability.capabilityId,
-          table.binding_generation,
-        );
-        const tableUpdate = this.ctx.storage.sql.exec(
-          "UPDATE table_record SET instance_id = ?, binding_generation = ?, binding_proof = ?, binding_operation_id = ? WHERE singleton = 1 AND binding_generation = ?",
-          body.instanceId,
-          generation,
-          proof,
-          body.operationId,
-          table.binding_generation,
-        );
-        if (
-          capabilityUpdate.rowsWritten !== 1 ||
-          tableUpdate.rowsWritten !== 1
-        ) {
-          throw new AtomicMutationConflict();
-        }
-        this.ctx.storage.sql.exec("DELETE FROM actor_sessions");
-        return {
-          body: {
-            version: 1,
-            tableId,
-            bindingGeneration: generation,
-            bindingProof: proof,
-            role: "owner",
-          },
-          status: 200,
-        };
-      });
-    } catch (error) {
-      if (error instanceof AtomicMutationConflict) {
-        return problem(
-          409,
-          "binding-conflict",
-          "The table binding changed concurrently.",
-        );
-      }
-      throw error;
-    }
+    return storedResponse(
+      applyAccessBinding(
+        new SqliteTableAccessStore(this.ctx.storage),
+        {
+          actor: body.actor,
+          deadlineAt: body.deadlineAt,
+          instanceId: body.instanceId,
+          intent,
+          operationId: body.operationId,
+        },
+        { tableId, now: Date.now(), bindingProof: randomToken() },
+      ),
+    );
   }
 
   private async createCapability(
@@ -2142,60 +1182,13 @@ export class TableRoom extends DurableObject<Env> {
     const capabilityId = randomCapabilityId();
     const secret = randomToken();
     const secretHash = await sha256(secret);
-    const expiresAt = Date.now() + CAPABILITY_LIFETIME_MS;
-    const result = this.ctx.storage.transactionSync<StoredResult>(() => {
-      const table = this.table();
-      if (
-        table === undefined ||
-        !this.bindingAuthorized(body, table) ||
-        table.owner_actor_id !== body.actorId
-      ) {
-        return problem(
-          403,
-          "capability-not-authorized",
-          "The capability request is not authorized.",
-        );
-      }
-      if (
-        !this.sessionGenerationCurrent(body.actorId, body.sessionGeneration)
-      ) {
-        return problem(
-          409,
-          "stale-session-generation",
-          "The application session is no longer current.",
-        );
-      }
-      const subjectActorId =
-        kind === "invitation" ? body.invitedActorId : body.actorId;
-      if (
-        subjectActorId === undefined ||
-        (kind === "invitation" && subjectActorId === table.owner_actor_id)
-      ) {
-        return problem(
-          400,
-          "invalid-capability-subject",
-          "The capability subject is invalid.",
-        );
-      }
-      this.ctx.storage.sql.exec(
-        "INSERT INTO capabilities (capability_id, kind, subject_actor_id, secret_hash, expected_binding_generation, expires_at, consumed_actor_id, consumed_operation_id) VALUES (?, ?, ?, ?, ?, ?, NULL, NULL)",
-        capabilityId,
-        kind,
-        subjectActorId,
-        secretHash,
-        table.binding_generation,
-        expiresAt,
-      );
-      return {
-        body: {
-          version: 1,
-          capability: `v1.${table.table_id}.${capabilityId}.${secret}`,
-          expiresAt,
-        },
-        status: 200,
-      };
-    });
-    return storedResponse(result);
+    return storedResponse(
+      issueAccessCapability(
+        new SqliteTableAccessStore(this.ctx.storage),
+        body,
+        { kind, capabilityId, secret, secretHash, now: Date.now() },
+      ),
+    );
   }
 
   private async redeemInvitation(value: unknown): Promise<Response> {
@@ -2216,162 +1209,43 @@ export class TableRoom extends DurableObject<Env> {
       );
     }
     const secretHash = await sha256(capability.secret);
-    const stateVersionBefore = this.stateVersion();
-    const result = this.ctx.storage.transactionSync<StoredResult>(() => {
-      const table = this.table();
-      if (!this.bindingAuthorized(body, table)) {
-        return problem(
-          409,
-          "stale-binding",
-          "The table binding is no longer active.",
-        );
-      }
-      if (capability.tableId !== table.table_id) {
-        return problem(403, "invalid-capability", "The capability is invalid.");
-      }
-      if (
-        !this.sessionGenerationCurrent(body.actor.id, body.sessionGeneration)
-      ) {
-        return problem(
-          409,
-          "stale-session-generation",
-          "The application session is no longer current.",
-        );
-      }
-      const row = this.ctx.storage.sql
-        .exec<CapabilityRow>(
-          "SELECT kind, subject_actor_id, secret_hash, expected_binding_generation, expires_at, consumed_actor_id, consumed_operation_id FROM capabilities WHERE capability_id = ?",
-          capability.capabilityId,
-        )
-        .toArray()[0];
-      if (
-        row?.kind !== "invitation" ||
-        row.subject_actor_id !== body.actor.id ||
-        row.secret_hash !== secretHash
-      ) {
-        return problem(403, "invalid-capability", "The capability is invalid.");
-      }
-      if (row.expected_binding_generation !== table.binding_generation) {
-        return problem(
-          409,
-          "stale-binding-generation",
-          "The table binding changed after the capability was issued.",
-        );
-      }
-      if (row.expires_at <= body.now || row.expires_at <= Date.now()) {
-        return problem(
-          410,
-          "capability-expired",
-          "The capability has expired.",
-        );
-      }
-      if (row.consumed_actor_id !== null) {
-        return problem(
-          410,
-          "capability-consumed",
-          "The capability was already used.",
-        );
-      }
-      const capabilityUpdate = this.ctx.storage.sql.exec(
-        "UPDATE capabilities SET consumed_actor_id = ? WHERE capability_id = ? AND consumed_actor_id IS NULL",
-        body.actor.id,
-        capability.capabilityId,
-      );
-      if (capabilityUpdate.rowsWritten !== 1) {
-        throw new AtomicMutationConflict();
-      }
-      const existingMember = this.ctx.storage.sql
-        .exec<{ actor_id: string }>(
-          "SELECT actor_id FROM members WHERE actor_id = ?",
-          body.actor.id,
-        )
-        .toArray()[0];
-      this.ctx.storage.sql.exec(
-        "INSERT OR IGNORE INTO members (actor_id, display_name, role, joined_at) VALUES (?, ?, 'member', ?)",
-        body.actor.id,
-        body.actor.displayName,
-        Date.now(),
-      );
-      if (existingMember === undefined) {
-        this.ctx.storage.sql.exec(
-          "UPDATE lobby_state SET state_version = state_version + 1 WHERE singleton = 1",
-        );
-      }
-      return {
-        body: { version: 1, tableId: table.table_id, role: "member" },
-        status: 200,
-      };
-    });
-    if (this.stateVersion() !== stateVersionBefore) this.broadcastSnapshots();
-    return storedResponse(result);
+    const outcome = redeemAccessInvitation(
+      new SqliteTableAccessStore(this.ctx.storage),
+      body,
+      {
+        tableId: capability.tableId,
+        capabilityId: capability.capabilityId,
+        secretHash,
+        now: Date.now(),
+      },
+    );
+    if (outcome.publishSnapshots) this.broadcastSnapshots();
+    return storedResponse(outcome.result);
   }
 
   private async activateSession(value: unknown): Promise<Response> {
     const body = parseSessionActivateRequest(value);
-    const table = this.table();
-    if (body === undefined || table === undefined) {
+    if (body === undefined) {
       return problemResponse(
         400,
         "invalid-session-request",
         "The session activation request is invalid.",
       );
     }
-    if (!this.bindingAuthorized(body, table)) {
-      return problemResponse(
-        409,
-        "stale-binding",
-        "The table binding is no longer active.",
-      );
-    }
-    if (body.actorId.startsWith("bot:")) {
-      return problemResponse(
-        403,
-        "session-not-authorized",
-        "Bot players do not have application sessions.",
-      );
-    }
-    const activeSession = this.ctx.storage.sql
-      .exec<{ session_generation: number }>(
-        "SELECT session_generation FROM actor_sessions WHERE actor_id = ?",
-        body.actorId,
-      )
-      .toArray()[0];
-    if (
-      activeSession !== undefined &&
-      activeSession.session_generation > body.sessionGeneration
-    ) {
-      return problemResponse(
-        409,
-        "stale-session-generation",
-        "A newer application session is already active.",
-      );
-    }
-    const now = Date.now();
-    const departed = this.ctx.storage.transactionSync(() => {
-      this.ctx.storage.sql.exec(
-        "INSERT INTO actor_sessions (actor_id, session_generation, activated_at) VALUES (?, ?, ?) ON CONFLICT(actor_id) DO UPDATE SET session_generation = excluded.session_generation, activated_at = excluded.activated_at WHERE excluded.session_generation >= actor_sessions.session_generation",
-        body.actorId,
-        body.sessionGeneration,
-        now,
-      );
-      const substituted =
-        body.departure === true &&
-        this.gameState() !== undefined &&
-        !this.hasValidSocket(body.actorId, now) &&
-        this.substitutePlayer(body.actorId, now);
-      if (substituted)
-        this.ctx.storage.sql.exec(
-          "UPDATE lobby_state SET state_version = state_version + 1 WHERE singleton = 1",
-        );
-      return substituted;
-    });
-    if (
-      activeSession === undefined ||
-      activeSession.session_generation < body.sessionGeneration
-    ) {
+    const outcome = activateAccessSession(
+      new SqliteTableAccessStore(this.ctx.storage),
+      body,
+      {
+        now: Date.now(),
+        observations: this.presenceObservations(),
+        game: this.gameState()?.state,
+        createCommandId: () => crypto.randomUUID(),
+      },
+    );
+    if (outcome.replaceActorSockets !== undefined) {
       for (const socket of this.ctx.getWebSockets()) {
         const attachment = connectionAttachment(socket.deserializeAttachment());
-        if (attachment?.actorId === body.actorId) {
+        if (attachment?.actorId === outcome.replaceActorSockets) {
           socket.send(
             serializeViewerMessage({
               type: "session/replaced",
@@ -2382,25 +1256,12 @@ export class TableRoom extends DurableObject<Env> {
         }
       }
     }
-    const member = this.ctx.storage.sql
-      .exec<{ role: string }>(
-        "SELECT role FROM members WHERE actor_id = ?",
-        body.actorId,
-      )
-      .toArray()[0];
-    if (member === undefined) {
-      return problemResponse(
-        403,
-        "session-not-authorized",
-        "The session activation is not authorized.",
-      );
-    }
-    if (departed) {
+    if (outcome.departed) {
       this.players.changed(body.actorId);
       this.broadcastSnapshots();
     }
     await this.repairAlarm();
-    return jsonResponse({ version: 1, active: true, role: member.role });
+    return storedResponse(outcome.result);
   }
 
   private async connectWebSocket(request: Request): Promise<Response> {
@@ -2471,15 +1332,15 @@ export class TableRoom extends DurableObject<Env> {
         "The table session is invalid.",
       );
     }
-    const grant: ConnectionGrantRow = {
-      actor_id: actorId,
-      binding_generation: bindingGeneration,
-      binding_proof: bindingProof,
-      display_name: displayName,
-      expires_at: sessionExpiresAt,
-      instance_id: instanceId,
-      session_generation: sessionGeneration,
-      table_id: tableId,
+    const grant: ConnectionGrant = {
+      actorId,
+      displayName,
+      instanceId,
+      tableId,
+      bindingGeneration,
+      bindingProof,
+      sessionGeneration,
+      expiresAt: sessionExpiresAt,
     };
     if (!this.grantIsCurrent(grant, now)) {
       return problemResponse(
@@ -2488,34 +1349,16 @@ export class TableRoom extends DurableObject<Env> {
         "The table session is not authorized.",
       );
     }
-    const connectionTransition = this.ctx.storage.transactionSync(() => {
-      const sql = this.ctx.storage.sql;
-      sql.exec(
-        "INSERT INTO connection_grants (connection_generation, actor_id, display_name, instance_id, table_id, binding_generation, binding_proof, session_generation, expires_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
-        connectionGeneration,
-        actorId,
-        displayName,
-        instanceId,
-        tableId,
-        bindingGeneration,
-        bindingProof,
-        sessionGeneration,
-        sessionExpiresAt,
-      );
-      const transition = recordValidConnection(sql, actorId, now);
-      reconcileBotWork(
-        sql,
-        this.gameState()?.state,
+    const publicTransition = activateTableConnection(
+      new SqliteTableConnectionStore(this.ctx.storage),
+      grant,
+      connectionGeneration,
+      {
         now,
-        this.roomLifecycle().abandoned,
-      );
-      if (transition.publicTransition) {
-        sql.exec(
-          "UPDATE lobby_state SET state_version = state_version + 1 WHERE singleton = 1",
-        );
-      }
-      return transition;
-    });
+        game: this.gameState()?.state,
+        createCommandId: () => crypto.randomUUID(),
+      },
+    );
     const attachment: ConnectionAttachment = {
       actorId,
       connectionGeneration,
@@ -2534,86 +1377,44 @@ export class TableRoom extends DurableObject<Env> {
     this.ctx.acceptWebSocket(server);
     if (attachment.heartbeatAcceptedAt !== undefined)
       server.send(TABLE_HEARTBEAT_READY);
-    const game = this.gameState()?.state;
-    this.ctx.storage.transactionSync(() => {
-      reconcilePresenceDeadlines(this.ctx.storage.sql, {
-        now,
-        observations: this.presenceObservations(),
-      });
-      const gameTarget = game === undefined ? null : tableGameDeadline(game);
-      if (
-        game !== undefined &&
-        gameTarget?.kind === "turn" &&
-        gameTarget.actorId === actorId
-      ) {
-        this.replaceGameDeadlines(this.ctx.storage.sql, game, now);
-      }
+    reconcileTableWork(new SqliteTableConnectionStore(this.ctx.storage), {
+      now,
+      observations: this.presenceObservations(),
+      game: this.gameState()?.state,
+      connectedActorId: actorId,
+      createCommandId: () => crypto.randomUUID(),
     });
     this.players.initialize(
       actorId,
       attachment.connectionId,
       this.playerView(actorId),
     );
-    if (connectionTransition.publicTransition)
-      this.broadcastSnapshots(attachment.connectionId);
+    if (publicTransition) this.broadcastSnapshots(attachment.connectionId);
     await this.repairAlarm();
     return new Response(null, { status: 101, webSocket: client });
   }
 
   private connectionGrant(
     attachment: ConnectionAttachment,
-  ): ConnectionGrantRow | undefined {
-    const grant = this.ctx.storage.sql
-      .exec<ConnectionGrantRow>(
-        "SELECT actor_id, display_name, instance_id, table_id, binding_generation, binding_proof, session_generation, expires_at FROM connection_grants WHERE connection_generation = ?",
-        attachment.connectionGeneration,
-      )
-      .toArray()[0];
-    return grant?.actor_id === attachment.actorId &&
-      grant.expires_at === attachment.sessionExpiresAt
+  ): ConnectionGrant | undefined {
+    const grant = new SqliteTableConnectionStore(this.ctx.storage).grant(
+      attachment.connectionGeneration,
+    );
+    return grant?.actorId === attachment.actorId &&
+      grant.expiresAt === attachment.sessionExpiresAt
       ? grant
       : undefined;
   }
 
-  private grantAuthorityIsCurrent(grant: ConnectionGrantRow): boolean {
-    const table = this.table();
-    if (
-      table?.table_id !== grant.table_id ||
-      !this.bindingAuthorized(
-        {
-          bindingGeneration: grant.binding_generation,
-          bindingProof: grant.binding_proof,
-          instanceId: grant.instance_id,
-        },
-        table,
-      )
-    ) {
-      return false;
-    }
-    const member = this.ctx.storage.sql
-      .exec<{ actor_id: string }>(
-        "SELECT actor_id FROM members WHERE actor_id = ?",
-        grant.actor_id,
-      )
-      .toArray()[0];
-    const session = this.ctx.storage.sql
-      .exec<{ session_generation: number }>(
-        "SELECT session_generation FROM actor_sessions WHERE actor_id = ?",
-        grant.actor_id,
-      )
-      .toArray()[0];
-    return (
-      member !== undefined &&
-      session?.session_generation === grant.session_generation
+  private grantAuthorityIsCurrent(grant: ConnectionGrant): boolean {
+    return connectionAuthorityIsCurrent(
+      new SqliteTableAccessStore(this.ctx.storage),
+      grant,
     );
   }
 
-  private grantIsCurrent(grant: ConnectionGrantRow, now: number): boolean {
-    return (
-      !grant.actor_id.startsWith("bot:") &&
-      this.grantAuthorityIsCurrent(grant) &&
-      grant.expires_at > now
-    );
+  private grantIsCurrent(grant: ConnectionGrant, now: number): boolean {
+    return this.grantAuthorityIsCurrent(grant) && grant.expiresAt > now;
   }
 
   public override async webSocketMessage(
@@ -2714,17 +1515,16 @@ export class TableRoom extends DurableObject<Env> {
     const attachment = connectionAttachment(socket.deserializeAttachment());
     if (attachment !== undefined) {
       const now = Date.now();
-      this.ctx.storage.transactionSync(() => {
-        const sql = this.ctx.storage.sql;
-        sql.exec(
-          "DELETE FROM connection_grants WHERE connection_generation = ?",
-          attachment.connectionGeneration,
-        );
-        reconcilePresenceDeadlines(sql, {
+      closeTableConnection(
+        new SqliteTableConnectionStore(this.ctx.storage),
+        attachment.connectionGeneration,
+        {
           now,
           observations: this.presenceObservations(attachment.connectionId),
-        });
-      });
+          game: this.gameState()?.state,
+          createCommandId: () => crypto.randomUUID(),
+        },
+      );
       await this.repairAlarm();
     }
   }

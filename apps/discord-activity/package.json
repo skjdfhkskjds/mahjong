@@ -9,7 +9,7 @@
     "dev": "vite",
     "dev:solo": "vite --config vite.solo.config.ts --configLoader runner",
     "preview": "vite build && vite preview",
-    "test": "vitest run --config vitest.client.config.ts && vitest run --config vitest.worker.config.ts",
+    "test": "vitest run --config vitest.application.config.ts && vitest run --config vitest.client.config.ts && vitest run --config vitest.worker.config.ts",
     "types:worker": "wrangler types src/worker/worker-configuration.d.ts",
     "typecheck": "tsc --project tsconfig.client.json --noEmit && tsc --project tsconfig.worker.json --noEmit && tsc --project tsconfig.tests.json --noEmit && tsc --project tsconfig.tools.json --noEmit"
   },
