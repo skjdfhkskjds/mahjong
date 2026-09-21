@@ -8,6 +8,7 @@ import {
   type TableReceipt,
   type ViewerSafeTableSnapshot,
 } from "../../adapters/transport/table-socket-status.js";
+import { createLobbyDisplay } from "../lobby/lobby-controller.js";
 import type { RuntimeConfig } from "../../bootstrap/runtime-config.js";
 import {
   startClientStartup,
@@ -547,5 +548,145 @@ describe("client startup", () => {
     });
     await flushPromises();
     expect(harness.current().close).toHaveBeenCalled();
+  });
+  it("gates owner bot controls on fresh snapshots and never replays bot commands after reconnect", async () => {
+    vi.useFakeTimers();
+    const statuses: ClientStartupStatus[] = [];
+    const harness = socketHarness();
+    const stop = startClientStartup({
+      config,
+      bridge,
+      api: createApi(),
+      socket: harness.monitor,
+      onStatus: (status) => statuses.push(status),
+    });
+    await flushPromises();
+    const owner = { id: "server-id", displayName: "Local Player" };
+    const bot = { id: "bot:south", displayName: "Bot South" };
+    const base = connectedSnapshot();
+    const botSnapshot: ViewerSafeTableSnapshot = {
+      ...base,
+      stateVersion: 4,
+      view: {
+        ...base.view,
+        spectators: [],
+        viewer: { actor: owner, role: "player", seat: "east" },
+        seats: base.view.seats.map((seat) => ({
+          ...seat,
+          occupant:
+            seat.seat === "east" ? owner : seat.seat === "south" ? bot : null,
+          ready: seat.seat === "south",
+        })),
+      },
+    };
+    let commandSequence = 0;
+    const display = (status = statuses.at(-1)) => {
+      const snapshot = status?.tableSnapshot;
+      const connected = status?.complete === true && snapshot !== undefined;
+      return createLobbyDisplay({
+        canManageBots:
+          status?.sessionResponse?.access === "member" &&
+          status.sessionResponse.role === "owner",
+        connected,
+        latestReceipt: status?.latestReceipt,
+        snapshot,
+        onCommand: (command) => {
+          if (!connected) {
+            return false;
+          }
+          try {
+            harness.monitor.sendCommand({
+              type: "table/command",
+              protocolVersion: 2,
+              commandId: `bot-control-${String(++commandSequence)}`,
+              expectedStateVersion: snapshot.stateVersion,
+              command,
+            });
+            return true;
+          } catch {
+            return false;
+          }
+        },
+      });
+    };
+    const first = harness.current();
+    first.open();
+    expect(display().seats).toBeUndefined();
+    first.message(botSnapshot);
+    const initializing = display(statuses.at(-2));
+    expect(initializing.seats?.every((seat) => seat.botControlsDisabled)).toBe(
+      true,
+    );
+    initializing.seats?.[2]?.onAddBot?.();
+    expect(first.send).toHaveBeenCalledTimes(1);
+    const active = display();
+    expect(active.seats?.[1]?.kind).toBe("bot");
+    expect(active.seats?.[2]?.botControlsDisabled).toBe(false);
+    active.seats?.[2]?.onAddBot?.();
+    active.seats?.[1]?.onRemoveBot?.();
+    expect(first.send.mock.calls.slice(1)).toEqual([
+      [
+        JSON.stringify({
+          type: "table/command",
+          protocolVersion: 2,
+          commandId: "bot-control-1",
+          expectedStateVersion: 4,
+          command: { type: "lobby/add-bot", seat: "west" },
+        }),
+      ],
+      [
+        JSON.stringify({
+          type: "table/command",
+          protocolVersion: 2,
+          commandId: "bot-control-2",
+          expectedStateVersion: 4,
+          command: { type: "lobby/remove-bot", seat: "south" },
+        }),
+      ],
+    ]);
+    first.disconnect();
+    active.seats?.[2]?.onAddBot?.();
+    expect(first.send).toHaveBeenCalledTimes(3);
+    expect(display().seats).toBeUndefined();
+    vi.advanceTimersByTime(1000);
+    const reopened = harness.current();
+    reopened.open();
+    expect(display().seats).toBeUndefined();
+    expect(reopened.send).toHaveBeenCalledTimes(1);
+    expect(reopened.send).toHaveBeenLastCalledWith(
+      JSON.stringify({
+        type: "table/resync",
+        protocolVersion: 2,
+        lastSeenStateVersion: 4,
+      }),
+    );
+    const fresh: ViewerSafeTableSnapshot = {
+      ...botSnapshot,
+      stateVersion: 6,
+      view: {
+        ...botSnapshot.view,
+        seats: botSnapshot.view.seats.map((seat) =>
+          seat.seat === "south"
+            ? { ...seat, occupant: null, ready: false }
+            : seat,
+        ),
+      },
+    };
+    reopened.message(fresh);
+    const restored = display();
+    expect(restored.seats?.[1]?.onRemoveBot).toBeUndefined();
+    expect(restored.seats?.[1]?.onAddBot).toBeTypeOf("function");
+    expect(restored.seats?.[1]?.botControlsDisabled).toBe(false);
+    expect(reopened.send).toHaveBeenCalledTimes(1);
+    restored.seats?.[1]?.onAddBot?.();
+    expect(reopened.send).toHaveBeenCalledTimes(2);
+    expect(reopened.send.mock.calls.at(-1)?.[0]).toContain(
+      '"expectedStateVersion":6',
+    );
+    reopened.disconnect(4001);
+    restored.seats?.[1]?.onAddBot?.();
+    expect(reopened.send).toHaveBeenCalledTimes(2);
+    expect(display().seats).toBeUndefined();
+    stop();
   });
 });
