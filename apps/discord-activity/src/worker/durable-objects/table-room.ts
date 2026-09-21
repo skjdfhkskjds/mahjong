@@ -8,7 +8,6 @@ import {
   type VersionedCanonicalGameState,
 } from "@mahjong/rules-hong-kong";
 
-import { appendAutomaticReactionPasses } from "./table-room/table-room-automation.js";
 import {
   expireTableGame,
   projectTableGame,
@@ -24,8 +23,23 @@ import {
   changeBotSeat,
   chooseBotMove,
   readBotWork,
+  readPlayerControls,
   reconcileBotWork,
 } from "./table-room/table-room-bots.js";
+import {
+  TablePlayers,
+  type PlayerCommandResult,
+} from "../players/table-players.js";
+import type { ControllerAuthority } from "../players/player-coordinator.js";
+import type { PlayerControl } from "./table-room/table-player-control.js";
+import type { PlayerView } from "../players/player.js";
+import {
+  heartbeatPresenceExpiresAt,
+  TABLE_HEARTBEAT_INTERVAL_MS,
+  TABLE_HEARTBEAT_READY,
+  TABLE_HEARTBEAT_REQUEST,
+  TABLE_HEARTBEAT_RESPONSE,
+} from "./table-room/table-room-heartbeat.js";
 import {
   isValidApplicationActor,
   isValidApplicationDisplayName,
@@ -49,7 +63,7 @@ import {
   type SystemCommandResult,
 } from "./table-room/deadline-queue.js";
 import {
-  migrateTableRoomStorageToV5,
+  migrateTableRoomStorageToV6,
   persistPreparedGameBatchInTransaction,
   prepareGameEventBatch,
   prepareV1GameUpgrade,
@@ -138,6 +152,7 @@ interface SessionActivateRequest extends BindingAuthorization {
   readonly actorId: string;
   readonly sessionGeneration: number;
   readonly version: 1;
+  readonly departure?: true;
 }
 
 interface ConnectionAttachment {
@@ -146,6 +161,7 @@ interface ConnectionAttachment {
   readonly connectionId: string;
   readonly sessionExpiresAt: number;
   readonly version: 2;
+  readonly heartbeatAcceptedAt?: number;
 }
 
 interface ConnectionGrantRow {
@@ -479,11 +495,13 @@ function parseSessionActivateRequest(
       "instanceId",
       "sessionGeneration",
       "version",
+      ...(Object.hasOwn(value, "departure") ? ["departure"] : []),
     ]) ||
     value["version"] !== 1 ||
     !validActorId(value["actorId"]) ||
     !Number.isSafeInteger(value["sessionGeneration"]) ||
-    (value["sessionGeneration"] as number) < 1
+    (value["sessionGeneration"] as number) < 1 ||
+    (Object.hasOwn(value, "departure") && value["departure"] !== true)
   ) {
     return undefined;
   }
@@ -494,6 +512,7 @@ function parseSessionActivateRequest(
     actorId: value["actorId"],
     sessionGeneration: value["sessionGeneration"] as number,
     version: 1,
+    ...(value["departure"] === true ? { departure: true as const } : {}),
   };
 }
 
@@ -541,6 +560,9 @@ function connectionAttachment(
       "connectionId",
       "sessionExpiresAt",
       "version",
+      ...(Object.hasOwn(value, "heartbeatAcceptedAt")
+        ? ["heartbeatAcceptedAt"]
+        : []),
     ]) ||
     value["version"] !== 2 ||
     !validActorId(value["actorId"]) ||
@@ -549,7 +571,10 @@ function connectionAttachment(
     typeof value["connectionGeneration"] !== "string" ||
     !SHORT_TOKEN_PATTERN.test(value["connectionGeneration"]) ||
     !Number.isSafeInteger(value["sessionExpiresAt"]) ||
-    (value["sessionExpiresAt"] as number) < 0
+    (value["sessionExpiresAt"] as number) < 0 ||
+    (Object.hasOwn(value, "heartbeatAcceptedAt") &&
+      (!Number.isSafeInteger(value["heartbeatAcceptedAt"]) ||
+        (value["heartbeatAcceptedAt"] as number) < 0))
   ) {
     return undefined;
   }
@@ -629,8 +654,70 @@ function problem(status: number, code: string, message: string): StoredResult {
 }
 
 export class TableRoom extends DurableObject<Env> {
+  private readonly players: TablePlayers;
+
   public constructor(ctx: DurableObjectState, env: Env) {
     super(ctx, env);
+    this.ctx.setWebSocketAutoResponse(
+      new WebSocketRequestResponsePair(
+        TABLE_HEARTBEAT_REQUEST,
+        TABLE_HEARTBEAT_RESPONSE,
+      ),
+    );
+    this.players = new TablePlayers({
+      control: (actorId) => this.playerControl(actorId),
+      view: (actorId) => this.playerView(actorId),
+      communication: (actorId) => ({
+        connections: () =>
+          this.ctx.getWebSockets().flatMap((socket) => {
+            const attachment = connectionAttachment(
+              socket.deserializeAttachment(),
+            );
+            if (attachment?.actorId !== actorId) return [];
+            return [
+              {
+                id: attachment.connectionId,
+                usable: this.socketIsUsable(socket, Date.now()),
+              },
+            ];
+          }),
+        send: (connectionId, input) => {
+          const socket = this.ctx
+            .getWebSockets()
+            .find(
+              (candidate) =>
+                connectionAttachment(candidate.deserializeAttachment())
+                  ?.connectionId === connectionId,
+            );
+          const attachment =
+            socket === undefined
+              ? undefined
+              : connectionAttachment(socket.deserializeAttachment());
+          if (
+            socket === undefined ||
+            attachment?.actorId !== actorId ||
+            socket.readyState !== WebSocket.OPEN ||
+            (input.type === "view" && !this.socketIsUsable(socket, Date.now()))
+          )
+            throw new Error("Player connection is unavailable.");
+          socket.send(input.type === "view" ? input.snapshot : input.message);
+        },
+      }),
+      choose: (view) => {
+        const random = crypto.getRandomValues(new Uint32Array(1))[0];
+        if (random === undefined)
+          throw new Error("Bot randomness unavailable.");
+        return chooseBotMove(view, random / 0x1_0000_0000);
+      },
+      apply: (actorId, command, authority, connectionId) =>
+        this.applyTableCommand(
+          actorId,
+          command,
+          Date.now(),
+          authority,
+          connectionId,
+        ),
+    });
     const sql = this.ctx.storage.sql;
     const knownTables = sql
       .exec<{ name: string }>(
@@ -672,7 +759,7 @@ export class TableRoom extends DurableObject<Env> {
         );
       });
     }
-    migrateTableRoomStorageToV5(this.ctx.storage);
+    migrateTableRoomStorageToV6(this.ctx.storage);
     void this.ctx.blockConcurrencyWhile(async () => {
       verifyDeadlinePersistence(sql);
       let game = await verifyStoredGame(sql);
@@ -822,12 +909,99 @@ export class TableRoom extends DurableObject<Env> {
     return readAutomationByActor(this.ctx.storage.sql);
   }
 
-  private automatedActorIds(): ReadonlySet<string> {
-    return new Set(
-      [...this.automationByActor()]
-        .filter(([, autopilot]) => autopilot)
-        .map(([actorId]) => actorId),
+  private playerControl(actorId: string): PlayerControl {
+    return (
+      readPlayerControls(this.ctx.storage.sql).find(
+        (control) => control.actorId === actorId,
+      ) ?? { actorId, kind: "HUMAN", controller: "HUMAN", generation: 0 }
     );
+  }
+
+  private controllerIsCurrent(
+    actorId: string,
+    authority: ControllerAuthority,
+  ): boolean {
+    const control = this.playerControl(actorId);
+    return (
+      control.controller === authority.kind &&
+      control.generation === authority.generation
+    );
+  }
+
+  private playerView(actorId: string): PlayerView {
+    const game = this.gameState()?.state;
+    let snapshot = "";
+    for (const socket of this.ctx.getWebSockets()) {
+      const attachment = connectionAttachment(socket.deserializeAttachment());
+      if (attachment?.actorId !== actorId) continue;
+      const grant = this.connectionGrant(attachment);
+      if (grant !== undefined && this.grantIsCurrent(grant, Date.now())) {
+        snapshot = this.snapshot(attachment, grant);
+        break;
+      }
+    }
+    return {
+      type: "view",
+      stateVersion: this.stateVersion(),
+      snapshot,
+      ...(game === undefined ? {} : { game: projectTableGame(game, actorId) }),
+    };
+  }
+
+  private socketIsUsable(socket: WebSocket, now: number): boolean {
+    const attachment = connectionAttachment(socket.deserializeAttachment());
+    const grant =
+      attachment === undefined ? undefined : this.connectionGrant(attachment);
+    return (
+      socket.readyState === WebSocket.OPEN &&
+      attachment !== undefined &&
+      grant !== undefined &&
+      this.grantIsCurrent(grant, now) &&
+      this.socketPresenceExpiresAt(socket, attachment) > now
+    );
+  }
+
+  private socketPresenceExpiresAt(
+    socket: WebSocket,
+    attachment: ConnectionAttachment,
+  ): number {
+    if (attachment.heartbeatAcceptedAt === undefined)
+      return attachment.sessionExpiresAt;
+    const timestamp = this.ctx
+      .getWebSocketAutoResponseTimestamp(socket)
+      ?.getTime();
+    return heartbeatPresenceExpiresAt({
+      acceptedAt: attachment.heartbeatAcceptedAt,
+      ...(timestamp === undefined ? {} : { lastHeartbeatAt: timestamp }),
+      sessionExpiresAt: attachment.sessionExpiresAt,
+    });
+  }
+
+  /** Controller changes and job cancellation share the caller's transaction. */
+  private substitutePlayer(actorId: string, now: number): boolean {
+    const sql = this.ctx.storage.sql;
+    const control = this.playerControl(actorId);
+    if (control.kind !== "HUMAN" || control.controller !== "HUMAN")
+      return false;
+    const changed = sql.exec(
+      "UPDATE player_automation SET autopilot = 1, connection_generation = connection_generation + 1, updated_at = ? WHERE actor_id = ? AND autopilot = 0",
+      now,
+      actorId,
+    );
+    if (changed.rowsWritten === 0) return false;
+    const game = this.gameState()?.state;
+    const target = game === undefined ? null : tableGameDeadline(game);
+    if (target?.kind === "turn" && target.actorId === actorId)
+      sql.exec(
+        "UPDATE deadlines SET status = 'cancelled' WHERE status = 'pending' AND kind = 'turn'",
+      );
+    reconcileBotWork(
+      sql,
+      this.gameState()?.state,
+      now,
+      this.roomLifecycle().abandoned,
+    );
+    return true;
   }
 
   private snapshot(
@@ -915,10 +1089,16 @@ export class TableRoom extends DurableObject<Env> {
     return serializeViewerMessage(message);
   }
 
-  private broadcastSnapshots(): void {
+  private broadcastSnapshots(excludedConnectionId?: string): void {
     const now = Date.now();
+    const actorIds = new Set<string>();
     for (const socket of this.ctx.getWebSockets()) {
       const attachment = connectionAttachment(socket.deserializeAttachment());
+      if (
+        attachment?.connectionId === excludedConnectionId ||
+        socket.readyState !== WebSocket.OPEN
+      )
+        continue;
       const grant =
         attachment === undefined ? undefined : this.connectionGrant(attachment);
       if (
@@ -929,8 +1109,10 @@ export class TableRoom extends DurableObject<Env> {
         socket.close(1008, "Session expired, replaced, or invalid");
         continue;
       }
-      socket.send(this.snapshot(attachment, grant));
+      actorIds.add(attachment.actorId);
     }
+    for (const actorId of actorIds)
+      this.players.publish(actorId, excludedConnectionId);
   }
 
   /** Caller holds blockConcurrencyWhile across preparation and atomic commit. */
@@ -938,13 +1120,26 @@ export class TableRoom extends DurableObject<Env> {
     actorId: string,
     envelope: TableCommandEnvelope,
     now: number,
-  ): Promise<{
-    readonly applied: boolean;
-    readonly broadcast: boolean;
-    readonly response: string;
-    readonly senderSnapshot: boolean;
-    readonly stale: boolean;
-  }> {
+    authority: ControllerAuthority,
+    connectionId?: string,
+  ): Promise<PlayerCommandResult> {
+    const inactive = (): PlayerCommandResult => ({
+      applied: false,
+      broadcast: false,
+      senderSnapshot: true,
+      stale: false,
+      response: lobbyReceipt(
+        envelope.commandId,
+        "rejected",
+        this.stateVersion(),
+        {
+          code: "inactive-controller",
+          message:
+            "This player's active controller changed; reconnect to resume.",
+        },
+      ),
+    });
+    if (!this.controllerIsCurrent(actorId, authority)) return inactive();
     const requestJson = canonicalTableRequest(envelope);
     let preparedGame: PreparedGameEventBatch | undefined;
     let preparedVisibility: "private" | "public" = "public";
@@ -1012,20 +1207,14 @@ export class TableRoom extends DurableObject<Env> {
           if (decision.kind === "rejected") {
             preparedRejection = decision.error;
           } else {
-            const transition = appendAutomaticReactionPasses(
-              decision,
-              this.automatedActorIds(),
-            );
-            preparedVisibility = transition.visibility;
-            preparedGame = await prepareGameEventBatch(
-              stored,
-              transition.events,
-            );
+            preparedVisibility = decision.visibility;
+            preparedGame = await prepareGameEventBatch(stored, decision.events);
           }
         }
       }
     }
     return this.ctx.storage.transactionSync(() => {
+      if (!this.controllerIsCurrent(actorId, authority)) return inactive();
       const existing = this.ctx.storage.sql
         .exec<LobbyReceiptRow>(
           "SELECT actor_id, request_json, response_json FROM lobby_command_receipts WHERE command_id = ?",
@@ -1102,6 +1291,35 @@ export class TableRoom extends DurableObject<Env> {
               now,
             );
           }
+        }
+      } else if (
+        this.gameState() !== undefined &&
+        envelope.command.type === "lobby/leave-seat"
+      ) {
+        const seated = readPlayerControls(this.ctx.storage.sql).find(
+          (control) => control.actorId === actorId,
+        );
+        if (seated?.kind !== "HUMAN" || connectionId === undefined) {
+          rejection = {
+            code: "not-seated",
+            message: "Only a seated human can leave this hand.",
+          };
+        } else {
+          const departing = this.ctx
+            .getWebSockets()
+            .map((socket) =>
+              connectionAttachment(socket.deserializeAttachment()),
+            )
+            .find((attachment) => attachment?.connectionId === connectionId);
+          if (departing !== undefined)
+            this.ctx.storage.sql.exec(
+              "DELETE FROM connection_grants WHERE connection_generation = ?",
+              departing.connectionGeneration,
+            );
+          applied = true;
+          publicTransition =
+            !this.hasValidSocket(actorId, now, connectionId) &&
+            this.substitutePlayer(actorId, now);
         }
       } else if (this.gameState() !== undefined) {
         rejection = {
@@ -1281,33 +1499,45 @@ export class TableRoom extends DurableObject<Env> {
       return;
     }
     const target = tableGameDeadline(state);
+    let deadlineId = target?.deadlineId ?? "";
+    if (target?.kind === "turn") {
+      const previous = sql
+        .exec<{ status: string }>(
+          "SELECT status FROM deadlines WHERE deadline_id = ?",
+          deadlineId,
+        )
+        .toArray()[0];
+      if (previous !== undefined && previous.status !== "pending")
+        deadlineId = `${deadlineId}:controller:${String(this.playerControl(target.actorId).generation)}`;
+    }
     sql.exec(
       "UPDATE deadlines SET status = 'cancelled', processed_at = NULL WHERE status = 'pending' AND kind IN ('reaction', 'turn') AND deadline_id <> ? AND deadline_id <> ?",
-      target?.deadlineId ?? "",
+      deadlineId,
       processingDeadlineId,
     );
     if (target === null) return;
     let dueAt = now + REACTION_DEADLINE_MS;
     if (target.kind === "turn") {
-      const automation = sql
-        .exec<{ autopilot: number }>(
-          "SELECT autopilot FROM player_automation WHERE actor_id = ?",
-          target.actorId,
-        )
-        .toArray()[0];
+      if (this.playerControl(target.actorId).controller === "BOT") {
+        sql.exec(
+          "UPDATE deadlines SET status = 'cancelled' WHERE status = 'pending' AND kind = 'turn' AND deadline_id <> ?",
+          processingDeadlineId,
+        );
+        return;
+      }
       const connected = this.hasValidSocket(target.actorId, now);
-      if (!connected && automation?.autopilot !== 1) return;
-      dueAt = automation?.autopilot === 1 ? now : now + TURN_DEADLINE_MS;
+      if (!connected) return;
+      dueAt = now + TURN_DEADLINE_MS;
     }
     const existing = sql
       .exec<{ status: string }>(
         "SELECT status FROM deadlines WHERE deadline_id = ?",
-        target.deadlineId,
+        deadlineId,
       )
       .toArray()[0];
     if (existing?.status === "pending") return;
     scheduleDeadline(sql, {
-      deadlineId: target.deadlineId,
+      deadlineId,
       dueAt,
       kind: target.kind,
       payload: target.payload,
@@ -1343,13 +1573,19 @@ export class TableRoom extends DurableObject<Env> {
       const attachment = connectionAttachment(socket.deserializeAttachment());
       if (
         attachment === undefined ||
+        socket.readyState !== WebSocket.OPEN ||
         attachment.connectionId === excludedConnectionId
       ) {
         return [];
       }
       const grant = this.connectionGrant(attachment);
       return grant !== undefined && this.grantAuthorityIsCurrent(grant)
-        ? [{ actorId: grant.actor_id, expiresAt: grant.expires_at }]
+        ? [
+            {
+              actorId: grant.actor_id,
+              expiresAt: this.socketPresenceExpiresAt(socket, attachment),
+            },
+          ]
         : [];
     });
   }
@@ -1362,8 +1598,14 @@ export class TableRoom extends DurableObject<Env> {
     const payload = deadline.payload;
     switch (payload.type) {
       case "system/reaction-expired":
-      case "system/turn-expired":
         return state !== undefined && tableGameDeadlineMatches(state, payload);
+      case "system/turn-expired":
+        return (
+          state !== undefined &&
+          tableGameDeadlineMatches(state, payload) &&
+          this.playerControl(tableGameActorAt(state, payload.seat))
+            .controller === "HUMAN"
+        );
       case "system/disconnect-grace-expired": {
         const row = this.ctx.storage.sql
           .exec<{ connection_generation: number; autopilot: number }>(
@@ -1374,6 +1616,7 @@ export class TableRoom extends DurableObject<Env> {
         return (
           row?.connection_generation === payload.connectionGeneration &&
           row.autopilot === 0 &&
+          this.players.health(payload.actorId).desiredController === "BOT" &&
           !this.hasValidSocket(payload.actorId, now)
         );
       }
@@ -1406,16 +1649,10 @@ export class TableRoom extends DurableObject<Env> {
         payload.type === "system/reaction-expired" ||
         payload.type === "system/turn-expired"
           ? expireTableGame(state, deadline, now)
-          : payload.type === "system/disconnect-grace-expired"
-            ? tableGameEngine.automate(state, payload.actorId)
-            : undefined;
+          : undefined;
       if (decision !== undefined && decision.kind !== "rejected") {
-        const transition = appendAutomaticReactionPasses(
-          decision,
-          this.automatedActorIds(),
-        );
-        batchVisibility = transition.visibility;
-        batch = await prepareGameEventBatch(stored, transition.events);
+        batchVisibility = decision.visibility;
+        batch = await prepareGameEventBatch(stored, decision.events);
       }
     }
 
@@ -1446,13 +1683,7 @@ export class TableRoom extends DurableObject<Env> {
         }
         const payload = currentDeadline.payload;
         if (payload.type === "system/disconnect-grace-expired") {
-          sql.exec(
-            "UPDATE player_automation SET autopilot = 1, updated_at = ? WHERE actor_id = ? AND connection_generation = ? AND autopilot = 0",
-            now,
-            payload.actorId,
-            payload.connectionGeneration,
-          );
-          publicTransition = true;
+          publicTransition = this.substitutePlayer(payload.actorId, now);
         } else if (payload.type === "system/table-abandonment-expired") {
           sql.exec(
             "UPDATE room_lifecycle SET abandoned = 1, updated_at = ? WHERE singleton = 1 AND room_activity_generation = ? AND abandoned = 0",
@@ -1483,6 +1714,12 @@ export class TableRoom extends DurableObject<Env> {
   }
 
   private async drainDueDeadlines(now: number): Promise<boolean> {
+    this.ctx.storage.transactionSync(() => {
+      reconcilePresenceDeadlines(this.ctx.storage.sql, {
+        now,
+        observations: this.presenceObservations(),
+      });
+    });
     const due = readDueDeadlines(
       this.ctx.storage.sql,
       now,
@@ -1500,22 +1737,13 @@ export class TableRoom extends DurableObject<Env> {
       const state = this.gameState()?.state;
       if (!state || botWorkTarget(state, work.actor_id) !== work.target)
         continue;
-      const random = crypto.getRandomValues(new Uint32Array(1))[0];
-      if (random === undefined) throw new Error("Bot randomness unavailable.");
-      const command = chooseBotMove(
-        projectTableGame(state, work.actor_id),
-        random / 0x1_0000_0000,
-      );
-      if (!command) continue;
-      const result = await this.applyTableCommand(
+      const result = await this.players.bot(
         work.actor_id,
-        {
-          command,
-          commandId: work.command_id,
-          expectedStateVersion: this.stateVersion(),
-        },
-        now,
+        work.controller_generation,
+        work.command_id,
+        this.stateVersion(),
       );
+      if (result === undefined) continue;
       if (!result.applied)
         throw new Error("A persisted bot move could not be applied.");
       broadcast ||= result.broadcast;
@@ -1525,11 +1753,16 @@ export class TableRoom extends DurableObject<Env> {
   }
 
   private async repairAlarm(): Promise<void> {
+    const now = Date.now();
     this.ctx.storage.transactionSync(() => {
+      reconcilePresenceDeadlines(this.ctx.storage.sql, {
+        now,
+        observations: this.presenceObservations(),
+      });
       reconcileBotWork(
         this.ctx.storage.sql,
         this.gameState()?.state,
-        Date.now(),
+        now,
         this.roomLifecycle().abandoned,
       );
     });
@@ -1537,6 +1770,15 @@ export class TableRoom extends DurableObject<Env> {
     const pending = [
       earliestPendingDeadline(this.ctx.storage.sql),
       readBotWork(this.ctx.storage.sql)[0]?.due_at,
+      this.ctx.getWebSockets().some((socket) => {
+        const attachment = connectionAttachment(socket.deserializeAttachment());
+        return (
+          attachment?.heartbeatAcceptedAt !== undefined &&
+          this.socketIsUsable(socket, now)
+        );
+      })
+        ? now + TABLE_HEARTBEAT_INTERVAL_MS
+        : undefined,
     ].filter((value): value is number => value !== undefined);
     const plan = planAlarmRepair(
       current,
@@ -2064,7 +2306,7 @@ export class TableRoom extends DurableObject<Env> {
     return storedResponse(result);
   }
 
-  private activateSession(value: unknown): Response {
+  private async activateSession(value: unknown): Promise<Response> {
     const body = parseSessionActivateRequest(value);
     const table = this.table();
     if (body === undefined || table === undefined) {
@@ -2104,12 +2346,25 @@ export class TableRoom extends DurableObject<Env> {
         "A newer application session is already active.",
       );
     }
-    this.ctx.storage.sql.exec(
-      "INSERT INTO actor_sessions (actor_id, session_generation, activated_at) VALUES (?, ?, ?) ON CONFLICT(actor_id) DO UPDATE SET session_generation = excluded.session_generation, activated_at = excluded.activated_at WHERE excluded.session_generation >= actor_sessions.session_generation",
-      body.actorId,
-      body.sessionGeneration,
-      Date.now(),
-    );
+    const now = Date.now();
+    const departed = this.ctx.storage.transactionSync(() => {
+      this.ctx.storage.sql.exec(
+        "INSERT INTO actor_sessions (actor_id, session_generation, activated_at) VALUES (?, ?, ?) ON CONFLICT(actor_id) DO UPDATE SET session_generation = excluded.session_generation, activated_at = excluded.activated_at WHERE excluded.session_generation >= actor_sessions.session_generation",
+        body.actorId,
+        body.sessionGeneration,
+        now,
+      );
+      const substituted =
+        body.departure === true &&
+        this.gameState() !== undefined &&
+        !this.hasValidSocket(body.actorId, now) &&
+        this.substitutePlayer(body.actorId, now);
+      if (substituted)
+        this.ctx.storage.sql.exec(
+          "UPDATE lobby_state SET state_version = state_version + 1 WHERE singleton = 1",
+        );
+      return substituted;
+    });
     if (
       activeSession === undefined ||
       activeSession.session_generation < body.sessionGeneration
@@ -2140,6 +2395,11 @@ export class TableRoom extends DurableObject<Env> {
         "The session activation is not authorized.",
       );
     }
+    if (departed) {
+      this.players.changed(body.actorId);
+      this.broadcastSnapshots();
+    }
+    await this.repairAlarm();
     return jsonResponse({ version: 1, active: true, role: member.role });
   }
 
@@ -2243,6 +2503,12 @@ export class TableRoom extends DurableObject<Env> {
         sessionExpiresAt,
       );
       const transition = recordValidConnection(sql, actorId, now);
+      reconcileBotWork(
+        sql,
+        this.gameState()?.state,
+        now,
+        this.roomLifecycle().abandoned,
+      );
       if (transition.publicTransition) {
         sql.exec(
           "UPDATE lobby_state SET state_version = state_version + 1 WHERE singleton = 1",
@@ -2256,12 +2522,18 @@ export class TableRoom extends DurableObject<Env> {
       connectionId: crypto.randomUUID(),
       sessionExpiresAt,
       version: 2,
+      ...(new URL(request.url).searchParams.getAll("heartbeat").length === 1 &&
+      new URL(request.url).searchParams.get("heartbeat") === "1"
+        ? { heartbeatAcceptedAt: now }
+        : {}),
     };
     const pair = new WebSocketPair();
     const client = pair[0];
     const server = pair[1];
     server.serializeAttachment(attachment);
     this.ctx.acceptWebSocket(server);
+    if (attachment.heartbeatAcceptedAt !== undefined)
+      server.send(TABLE_HEARTBEAT_READY);
     const game = this.gameState()?.state;
     this.ctx.storage.transactionSync(() => {
       reconcilePresenceDeadlines(this.ctx.storage.sql, {
@@ -2277,8 +2549,13 @@ export class TableRoom extends DurableObject<Env> {
         this.replaceGameDeadlines(this.ctx.storage.sql, game, now);
       }
     });
-    if (connectionTransition.publicTransition) this.broadcastSnapshots();
-    else server.send(this.snapshot(attachment, grant));
+    this.players.initialize(
+      actorId,
+      attachment.connectionId,
+      this.playerView(actorId),
+    );
+    if (connectionTransition.publicTransition)
+      this.broadcastSnapshots(attachment.connectionId);
     await this.repairAlarm();
     return new Response(null, { status: 101, webSocket: client });
   }
@@ -2365,7 +2642,7 @@ export class TableRoom extends DurableObject<Env> {
       return;
     }
     if (parseTableResync(message) !== undefined) {
-      socket.send(this.snapshot(attachment, grant));
+      this.players.snapshot(attachment.actorId, attachment.connectionId);
       return;
     }
     const command = parseTableCommand(message);
@@ -2375,19 +2652,47 @@ export class TableRoom extends DurableObject<Env> {
     }
     const operation = await this.ctx.blockConcurrencyWhile(async () => {
       const deadlineBroadcast = await this.drainDueDeadlines(now);
-      const result = await this.applyTableCommand(
-        attachment.actorId,
-        command,
-        now,
-      );
+      // Authorization and active source are both rechecked after asynchronous
+      // deadline work, and again at the engine/commit boundary.
+      const result = this.socketIsUsable(socket, Date.now())
+        ? await this.players.human(
+            attachment.actorId,
+            attachment.connectionId,
+            command,
+          )
+        : undefined;
       return { deadlineBroadcast, result };
     });
     if (operation.deadlineBroadcast) this.broadcastSnapshots();
     const { result } = operation;
-    socket.send(result.response);
-    if (result.broadcast) this.broadcastSnapshots();
-    else if (result.senderSnapshot || result.stale) {
-      socket.send(this.snapshot(attachment, grant));
+    if (result === undefined) {
+      socket.send(
+        lobbyReceipt(command.commandId, "rejected", this.stateVersion(), {
+          code: "inactive-controller",
+          message: "Reconnect to restore human control of this player.",
+        }),
+      );
+      return;
+    }
+    this.players.outcome(
+      attachment.actorId,
+      attachment.connectionId,
+      result.response,
+    );
+    this.players.changed(attachment.actorId);
+    const departed =
+      result.applied &&
+      command.command.type === "lobby/leave-seat" &&
+      this.gameState() !== undefined;
+    if (departed)
+      socket.close(
+        attachment.heartbeatAcceptedAt === undefined ? 1008 : 4002,
+        "Player departed",
+      );
+    if (result.broadcast)
+      this.broadcastSnapshots(departed ? attachment.connectionId : undefined);
+    else if (!departed && (result.senderSnapshot || result.stale)) {
+      this.players.snapshot(attachment.actorId, attachment.connectionId);
     }
     await this.repairAlarm();
   }

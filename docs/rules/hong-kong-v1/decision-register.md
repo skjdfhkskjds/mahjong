@@ -211,11 +211,20 @@ Accepted Milestone 5 operational policy:
   discards the last-acquired structural tile. In `awaiting-discard`, it
   discards the last-acquired remaining tile or lowest canonical physical ID.
 - TP-002: eight seconds per reaction window; no response is pass.
-- TP-003: after an actor has no currently valid socket for 15 seconds, mark the
-  actor autopilot through the canonical/system pipeline and immediately perform
-  actionable deterministic work. Future autopilot turns act immediately and
-  reactions pass; it never wins or kongs. A valid seated reconnect
-  generation-cancels the grace and clears autopilot.
+- TP-003 (updated by issue #33): after the last usable authorized connection
+  expires or closes, retain the 15-second grace and then activate a random
+  legal-move bot under the same actor ID. Negotiated five-second heartbeats
+  provide 15-second liveness evidence; a five-second room alarm checks it.
+  Cached clients use native-open plus authorization-expiry fallback. Other
+  usable connections prevent takeover. A fresh authorized snapshot precedes
+  human restoration, and controller generations reject obsolete commands.
+  Explicit active-hand departure substitutes immediately; logout does so only
+  when no other usable session remains. Substitute bots may choose any offered
+  legal action, including wins/kongs, after the normal 750 ms bot delay.
+- TP-004: lobby departure vacates the seat. During an active hand, departure
+  and controller handoff preserve actor identity, seat, hand, and committed
+  history without a penalty. These operational examples and compatibility
+  details are recorded in [ADR 0016](../../decisions/0016-player-controller-lifecycle.md).
 - TP-007 (hand-level portion only): after the table has no currently valid
   socket for 15 minutes, mark the room/hand recoverably abandoned and retain all
   storage. A valid seated reconnect clears abandonment and resumes. Cleanup,

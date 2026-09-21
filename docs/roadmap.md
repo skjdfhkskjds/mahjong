@@ -15,6 +15,18 @@ hand, eviction, private reaction retries, abandonment, access controls, strict
 commands, and permanent v1/v3/v4 migration fixtures. Next-hand progression is
 still Milestone 7.
 
+## Player controller coordination (issue #33)
+
+One typed player interface connects human communication, bot decisions, and
+per-player in-process coordination. Controller substitution preserves actor
+identity, seat, hand, and accepted game history; a fresh permitted snapshot
+precedes human restoration. Persisted controller generations reject late work
+and recover across eviction. Negotiated heartbeats add bounded liveness evidence
+while cached clients retain the documented fallback. Storage advances to v6
+with a retained v5 migration fixture and the oldest v1 root. Readiness, start
+policy, leave/logout UI, and Mahjong rules semantics remain unchanged. See
+[ADR 0016](decisions/0016-player-controller-lifecycle.md) for policy and rollout.
+
 ## Goal and release boundary
 
 Build a private four-player Discord Activity for the project-defined `hong-kong/v1` profile. The authoritative table lives in one SQLite-backed `TableRoom` Durable Object; a separate `ActivityInstance` Durable Object binds a live Discord Activity instance to a persistent table. One Worker serves the React client, HTTP API, OAuth exchange, and WebSocket routing.

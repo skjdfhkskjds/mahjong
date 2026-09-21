@@ -120,17 +120,45 @@ Private reaction submissions append a canonical hash-linked event and
 actor-scoped receipt without changing public `stateVersion` or broadcasting.
 Resolution persists the final intent and normalized outcome atomically, then
 publishes one viewer-safe transition. Seats are actor reservations, not socket
-presence. They survive disconnect, hibernation, and Durable Object eviction
-until the player explicitly leaves. WebSocket attachments retain only bounded
+presence. They survive disconnect, hibernation, and Durable Object eviction.
+Leaving the lobby vacates the seat; explicit departure during an active hand
+preserves the actor, seat, and hand while a bot takes control. WebSocket attachments retain only bounded
 connection/session identity; room/game authority, deadlines, revisions, and
 receipts remain in SQLite.
 
-Schema v5 adds persisted bot identities and scheduled work. It retains the permanent migration roots
+Schema v6 adds persisted player/controller generations and generation-bound
+bot work for both dedicated bots and substituted humans. It retains the permanent migration roots
 `tests/fixtures/table-room-v1-schema.ts` and
 `tests/fixtures/table-room-v3-active-v1-game.ts`, plus the pre-bot
-`tests/fixtures/table-room-v4-schema.ts`. The active-game fixture verifies its
+`tests/fixtures/table-room-v4-schema.ts` and the pre-coordinator
+`tests/fixtures/table-room-v5-schema.ts`. The active-game fixture verifies its
 historical v1 hash chain, appends one explicit state-upgrade event, and
 continues play as canonical state v2.
+
+## Controller handoff and connection health
+
+The same `Player` communication contract connects `UserPlayer`, `BotPlayer`,
+and an in-process `PlayerCoordinator` to the authoritative table. Controller
+changes preserve the player identity, seat, hand, and accepted history. The
+coordinator rejects commands and asynchronous bot results from an obsolete
+controller generation. Reconnection delivers the player's fresh permitted
+snapshot before enabling human commands.
+
+New clients negotiate heartbeats with `heartbeat=1` on the WebSocket URL. After
+`table/heartbeat-ready/1`, they send `table/heartbeat/1` every five seconds;
+the Worker's hibernation auto-response returns `table/heartbeat-ack/1`. Connection
+acceptance or the latest heartbeat supplies 15 seconds of liveness evidence,
+bounded by authorization/session expiry. A five-second Durable Object alarm
+checks all authorized connections. After the final usable connection expires
+or closes, the existing 15-second grace precedes substitution. Lack of game
+input does not imply disconnection. Another usable connection prevents takeover.
+
+Explicit active-hand departure revokes the departing connection and substitutes
+immediately when no other usable connection remains. Logout does so only
+when no other usable session remains. Connected-turn timeouts retain their
+60-second deterministic policy; a substitute then uses ordinary random legal
+bot actions, including claims, wins, and kongs, at the 750 ms bot delay.
+No new readiness, automatic-start, or leave/logout UI is introduced.
 
 ## Verification
 
@@ -153,18 +181,33 @@ Protocol v2 is an atomic client/Worker release. The Worker serves
 content-hashed client assets from the same deployment, so rollout replaces both
 wire endpoints together and rollback restores both together. Do not roll back
 only the Worker or reuse an older HTML shell with a newer Worker. Storage schema
-v5 remains forward-only across a code rollback; use the previous release only
-if it understands schema v5, otherwise restore the complete pre-migration
-deployment and storage backup rather than attempting to reinterpret v5 rows.
+v6 remains forward-only across a code rollback; use the previous release only
+if it understands schema v6, otherwise restore the complete pre-migration
+deployment and storage backup rather than attempting to reinterpret v6 rows.
 
 Bot management adds `lobby/add-bot` and `lobby/remove-bot` commands with a
 `seat` field to protocol v2; the snapshot and receipt shapes are unchanged.
 Older v2 clients can observe and play at bot tables. A newer client cannot
 manage bots against an older Worker, which rejects the unknown commands, so
-ship bot controls and Worker support together. Existing tables migrate to v5
-without changing seats, game events, or hashes. Rollback to pre-bot code needs
-the complete pre-migration backup because that code rejects schema v5.
-See [ADR 0015](../../docs/decisions/0015-persistent-bot-players.md).
+ship bot controls and Worker support together. Existing tables migrate to v6
+without changing seats, game events, or hashes. Schema v6 changes `bot_work` to
+reference members and adds `controller_generation`; the retained v5 fixture
+covers existing bots and pending work. Rollback to pre-coordinator code needs
+the complete pre-migration backup because that code rejects schema v6.
+
+Heartbeat negotiation permits cached protocol-v2 clients during rollout.
+Clients without `heartbeat=1` use native-open plus authorization-expiry
+evidence. A new client does not send heartbeat frames until the Worker sends
+readiness, so an older Worker continues using that same fallback. Its silent
+half-open detection is weaker than negotiated heartbeat health. Successful
+active-hand departure closes negotiated connections with `4002`, which new
+clients treat as terminal `stopped`. Connections without heartbeat negotiation
+receive the existing terminal policy close `1008`, so cached clients also stop
+instead of reconnecting and undoing their departure. Ordinary `1000` closes
+remain recoverable. Existing snapshot and receipt shapes are unchanged. See
+[ADR 0016](../../docs/decisions/0016-player-controller-lifecycle.md) for controller
+policy, recovery, and operational examples, and
+[ADR 0015](../../docs/decisions/0015-persistent-bot-players.md) for dedicated bots.
 
 The production command fails before building unless `VITE_ACTIVITY_MODE=discord` and a valid `VITE_DISCORD_CLIENT_ID` are present. The production Wrangler environment does not inherit the committed mock signing key.
 

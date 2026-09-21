@@ -82,6 +82,51 @@ function testEnv(overrides: Partial<Env> = {}): Env {
 }
 
 describe("Worker router", () => {
+  it("forwards heartbeat capability values unchanged for strict TableRoom negotiation", async () => {
+    const fetchTable = vi.fn<(request: Request) => Promise<Response>>(() =>
+      Promise.resolve(new Response("forwarded")),
+    );
+    const currentEnv = testEnv({
+      TABLE_ROOM: {
+        getByName: () => ({ fetch: fetchTable }),
+      } as unknown as Env["TABLE_ROOM"],
+    });
+    const session = await routeRequest(
+      new Request(`${origin}/api/auth/mock`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json", Origin: origin },
+        body: JSON.stringify({
+          displayName: "Heartbeat Player",
+        }),
+      }),
+      currentEnv,
+    );
+    const cookie = session.headers.get("Set-Cookie")?.split(";")[0];
+    expect(cookie).toBeDefined();
+    const response = await routeRequest(
+      new Request(
+        `${origin}/api/table/socket?protocolVersion=2&heartbeat=1&heartbeat=invalid&ignored=value`,
+        {
+          headers: {
+            Cookie: cookie ?? "",
+            Origin: origin,
+            Upgrade: "websocket",
+          },
+        },
+      ),
+      currentEnv,
+    );
+    expect(response.status).toBe(200);
+    const request: unknown = fetchTable.mock.calls[0]?.[0];
+    expect(request).toBeInstanceOf(Request);
+    if (!(request instanceof Request))
+      throw new Error("Missing table request.");
+    const query = new URL(request.url).searchParams;
+    expect(query.getAll("heartbeat")).toEqual(["1", "invalid"]);
+    expect(query.getAll("protocolVersion")).toEqual(["2"]);
+    expect(query.has("ignored")).toBe(false);
+  });
+
   it("serves the shared health contract and rejects unsafe methods", async () => {
     const response = await routeRequest(
       new Request(`${origin}/api/health`),

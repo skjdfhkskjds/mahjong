@@ -7,6 +7,12 @@ import {
   type TableSocketMessage,
   type ViewerSafeTableSnapshot,
 } from "./table-socket-protocol-v2.js";
+import {
+  startTableSocketHeartbeat,
+  TABLE_HEARTBEAT_READY,
+  TABLE_HEARTBEAT_RESPONSE,
+  type TableSocketHeartbeat,
+} from "./table-socket-heartbeat.js";
 
 export {
   parseTableReceipt,
@@ -62,6 +68,7 @@ export function createTableSocketUrl(
   const url = new URL("/api/table/socket", base);
   url.protocol = url.protocol === "https:" ? "wss:" : "ws:";
   url.searchParams.set("protocolVersion", String(TABLE_PROTOCOL_VERSION));
+  url.searchParams.set("heartbeat", "1");
   return url.toString();
 }
 
@@ -97,6 +104,13 @@ export class ReconnectingSocketStatusMonitor
     let activeGeneration = 0;
     let lastSnapshot: ViewerSafeTableSnapshot | undefined;
     let latestReceipt: TableReceipt | undefined;
+    let activeHeartbeat: TableSocketHeartbeat | undefined;
+    const heartbeatRequested =
+      new URL(this.url).searchParams.get("heartbeat") === "1";
+    const stopHeartbeat = (): void => {
+      activeHeartbeat?.stop();
+      activeHeartbeat = undefined;
+    };
 
     const publish = (
       state: SocketConnectionState,
@@ -117,6 +131,7 @@ export class ReconnectingSocketStatusMonitor
       currentSocket: WebSocket,
     ): void => {
       stopped = true;
+      stopHeartbeat();
       this.connected = false;
       lastSnapshot = undefined;
       latestReceipt = undefined;
@@ -157,6 +172,7 @@ export class ReconnectingSocketStatusMonitor
     };
 
     const connect = (): void => {
+      stopHeartbeat();
       const generation = activeGeneration + 1;
       activeGeneration = generation;
       attempt += 1;
@@ -168,6 +184,15 @@ export class ReconnectingSocketStatusMonitor
         !stopped &&
         activeGeneration === generation &&
         this.activeSocket === currentSocket;
+      const scheduleReconnect = (): void => {
+        stopHeartbeat();
+        this.connected = false;
+        this.activeSocket = undefined;
+        const retryAttempt = Math.max(1, attempt);
+        const delay = Math.min(1_000 * 2 ** (retryAttempt - 1), 15_000);
+        retryTimer = window.setTimeout(connect, delay);
+        publish("reconnecting", retryAttempt);
+      };
 
       currentSocket.addEventListener("open", () => {
         if (stopped) {
@@ -187,30 +212,80 @@ export class ReconnectingSocketStatusMonitor
             }),
           );
         } else {
-          this.connected = true;
-          publish("connected", 0);
+          publish("connecting", 0);
         }
       });
-      currentSocket.addEventListener("message", (event) => {
-        if (!isCurrent()) return;
-        try {
-          handleMessage(parseSocketMessage(event), currentSocket);
-        } catch {
-          stopped = true;
-          this.connected = false;
-          currentSocket.close(1002, "Unsupported table protocol");
-          publish("protocol-error", attempt);
-        }
-      });
+      currentSocket.addEventListener(
+        "message",
+        (event: MessageEvent<unknown>) => {
+          if (!isCurrent()) return;
+          if (currentSocket.readyState !== 1) return;
+          if (heartbeatRequested && event.data === TABLE_HEARTBEAT_READY) {
+            activeHeartbeat ??= startTableSocketHeartbeat({
+              send: (frame) => {
+                if (!isCurrent()) return;
+                if (currentSocket.readyState !== 1) {
+                  stopHeartbeat();
+                  this.connected = false;
+                  publish("reconnecting", Math.max(1, attempt));
+                  return;
+                }
+                currentSocket.send(frame);
+              },
+              onTimeout: () => {
+                if (!isCurrent()) return;
+                if (currentSocket.readyState !== 1) {
+                  this.connected = false;
+                  publish("reconnecting", Math.max(1, attempt));
+                  return;
+                }
+                scheduleReconnect();
+                currentSocket.close(4000, "Heartbeat timeout");
+              },
+              scheduler: {
+                now: () => performance.now(),
+                setTimeout: (callback, delay) =>
+                  window.setTimeout(callback, delay),
+                clearTimeout: (timer) => {
+                  window.clearTimeout(timer);
+                },
+              },
+            });
+            return;
+          }
+          if (heartbeatRequested && event.data === TABLE_HEARTBEAT_RESPONSE) {
+            activeHeartbeat?.acknowledge();
+            return;
+          }
+          try {
+            handleMessage(parseSocketMessage(event), currentSocket);
+          } catch {
+            stopped = true;
+            stopHeartbeat();
+            this.connected = false;
+            currentSocket.close(1002, "Unsupported table protocol");
+            publish("protocol-error", attempt);
+          }
+        },
+      );
       currentSocket.addEventListener("error", () => {
         if (!isCurrent()) return;
+        stopHeartbeat();
         this.connected = false;
         publish("reconnecting", Math.max(1, attempt));
       });
       currentSocket.addEventListener("close", (event) => {
         if (!isCurrent()) return;
+        stopHeartbeat();
         this.connected = false;
         this.activeSocket = undefined;
+        if (event.code === 4002) {
+          stopped = true;
+          lastSnapshot = undefined;
+          latestReceipt = undefined;
+          publish("stopped", 0);
+          return;
+        }
         if (event.code === 4001) {
           stopped = true;
           lastSnapshot = undefined;
@@ -232,10 +307,7 @@ export class ReconnectingSocketStatusMonitor
           publish("authentication-required", 0);
           return;
         }
-        const retryAttempt = Math.max(1, attempt);
-        const delay = Math.min(1_000 * 2 ** (retryAttempt - 1), 15_000);
-        retryTimer = window.setTimeout(connect, delay);
-        publish("reconnecting", retryAttempt);
+        scheduleReconnect();
       });
     };
 
@@ -243,6 +315,7 @@ export class ReconnectingSocketStatusMonitor
     return () => {
       const currentSocket = this.activeSocket;
       stopped = true;
+      stopHeartbeat();
       activeGeneration += 1;
       this.connected = false;
       this.activeSocket = undefined;
