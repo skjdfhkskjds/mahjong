@@ -1,10 +1,22 @@
 import { bonusTileKinds } from "@mahjong/rules-hong-kong";
 import { Children, isValidElement, type ReactNode } from "react";
-import { renderToStaticMarkup } from "react-dom/server";
+import { renderToStaticMarkup as renderMarkup } from "react-dom/server";
+import type { ReactElement } from "react";
+import { GameAssetsProvider } from "../../presentation/game-assets-provider.js";
+import { defaultGameAssetSet } from "../../presentation/assets/sample-asset-sets.js";
+
 import { describe, expect, it, vi } from "vitest";
 
 import type { GameDisplay, GamePanelProps } from "./game-display.js";
 import { GamePanel } from "./game-panel.js";
+
+function renderToStaticMarkup(element: ReactElement) {
+  return renderMarkup(
+    <GameAssetsProvider assets={defaultGameAssetSet}>
+      {element}
+    </GameAssetsProvider>,
+  );
+}
 
 const tile = {
   id: 4,

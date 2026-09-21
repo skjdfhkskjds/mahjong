@@ -112,6 +112,12 @@ uses persistent local storage. Keep the same origin and browser profile while
 playing. Mock sessions retain the existing one-hour lifetime. Next-hand and
 match progression remain separate Milestone 7 work.
 
+## Game artwork
+
+See [the game artwork guide](../../docs/game-artwork.md) for the shared typed pack,
+SVG/raster sizing, fallbacks, and whole-pack or individual overrides. The local
+evidence page also provides default/sample/broken-art controls for browser QA.
+
 ## Discord-proxied development
 
 1. Create a Discord application and enable Activities.

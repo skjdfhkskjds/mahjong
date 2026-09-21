@@ -1,4 +1,8 @@
-import { renderToStaticMarkup } from "react-dom/server";
+import { renderToStaticMarkup as renderMarkup } from "react-dom/server";
+import type { ReactElement } from "react";
+import { GameAssetsProvider } from "../../presentation/game-assets-provider.js";
+import { defaultGameAssetSet } from "../../presentation/assets/sample-asset-sets.js";
+
 import { describe, expect, it, vi } from "vitest";
 
 import type {
@@ -6,6 +10,14 @@ import type {
   ViewerSafeTableSnapshot,
 } from "../../adapters/transport/table-socket-status.js";
 import { createLobbyDisplay, LobbyController } from "./lobby-controller.js";
+
+function renderToStaticMarkup(element: ReactElement) {
+  return renderMarkup(
+    <GameAssetsProvider assets={defaultGameAssetSet}>
+      {element}
+    </GameAssetsProvider>,
+  );
+}
 
 const actor = { id: "actor:east", displayName: "East player" };
 const snapshot: ViewerSafeTableSnapshot = {

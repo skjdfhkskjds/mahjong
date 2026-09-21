@@ -1,3 +1,8 @@
+import { BoardSurface } from "../../presentation/board-surface.js";
+import { GameIcon } from "../../presentation/game-icon.js";
+import { PlayerIcon } from "../../presentation/player-icon.js";
+import { Tile } from "../../presentation/tile.js";
+
 import type { GamePanelProps, HandResultDisplay } from "./game-display.js";
 
 function HandResult({ result }: { readonly result: HandResultDisplay | null }) {
@@ -81,174 +86,226 @@ export function GamePanel({
   if (game === null) return null;
   return (
     <section aria-labelledby="game-title" className="panel game-panel">
-      <div className="panel__heading">
-        <div>
-          <p className="section-kicker">
-            Live hand · wall {game.wallRemaining}
-          </p>
-          <h2 id="game-title">{game.heading}</h2>
-          {game.deadlineStatus !== null ? (
-            <p className="deadline-status" role="status">
-              {game.deadlineStatus}
+      <BoardSurface>
+        <div className="panel__heading">
+          <div>
+            <p className="section-kicker">
+              Live hand · wall {game.wallRemaining}
             </p>
+            <h2 id="game-title">{game.heading}</h2>
+            {game.deadlineStatus !== null ? (
+              <p className="deadline-status" role="status">
+                {game.deadlineStatus}
+              </p>
+            ) : null}
+          </div>
+          {game.draw ? (
+            <button
+              className="lobby-button draw-button"
+              disabled={game.draw.disabled}
+              onClick={onDraw}
+            >
+              <GameIcon kind="action" action="draw" /> {game.draw.label}
+            </button>
           ) : null}
         </div>
-        {game.draw ? (
-          <button
-            className="lobby-button draw-button"
-            disabled={game.draw.disabled}
-            onClick={onDraw}
-          >
-            {game.draw.label}
-          </button>
+
+        {game.abandoned ? (
+          <p className="command-error" role="alert">
+            This table was abandoned after everyone disconnected.
+          </p>
         ) : null}
-      </div>
+        {game.rejectionMessage !== null ? (
+          <p className="command-error" role="alert">
+            {game.rejectionMessage}
+          </p>
+        ) : null}
 
-      {game.abandoned ? (
-        <p className="command-error" role="alert">
-          This table was abandoned after everyone disconnected.
-        </p>
-      ) : null}
-      {game.rejectionMessage !== null ? (
-        <p className="command-error" role="alert">
-          {game.rejectionMessage}
-        </p>
-      ) : null}
-
-      <ol className="game-players" aria-label="Public table state">
-        {game.players.map((player) => (
-          <li key={player.seat}>
-            <strong>{player.seat}</strong>
-            {player.autopilot ? (
-              <span className="automation-chip">Autopilot</span>
-            ) : null}
-            <span>{player.concealedCount} concealed</span>
-            <span>{player.bonuses.length} bonuses</span>
-            <span>{player.discards.length} discards</span>
-            {player.melds.map((meld) => (
-              <div className="public-meld" key={meld.id}>
-                <span>{meld.label}</span>
-                <ul className="public-tiles" aria-label={meld.accessibleLabel}>
-                  {meld.tiles.map((tile) => (
-                    <li key={tile.id}>{tile.label}</li>
+        <ol className="game-players" aria-label="Public table state">
+          {game.players.map((player) => (
+            <li key={player.seat}>
+              <div className="player-heading">
+                <PlayerIcon
+                  displayName={player.displayName}
+                  kind={player.kind}
+                />
+                <GameIcon kind="wind" wind={player.seat} />
+                <strong>{player.seat}</strong>
+              </div>
+              <span>{player.displayName}</span>
+              {player.isTurn ? (
+                <span>
+                  <GameIcon kind="turn" /> Current turn
+                </span>
+              ) : null}
+              {player.autopilot ? (
+                <span className="automation-chip">Autopilot</span>
+              ) : null}
+              <span>
+                <span aria-hidden="true">
+                  <Tile faceDown size="small" />
+                </span>{" "}
+                {player.concealedCount} concealed
+              </span>
+              <span>{player.bonuses.length} bonuses</span>
+              <span>{player.discards.length} discards</span>
+              {player.melds.map((meld) => (
+                <div className="public-meld" key={meld.id}>
+                  <span>{meld.label}</span>
+                  <ul
+                    className="public-tiles"
+                    aria-label={meld.accessibleLabel}
+                  >
+                    {meld.tiles.map((tile) => (
+                      <li key={tile.id}>
+                        <Tile kind={tile.kind} size="small" />
+                      </li>
+                    ))}
+                  </ul>
+                  {meld.sourceSeat ? (
+                    <small>from {meld.sourceSeat}</small>
+                  ) : null}
+                </div>
+              ))}
+              {player.bonuses.length > 0 ? (
+                <ul
+                  className="public-tiles"
+                  aria-label={`${player.seat} exposed bonuses`}
+                >
+                  {player.bonuses.map((tile) => (
+                    <li key={tile.id}>
+                      <Tile kind={tile.kind} size="small" />
+                    </li>
                   ))}
                 </ul>
-                {meld.sourceSeat ? <small>from {meld.sourceSeat}</small> : null}
-              </div>
-            ))}
-            {player.bonuses.length > 0 ? (
-              <ul
-                className="public-tiles"
-                aria-label={`${player.seat} exposed bonuses`}
-              >
-                {player.bonuses.map((tile) => (
-                  <li key={tile.id}>{tile.label}</li>
-                ))}
-              </ul>
-            ) : null}
-            {player.discards.length > 0 ? (
-              <ul
-                className="public-tiles"
-                aria-label={`${player.seat} discards`}
-              >
-                {player.discards.map((tile) => (
-                  <li key={tile.id}>{tile.label}</li>
-                ))}
-              </ul>
-            ) : null}
-          </li>
-        ))}
-      </ol>
+              ) : null}
+              {player.discards.length > 0 ? (
+                <ul
+                  className="public-tiles"
+                  aria-label={`${player.seat} discards`}
+                >
+                  {player.discards.map((tile) => (
+                    <li key={tile.id}>
+                      <Tile kind={tile.kind} size="small" />
+                    </li>
+                  ))}
+                </ul>
+              ) : null}
+            </li>
+          ))}
+        </ol>
 
-      {game.reaction ? (
-        <div className="reaction-window">
-          <h3>{game.reaction.heading}</h3>
-          <p>
-            {game.reaction.sourceSeat} exposed {game.reaction.sourceTile.label}.
-          </p>
-          {game.reaction.status === "submitted" ? (
-            <p role="status">Response submitted.</p>
-          ) : game.reaction.status === "open" ? (
-            <div className="game-actions" aria-label="Available reactions">
-              {game.reaction.actions.map((action) => (
+        {game.reaction ? (
+          <div className="reaction-window">
+            <h3>{game.reaction.heading}</h3>
+            <p>
+              {game.reaction.sourceSeat} exposed{" "}
+              <Tile
+                kind={game.reaction.sourceTile.kind}
+                size="small"
+                highlighted
+              />
+              .
+            </p>
+            {game.reaction.status === "submitted" ? (
+              <p role="status">Response submitted.</p>
+            ) : game.reaction.status === "open" ? (
+              <div className="game-actions" aria-label="Available reactions">
+                {game.reaction.actions.map((action) => (
+                  <button
+                    key={action.id}
+                    disabled={action.disabled}
+                    onClick={() => {
+                      onReact(action.id);
+                    }}
+                  >
+                    {action.artworkAction ? (
+                      <GameIcon kind="action" action={action.artworkAction} />
+                    ) : null}
+                    {action.label}
+                    {action.tiles && action.tiles.length > 0 ? (
+                      <span
+                        className="reaction-choice-tiles"
+                        aria-hidden="true"
+                      >
+                        {action.tiles.map((tile) => (
+                          <Tile key={tile.id} kind={tile.kind} size="small" />
+                        ))}
+                      </span>
+                    ) : null}
+                  </button>
+                ))}
+              </div>
+            ) : (
+              <p>Waiting for the other players.</p>
+            )}
+          </div>
+        ) : null}
+
+        {game.hand ? (
+          <div className="private-hand">
+            <h3>Your private hand</h3>
+            <ul aria-label="Your concealed tiles">
+              {game.hand.map((tile) => (
+                <li key={tile.id}>
+                  <button
+                    aria-label={`Discard ${tile.label}`}
+                    disabled={tile.discardDisabled}
+                    onClick={() => {
+                      onDiscard(tile.id);
+                    }}
+                  >
+                    <Tile kind={tile.kind} />
+                    <small>
+                      <GameIcon kind="action" action="discard" /> Discard
+                    </small>
+                  </button>
+                </li>
+              ))}
+            </ul>
+            <div className="game-actions" aria-label="Available self actions">
+              {game.concealedKongs.map((action) => (
                 <button
                   key={action.id}
                   disabled={action.disabled}
                   onClick={() => {
-                    onReact(action.id);
+                    onConcealedKong(action.id);
                   }}
                 >
-                  {action.label}
+                  <GameIcon kind="action" action="kong" /> {action.label}
                 </button>
               ))}
-            </div>
-          ) : (
-            <p>Waiting for the other players.</p>
-          )}
-        </div>
-      ) : null}
-
-      {game.hand ? (
-        <div className="private-hand">
-          <h3>Your private hand</h3>
-          <ul aria-label="Your concealed tiles">
-            {game.hand.map((tile) => (
-              <li key={tile.id}>
+              {game.addedKongs.map((action) => (
                 <button
-                  aria-label={`Discard ${tile.label}`}
-                  disabled={tile.discardDisabled}
+                  key={action.id}
+                  disabled={action.disabled}
                   onClick={() => {
-                    onDiscard(tile.id);
+                    onAddedKong(action.id);
                   }}
                 >
-                  <span>{tile.label}</span>
-                  <small>#{tile.id}</small>
+                  <GameIcon kind="action" action="kong" /> {action.label}
                 </button>
-              </li>
-            ))}
-          </ul>
-          <div className="game-actions" aria-label="Available self actions">
-            {game.concealedKongs.map((action) => (
-              <button
-                key={action.id}
-                disabled={action.disabled}
-                onClick={() => {
-                  onConcealedKong(action.id);
-                }}
-              >
-                {action.label}
-              </button>
-            ))}
-            {game.addedKongs.map((action) => (
-              <button
-                key={action.id}
-                disabled={action.disabled}
-                onClick={() => {
-                  onAddedKong(action.id);
-                }}
-              >
-                {action.label}
-              </button>
-            ))}
-            {game.win ? (
-              <button
-                disabled={game.win.disabled}
-                onClick={() => {
-                  onWin();
-                }}
-              >
-                {game.win.label}
-              </button>
-            ) : null}
+              ))}
+              {game.win ? (
+                <button
+                  disabled={game.win.disabled}
+                  onClick={() => {
+                    onWin();
+                  }}
+                >
+                  <GameIcon kind="action" action="win" /> {game.win.label}
+                </button>
+              ) : null}
+            </div>
           </div>
-        </div>
-      ) : (
-        <p className="privacy-note">
-          Spectators receive public tiles and concealed counts only.
-        </p>
-      )}
+        ) : (
+          <p className="privacy-note">
+            Spectators receive public tiles and concealed counts only.
+          </p>
+        )}
 
-      <HandResult result={game.result} />
+        <HandResult result={game.result} />
+      </BoardSurface>
     </section>
   );
 }

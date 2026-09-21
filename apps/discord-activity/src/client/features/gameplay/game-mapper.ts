@@ -5,6 +5,7 @@ import type {
   ViewerSafeTableSnapshot,
 } from "../../adapters/transport/table-socket-status.js";
 import { mapPlayerIdentity } from "../players/player-display.js";
+import type { ActionIcon } from "../../presentation/assets/game-asset-set.js";
 import type {
   GameDisplay,
   GameActionDisplay,
@@ -46,11 +47,13 @@ export function tileLabel(tile: PublicTileView): string {
   return typeof kind["name"] === "string" ? kind["name"] : "bonus";
 }
 
-function reactionLabel(action: ReactionAction): string {
+function reactionLabel(
+  action: ReactionAction,
+  tiles: readonly TileDisplay[],
+): string {
   if (!("handTileIds" in action))
     return action.type === "pass" ? "Pass" : "Declare win";
-  const ids = action.handTileIds.map(String).join(", ");
-  return `${action.type === "chow" ? "Chow" : action.type === "pung" ? "Pung" : "Exposed kong"} with tiles ${ids}`;
+  return `${action.type === "chow" ? "Chow" : action.type === "pung" ? "Pung" : "Exposed kong"} with ${tiles.map((tile) => tile.label).join(", ")}`;
 }
 
 function publicMeldLabel(meld: {
@@ -109,11 +112,35 @@ export function mapGameDisplay(input: GameMappingInput): GameDisplay | null {
     windowId: reaction?.windowId,
   });
   const terminal = game.phase === "complete" || game.phase === "exhausted";
-  const option = (id: string, label: string): GameActionDisplay => ({
+  const option = (
+    id: string,
+    label: string,
+    artworkAction: ActionIcon,
+    tiles?: readonly TileDisplay[],
+  ): GameActionDisplay => ({
     id,
     label,
     disabled: !enabled,
+    artworkAction,
+    ...(tiles === undefined ? {} : { tiles }),
   });
+  // Action IDs select commands, never artwork. Resolve only the projection's
+  // public tiles and this viewer's hand; an unresolved ID remains unknown.
+  const visibleTiles = new Map<number, TileDisplay>();
+  const publicTiles = game.players.flatMap((player) => [
+    ...player.bonuses,
+    ...player.discards,
+    ...player.melds.flatMap((meld) => meld.tileIds),
+  ]);
+  for (const tile of [
+    ...publicTiles,
+    ...(game.reaction ? [game.reaction.sourceTile] : []),
+    ...(game.viewerHand ?? []),
+  ]) {
+    visibleTiles.set(tile.id, mapTile(tile));
+  }
+  const choiceTiles = (ids: readonly number[]): readonly TileDisplay[] =>
+    ids.map((id) => visibleTiles.get(id) ?? { id, label: "Unknown tile" });
   const discardIds = new Set(
     actions.flatMap((action) =>
       action.type === "game/discard" ? [action.tileId] : [],
@@ -151,7 +178,7 @@ export function mapGameDisplay(input: GameMappingInput): GameDisplay | null {
           "The table rejected that game action.")
         : null,
     draw: actions.some((action) => action.type === "game/draw")
-      ? option("draw", "Draw tile")
+      ? option("draw", "Draw tile", "draw")
       : null,
     players: game.players.map((player) => {
       const seat = snapshot.view.seats.find(
@@ -194,9 +221,18 @@ export function mapGameDisplay(input: GameMappingInput): GameDisplay | null {
                   ? "submitted"
                   : "open",
             actions:
-              reaction?.actions.map((action) =>
-                option(reactionActionId(action), reactionLabel(action)),
-              ) ?? [],
+              reaction?.actions.map((action) => {
+                const tiles =
+                  "handTileIds" in action
+                    ? choiceTiles(action.handTileIds)
+                    : [];
+                return option(
+                  reactionActionId(action),
+                  reactionLabel(action, tiles),
+                  action.type,
+                  tiles,
+                );
+              }) ?? [],
           },
     hand:
       game.viewerHand?.map((tile) => ({
@@ -208,7 +244,11 @@ export function mapGameDisplay(input: GameMappingInput): GameDisplay | null {
         ? [
             option(
               action.tileIds.join(":"),
-              `Concealed kong (${action.tileIds.join(", ")})`,
+              `Concealed kong (${choiceTiles(action.tileIds)
+                .map((tile) => tile.label)
+                .join(", ")})`,
+              "kong",
+              choiceTiles(action.tileIds),
             ),
           ]
         : [],
@@ -218,13 +258,17 @@ export function mapGameDisplay(input: GameMappingInput): GameDisplay | null {
         ? [
             option(
               `${action.meldId}:${String(action.tileId)}`,
-              `Add tile #${String(action.tileId)} to kong`,
+              `Add ${choiceTiles([action.tileId])
+                .map((tile) => tile.label)
+                .join(", ")} to kong`,
+              "kong",
+              choiceTiles([action.tileId]),
             ),
           ]
         : [],
     ),
     win: actions.some((action) => action.type === "game/declare-win")
-      ? option("win", "Declare self-drawn win")
+      ? option("win", "Declare self-drawn win", "win")
       : null,
     result:
       result === undefined

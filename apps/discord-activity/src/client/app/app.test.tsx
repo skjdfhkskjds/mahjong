@@ -1,4 +1,8 @@
-import { renderToStaticMarkup } from "react-dom/server";
+import { renderToStaticMarkup as renderMarkup } from "react-dom/server";
+import type { ReactElement } from "react";
+import { GameAssetsProvider } from "../presentation/game-assets-provider.js";
+import { defaultGameAssetSet } from "../presentation/assets/sample-asset-sets.js";
+
 import { describe, expect, it, vi } from "vitest";
 
 import type {
@@ -7,6 +11,14 @@ import type {
 } from "../adapters/transport/table-socket-status.js";
 import { LobbyController } from "../features/lobby/lobby-controller.js";
 import { GameController } from "../features/gameplay/game-controller.js";
+
+function renderToStaticMarkup(element: ReactElement) {
+  return renderMarkup(
+    <GameAssetsProvider assets={defaultGameAssetSet}>
+      {element}
+    </GameAssetsProvider>,
+  );
+}
 
 const actors = [
   { displayName: "east player", id: "actor:east" },
@@ -222,7 +234,7 @@ describe("GameController integration", () => {
     expect(markup).not.toContain("concealed concealed");
     expect(markup).not.toContain("exposed exposed");
     expect(markup).toContain("Concealed kong");
-    expect(markup).toContain("Add tile #4 to kong");
+    expect(markup).toContain("Add 2 characters to kong");
     expect(markup).toContain("Declare self-drawn win");
   });
 
@@ -276,7 +288,7 @@ describe("GameController integration", () => {
       />,
     );
     expect(open).toContain("Pass");
-    expect(open).toContain("Chow with tiles 4, 8");
+    expect(open).toContain("Chow with 2 characters, Unknown tile");
     expect(open).toContain("Declare win");
 
     const submitted = renderToStaticMarkup(

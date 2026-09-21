@@ -11,6 +11,14 @@ import {
   type TableCommand,
   type ViewerSafeTableSnapshot,
 } from "../adapters/transport/table-socket-status.js";
+import { selectedGameAssets } from "../app/game-asset-selection.js";
+import {
+  resolveGameAssetSet,
+  type Artwork,
+} from "../presentation/assets/game-asset-set.js";
+import { sampleGameAssetSet } from "../presentation/assets/sample-asset-sets.js";
+import { GameAssetsProvider } from "../presentation/game-assets-provider.js";
+import { AssetGallery } from "./asset-gallery.js";
 import { GameController } from "../features/gameplay/game-controller.js";
 
 /*
@@ -19,11 +27,31 @@ import { GameController } from "../features/gameplay/game-controller.js";
  * otherwise shuffle-dependent UI states deterministic for local browser QA.
  */
 
+const failedArtwork: Artwork = {
+  src: "data:image/png;base64,broken",
+  width: 72,
+  height: 100,
+};
+const brokenAssets = resolveGameAssetSet({
+  overrides: {
+    tiles: {
+      faces: {
+        "suited:circles:3": failedArtwork,
+        "bonus:flower:chrysanthemum": failedArtwork,
+      },
+      back: failedArtwork,
+    },
+    board: { surface: failedArtwork },
+    players: { human: failedArtwork, bot: failedArtwork },
+    icons: { turn: failedArtwork },
+  },
+});
+
 type Scenario = "claim" | "kong" | "result";
 
 const actors = {
   east: { displayName: "east player", id: "evidence:east" },
-  north: { displayName: "north player", id: "evidence:north" },
+  north: { displayName: "Practice bot", id: "bot:evidence:north" },
   south: { displayName: "south player", id: "evidence:south" },
   west: { displayName: "west player", id: "evidence:west" },
 } as const;
@@ -103,7 +131,7 @@ const baseSnapshot = strictSnapshot({
     },
     phase: "playing",
     seats: (["east", "south", "west", "north"] as const).map((seat) => ({
-      autopilot: false,
+      autopilot: seat === "south" || seat === "north",
       occupant: actors[seat],
       ready: true,
       seat,
@@ -282,6 +310,7 @@ function resultSnapshot(): ViewerSafeTableSnapshot {
 }
 
 export function LocalGameplayEvidence() {
+  const [assets, setAssets] = useState(selectedGameAssets);
   const [connected, setConnected] = useState(true);
   const [scenario, setScenario] = useState<Scenario>("claim");
   const [status, setStatus] = useState("Ready for a viewer-safe UI smoke.");
@@ -319,58 +348,82 @@ export function LocalGameplayEvidence() {
   };
 
   return (
-    <div className="app-shell local-evidence-shell">
-      <header className="hero">
-        <div>
-          <p className="eyebrow">Development-only evidence</p>
-          <h1>Gameplay viewer smoke</h1>
-          <p className="hero__copy">
-            This mock-only page renders allowlisted protocol-v2 projections. It
-            contains no wall, opponent hand, canonical event, hash, or authority
-            mutation.
-          </p>
-        </div>
-        <span className="mode-chip">viewer fixture</span>
-      </header>
-      <nav className="game-actions" aria-label="Evidence scenarios">
-        <button
-          onClick={() => {
-            setScenario("claim");
-          }}
+    <GameAssetsProvider assets={assets}>
+      <div className="app-shell local-evidence-shell">
+        <header className="hero">
+          <div>
+            <p className="eyebrow">Development-only evidence</p>
+            <h1>Gameplay viewer smoke</h1>
+            <p className="hero__copy">
+              This mock-only page renders allowlisted protocol-v2 projections.
+              It contains no wall, opponent hand, canonical event, hash, or
+              authority mutation.
+            </p>
+          </div>
+          <span className="mode-chip">viewer fixture</span>
+        </header>
+        <nav className="game-actions" aria-label="Evidence scenarios">
+          <button
+            onClick={() => {
+              setScenario("claim");
+            }}
+          >
+            Claim scenario
+          </button>
+          <button
+            onClick={() => {
+              setScenario("kong");
+            }}
+          >
+            Kong and win scenario
+          </button>
+          <button
+            onClick={() => {
+              setScenario("result");
+            }}
+          >
+            Score result
+          </button>
+          <button onClick={reconnect}>Reconnect</button>
+          <button
+            onClick={() => {
+              setAssets(selectedGameAssets);
+            }}
+          >
+            Default artwork
+          </button>
+          <button
+            onClick={() => {
+              setAssets(sampleGameAssetSet);
+            }}
+          >
+            Sample artwork
+          </button>
+          <button
+            onClick={() => {
+              setAssets(brokenAssets);
+            }}
+          >
+            Broken artwork
+          </button>
+        </nav>
+        <p
+          className="privacy-note"
+          role="status"
+          style={{ overflowWrap: "anywhere" }}
         >
-          Claim scenario
-        </button>
-        <button
-          onClick={() => {
-            setScenario("kong");
-          }}
-        >
-          Kong and win scenario
-        </button>
-        <button
-          onClick={() => {
-            setScenario("result");
-          }}
-        >
-          Score result
-        </button>
-        <button onClick={reconnect}>Reconnect</button>
-      </nav>
-      <p
-        className="privacy-note"
-        role="status"
-        style={{ overflowWrap: "anywhere" }}
-      >
-        {status}
-      </p>
-      <main>
-        <GameController
-          connected={connected}
-          latestReceipt={undefined}
-          onCommand={onCommand}
-          snapshot={snapshot}
-        />
-      </main>
-    </div>
+          {status}
+        </p>
+        <main>
+          <GameController
+            connected={connected}
+            latestReceipt={undefined}
+            onCommand={onCommand}
+            snapshot={snapshot}
+          />
+          <AssetGallery />
+        </main>
+      </div>
+    </GameAssetsProvider>
   );
 }

@@ -1,11 +1,13 @@
 import type { HongKongTileKind, SeatMap } from "@mahjong/rules-hong-kong";
 
+import type { ActionIcon } from "../../presentation/assets/game-asset-set.js";
+
 export type TileKindDisplay = HongKongTileKind;
 export type SeatDisplay = keyof SeatMap<unknown>;
 
 export interface TileDisplay {
   readonly id: number;
-  readonly kind: TileKindDisplay;
+  readonly kind?: TileKindDisplay;
   readonly label: string;
 }
 
@@ -13,6 +15,8 @@ export interface GameActionDisplay {
   readonly id: string;
   readonly label: string;
   readonly disabled: boolean;
+  readonly artworkAction?: ActionIcon;
+  readonly tiles?: readonly TileDisplay[];
 }
 
 export interface PlayerDisplay {
