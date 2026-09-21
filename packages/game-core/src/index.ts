@@ -2,7 +2,6 @@ export { accept, reject } from "./engine/decision.js";
 export type { Decision, NonEmptyReadonlyArray } from "./engine/decision.js";
 export type {
   GenesisSnapshot,
-  RulesetEngine,
   RulesetReference,
 } from "./engine/ruleset-engine.js";
 export {
@@ -41,3 +40,26 @@ export type {
   WindTileKind,
 } from "./tiles/tile-kind.js";
 export type { Tile } from "./tiles/tile.js";
+export { createGameEngine } from "./engine/game-engine.js";
+export type {
+  DeadlineTarget,
+  EngineErrorCode,
+  FlowTransition,
+  GameEngine,
+  GameAutomationResult,
+  GameStep,
+  GameLifecycle,
+  GameParticipant,
+  GamePolicy,
+  GameRejection,
+  GameResult,
+  LogicalDeadline,
+  PolicyDecision,
+  PolicyResolution,
+  ReactionLifecycle,
+  ResolutionTrigger,
+} from "./engine/game-engine-contracts.js";
+export {
+  reactionResponderOrder,
+  transitionLifecycle,
+} from "./engine/game-lifecycle.js";

@@ -1,5 +1,6 @@
 import {
   nextSeat,
+  reactionResponderOrder,
   seat,
   seats,
   type Seat,
@@ -344,7 +345,7 @@ function reduceDiscardReactionOpened(
   }
   const player = playerAt(state.players, event.seat);
   const hand = removeExactTiles(player.hand, [event.tileId]);
-  const responderOrder = threeSeatsAfter(event.seat);
+  const responderOrder = reactionResponderOrder(event.seat);
   return {
     ...state,
     phase: "awaiting-discard-reactions",
@@ -571,7 +572,7 @@ function reduceAddedKongProposal(
       intents: {},
       kind: "added-kong",
       openingSequence: event.sequence,
-      responderOrder: threeSeatsAfter(event.seat),
+      responderOrder: reactionResponderOrder(event.seat),
       sourceIsOpeningEastDiscard: false,
       sourceLastCatch:
         state.turnProvenance.lastAcquiredTileWasFinalWall &&
@@ -770,12 +771,6 @@ function removeExactTiles(
     throw new Error("Event references a physical tile outside the hand.");
   }
   return hand.filter((id) => !removed.has(id));
-}
-
-function threeSeatsAfter(source: Seat): readonly [Seat, Seat, Seat] {
-  const first = nextSeat(source);
-  const second = nextSeat(first);
-  return [first, second, nextSeat(second)];
 }
 
 function numericIds(tileIds: readonly TileId[]): string {

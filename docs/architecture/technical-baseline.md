@@ -52,6 +52,15 @@ ADR 0009 selects a versioned, one-hour maximum HMAC-SHA256 application session c
 
 Pure packages may depend on other pure packages through declared public entry points. They may not import React, Discord, Workers, Durable Objects, WebSocket, storage, process globals, the ambient clock, or ambient randomness.
 
+`game-core` now implements the shared gameplay engine. A ruleset policy evaluates
+legal moves and returns typed effects, semantic outcomes, and flow directives;
+the engine gates participants and turns, tracks reaction submissions, resolves
+completed windows, applies effects, and checks explicit logical expiry. Hong
+Kong supplies the concrete policy, scoring, projections, and versioned replay
+codec. See the [behavior mapping and ownership boundaries](shared-game-engine.md).
+Application controller/presence state and actual alarm scheduling stay outside
+this domain contract.
+
 The engine operations have separate responsibilities:
 
 ```text
