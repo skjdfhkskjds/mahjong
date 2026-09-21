@@ -20,6 +20,13 @@ import {
   tableGamePhase,
 } from "./table-room/table-room-game-engine.js";
 import {
+  botWorkTarget,
+  changeBotSeat,
+  chooseBotMove,
+  readBotWork,
+  reconcileBotWork,
+} from "./table-room/table-room-bots.js";
+import {
   isValidApplicationActor,
   isValidApplicationDisplayName,
   type ApplicationActor,
@@ -42,7 +49,7 @@ import {
   type SystemCommandResult,
 } from "./table-room/deadline-queue.js";
 import {
-  migrateTableRoomStorageToV4,
+  migrateTableRoomStorageToV5,
   persistPreparedGameBatchInTransaction,
   prepareGameEventBatch,
   prepareV1GameUpgrade,
@@ -665,7 +672,7 @@ export class TableRoom extends DurableObject<Env> {
         );
       });
     }
-    migrateTableRoomStorageToV4(this.ctx.storage);
+    migrateTableRoomStorageToV5(this.ctx.storage);
     void this.ctx.blockConcurrencyWhile(async () => {
       verifyDeadlinePersistence(sql);
       let game = await verifyStoredGame(sql);
@@ -1101,6 +1108,19 @@ export class TableRoom extends DurableObject<Env> {
           code: "lobby-closed",
           message: "Seats and readiness are locked after the game starts.",
         };
+      } else if (
+        envelope.command.type === "lobby/add-bot" ||
+        envelope.command.type === "lobby/remove-bot"
+      ) {
+        rejection = changeBotSeat(this.ctx.storage.sql, {
+          actorId,
+          ownerId: this.table()?.owner_actor_id,
+          seat: envelope.command.seat,
+          type: envelope.command.type,
+          now,
+        });
+        applied = rejection === undefined;
+        publicTransition = applied;
       } else if (envelope.command.type === "lobby/claim-seat") {
         const occupied = this.ctx.storage.sql
           .exec<{ actor_id: string }>(
@@ -1221,6 +1241,14 @@ export class TableRoom extends DurableObject<Env> {
         resultVersion,
         rejection,
       );
+      if (applied) {
+        reconcileBotWork(
+          this.ctx.storage.sql,
+          this.gameState()?.state,
+          now,
+          this.roomLifecycle().abandoned,
+        );
+      }
       this.ctx.storage.sql.exec(
         "INSERT INTO lobby_command_receipts (command_id, actor_id, request_json, response_json, created_at) VALUES (?, ?, ?, ?, ?)",
         envelope.commandId,
@@ -1438,6 +1466,12 @@ export class TableRoom extends DurableObject<Env> {
             "UPDATE lobby_state SET state_version = state_version + 1 WHERE singleton = 1",
           );
         }
+        reconcileBotWork(
+          sql,
+          this.gameState()?.state,
+          now,
+          this.roomLifecycle().abandoned,
+        );
         return { outcome: "processed", publicTransition };
       },
     );
@@ -1459,15 +1493,54 @@ export class TableRoom extends DurableObject<Env> {
       const transitioned = await this.processDeadline(deadline, now);
       broadcast = transitioned || broadcast;
     }
+    // Human deadlines win at their boundary. Bot commands then use the same
+    // validated, receipt-backed transition path under the room concurrency gate.
+    for (const work of readBotWork(this.ctx.storage.sql)) {
+      if (work.due_at > now || this.roomLifecycle().abandoned) continue;
+      const state = this.gameState()?.state;
+      if (!state || botWorkTarget(state, work.actor_id) !== work.target)
+        continue;
+      const random = crypto.getRandomValues(new Uint32Array(1))[0];
+      if (random === undefined) throw new Error("Bot randomness unavailable.");
+      const command = chooseBotMove(
+        projectTableGame(state, work.actor_id),
+        random / 0x1_0000_0000,
+      );
+      if (!command) continue;
+      const result = await this.applyTableCommand(
+        work.actor_id,
+        {
+          command,
+          commandId: work.command_id,
+          expectedStateVersion: this.stateVersion(),
+        },
+        now,
+      );
+      if (!result.applied)
+        throw new Error("A persisted bot move could not be applied.");
+      broadcast ||= result.broadcast;
+    }
     await this.repairAlarm();
     return broadcast;
   }
 
   private async repairAlarm(): Promise<void> {
+    this.ctx.storage.transactionSync(() => {
+      reconcileBotWork(
+        this.ctx.storage.sql,
+        this.gameState()?.state,
+        Date.now(),
+        this.roomLifecycle().abandoned,
+      );
+    });
     const current = await this.ctx.storage.getAlarm();
+    const pending = [
+      earliestPendingDeadline(this.ctx.storage.sql),
+      readBotWork(this.ctx.storage.sql)[0]?.due_at,
+    ].filter((value): value is number => value !== undefined);
     const plan = planAlarmRepair(
       current,
-      earliestPendingDeadline(this.ctx.storage.sql),
+      pending.length > 0 ? Math.min(...pending) : undefined,
     );
     if (plan.action === "set") {
       await this.ctx.storage.setAlarm(plan.scheduledTime);
@@ -2008,6 +2081,13 @@ export class TableRoom extends DurableObject<Env> {
         "The table binding is no longer active.",
       );
     }
+    if (body.actorId.startsWith("bot:")) {
+      return problemResponse(
+        403,
+        "session-not-authorized",
+        "Bot players do not have application sessions.",
+      );
+    }
     const activeSession = this.ctx.storage.sql
       .exec<{ session_generation: number }>(
         "SELECT session_generation FROM actor_sessions WHERE actor_id = ?",
@@ -2252,7 +2332,11 @@ export class TableRoom extends DurableObject<Env> {
   }
 
   private grantIsCurrent(grant: ConnectionGrantRow, now: number): boolean {
-    return this.grantAuthorityIsCurrent(grant) && grant.expires_at > now;
+    return (
+      !grant.actor_id.startsWith("bot:") &&
+      this.grantAuthorityIsCurrent(grant) &&
+      grant.expires_at > now
+    );
   }
 
   public override async webSocketMessage(

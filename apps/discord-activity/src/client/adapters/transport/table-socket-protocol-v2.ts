@@ -66,6 +66,8 @@ export type TableGameCommand =
     };
 
 export type TableCommand =
+  | { readonly type: "lobby/add-bot"; readonly seat: TableSeat }
+  | { readonly type: "lobby/remove-bot"; readonly seat: TableSeat }
   | { readonly type: "lobby/claim-seat"; readonly seat: TableSeat }
   | { readonly type: "lobby/leave-seat" }
   | { readonly type: "lobby/set-ready"; readonly ready: boolean }
@@ -1156,6 +1158,8 @@ export function validateCommand(
     throw new Error("Table command is not a canonical envelope.");
   const body = envelope["command"];
   switch (body["type"]) {
+    case "lobby/add-bot":
+    case "lobby/remove-bot":
     case "lobby/claim-seat":
       if (hasExactKeys(body, ["type", "seat"]) && isTableSeat(body["seat"]))
         return;

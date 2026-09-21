@@ -169,7 +169,7 @@ export function recordValidConnection(
 function seatedActors(sql: SqlStorage): readonly string[] {
   return sql
     .exec<{ actor_id: string }>(
-      "SELECT actor_id FROM lobby_seats ORDER BY CASE seat WHEN 'east' THEN 0 WHEN 'south' THEN 1 WHEN 'west' THEN 2 ELSE 3 END",
+      "SELECT actor_id FROM lobby_seats WHERE actor_id NOT IN (SELECT actor_id FROM bot_players) ORDER BY CASE seat WHEN 'east' THEN 0 WHEN 'south' THEN 1 WHEN 'west' THEN 2 ELSE 3 END",
     )
     .toArray()
     .map(({ actor_id }) => actor_id);

@@ -18,5 +18,6 @@ Accepted baseline decisions:
 | [0012](0012-canonical-game-encoding-and-event-hashes.md) | Canonicalize game state and hash-link authoritative events           | accepted |
 | [0013](0013-private-reactions-and-deadline-commands.md)  | Persist private reactions and execute deadlines as commands          | accepted |
 | [0014](0014-canonical-game-v2-and-protocol-v2.md)        | Upgrade canonical game state and gameplay protocol to v2             | accepted |
+| [0015](0015-persistent-bot-players.md)                   | Persist server-owned random bot players for solo and mixed tables    | accepted |
 
 New ADRs use `NNNN-short-title.md` and contain context, decision, consequences, status, and date. Superseded ADRs remain in history and link to their replacement.

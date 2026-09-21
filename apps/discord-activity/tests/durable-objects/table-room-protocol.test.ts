@@ -20,6 +20,8 @@ function command(commandValue: object, extra: object = {}): string {
 describe("TableRoom protocol v2", () => {
   it.each([
     { type: "lobby/claim-seat", seat: "east" },
+    { type: "lobby/add-bot", seat: "south" },
+    { type: "lobby/remove-bot", seat: "north" },
     { type: "lobby/leave-seat" },
     { type: "lobby/set-ready", ready: true },
     { type: "game/start" },
@@ -58,6 +60,8 @@ describe("TableRoom protocol v2", () => {
   });
 
   it.each([
+    command({ type: "lobby/add-bot", seat: "south", actorId: "injected" }),
+    command({ type: "lobby/remove-bot", seat: "invalid" }),
     command({ type: "game/draw", extra: true }),
     command({ type: "game/discard", tileId: 144 }),
     command({

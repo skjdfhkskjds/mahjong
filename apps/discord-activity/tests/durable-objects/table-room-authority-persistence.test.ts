@@ -12,7 +12,7 @@ import {
 
 import type { TableRoom } from "../../src/worker/durable-objects/table-room.js";
 import {
-  migrateTableRoomStorageToV4,
+  migrateTableRoomStorageToV5,
   persistPreparedGameBatch,
   prepareGameEventBatch,
   prepareV1GameUpgrade,
@@ -21,7 +21,11 @@ import {
 import { tableRoomV1Schema } from "../fixtures/table-room-v1-schema.js";
 import { tableRoomV3ActiveV1GameFixture } from "../fixtures/table-room-v3-active-v1-game.js";
 
+import { tableRoomV4Schema } from "../fixtures/table-room-v4-schema.js";
+
 const ALL_TABLES = [
+  "bot_work",
+  "bot_players",
   "player_automation",
   "room_lifecycle",
   "system_command_receipts",
@@ -104,7 +108,75 @@ function installActiveV3Fixture(sql: SqlStorage): void {
 }
 
 describe("TableRoom authority persistence primitives", () => {
-  it("migrates the permanent v1 storage root through v4 without losing access data", async () => {
+  it.each(["bot_players", "bot_work"] as const)(
+    "rejects schema v5 when %s loses its cascading foreign key",
+    async (table) => {
+      const stub = tableRoom(`authority-v5-constraints-${crypto.randomUUID()}`);
+      await runInDurableObject(stub, (_instance, state) => {
+        const sql = state.storage.sql;
+        const original = sql
+          .exec<{ sql: string }>(
+            "SELECT sql FROM sqlite_master WHERE type = 'table' AND name = ?",
+            table,
+          )
+          .one().sql;
+        // Existing rows alone cannot prove that future deletes remain atomic.
+        for (const replacement of [
+          original.replace(/, FOREIGN KEY.*\)$/u, ")"),
+          original.replace("ON DELETE CASCADE", "ON DELETE RESTRICT"),
+        ]) {
+          sql.exec(`DROP TABLE ${table}`);
+          sql.exec(replacement);
+          expect(() => {
+            migrateTableRoomStorageToV5(state.storage);
+          }).toThrow("schema-v5 bot foreign keys are missing");
+        }
+        sql.exec(`DROP TABLE ${table}`);
+        sql.exec(original);
+        expect(() => {
+          migrateTableRoomStorageToV5(state.storage);
+        }).not.toThrow();
+      });
+    },
+  );
+
+  it("migrates the permanent v4 schema, preserving human seats and lifecycle", async () => {
+    const stub = tableRoom(`authority-v4-${crypto.randomUUID()}`);
+    await runInDurableObject(stub, (_instance, state) => {
+      const sql = state.storage.sql;
+      replaceSchema(sql, tableRoomV4Schema);
+      sql.exec("INSERT INTO storage_metadata VALUES (1, 4)");
+      sql.exec("INSERT INTO lobby_state VALUES (1, 7)");
+      sql.exec("INSERT INTO room_lifecycle VALUES (1, 3, 1, 100)");
+      sql.exec(
+        "INSERT INTO members VALUES ('old-owner', 'Old Owner', 'owner', 100)",
+      );
+      sql.exec(
+        "INSERT INTO lobby_seats VALUES ('east', 'old-owner', 'Old Owner', 1)",
+      );
+      const before = sql.exec("SELECT * FROM lobby_seats").toArray();
+      migrateTableRoomStorageToV5(state.storage);
+      migrateTableRoomStorageToV5(state.storage);
+      expect(sql.exec("SELECT * FROM lobby_seats").toArray()).toEqual(before);
+      expect(sql.exec("SELECT * FROM lobby_state").one()).toEqual({
+        singleton: 1,
+        state_version: 7,
+      });
+      expect(sql.exec("SELECT * FROM room_lifecycle").one()).toEqual({
+        singleton: 1,
+        room_activity_generation: 3,
+        abandoned: 1,
+        updated_at: 100,
+      });
+      expect(
+        sql.exec("SELECT schema_version FROM storage_metadata").one(),
+      ).toEqual({ schema_version: 5 });
+      expect(sql.exec("SELECT * FROM bot_players").toArray()).toEqual([]);
+      expect(sql.exec("SELECT * FROM bot_work").toArray()).toEqual([]);
+    });
+  });
+
+  it("migrates the permanent v1 storage root through v5 without losing access data", async () => {
     const stub = tableRoom(`authority-v1-${crypto.randomUUID()}`);
     await runInDurableObject(stub, (_instance, state) => {
       replaceSchema(state.storage.sql, tableRoomV1Schema);
@@ -119,7 +191,7 @@ describe("TableRoom authority persistence primitives", () => {
         "INSERT INTO members (actor_id, display_name, role, joined_at) VALUES ('old-owner', 'Old Owner', 'owner', 100)",
       );
 
-      migrateTableRoomStorageToV4(state.storage);
+      migrateTableRoomStorageToV5(state.storage);
 
       expect(
         state.storage.sql
@@ -127,7 +199,7 @@ describe("TableRoom authority persistence primitives", () => {
             "SELECT schema_version FROM storage_metadata WHERE singleton = 1",
           )
           .one().schema_version,
-      ).toBe(4);
+      ).toBe(5);
       expect(
         state.storage.sql
           .exec<{ owner_actor_id: string }>(
@@ -157,7 +229,7 @@ describe("TableRoom authority persistence primitives", () => {
     });
   });
 
-  it("migrates schema v2 through v4 without losing lobby state or receipts", async () => {
+  it("migrates schema v2 through v5 without losing lobby state or receipts", async () => {
     const stub = tableRoom(`authority-v2-${crypto.randomUUID()}`);
     await runInDurableObject(stub, (_instance, state) => {
       replaceSchema(
@@ -184,7 +256,7 @@ describe("TableRoom authority persistence primitives", () => {
         "INSERT INTO lobby_command_receipts (command_id, actor_id, request_json, response_json, created_at) VALUES ('v2-command', 'v2-owner', '{}', '{}', 101)",
       );
 
-      migrateTableRoomStorageToV4(state.storage);
+      migrateTableRoomStorageToV5(state.storage);
 
       expect(
         state.storage.sql
@@ -192,7 +264,7 @@ describe("TableRoom authority persistence primitives", () => {
             "SELECT schema_version FROM storage_metadata WHERE singleton = 1",
           )
           .one().schema_version,
-      ).toBe(4);
+      ).toBe(5);
       expect(
         state.storage.sql
           .exec<{ state_version: number }>(
@@ -226,7 +298,7 @@ describe("TableRoom authority persistence primitives", () => {
     const stub = tableRoom(`authority-v3-${crypto.randomUUID()}`);
     await runInDurableObject(stub, async (_instance, state) => {
       installActiveV3Fixture(state.storage.sql);
-      migrateTableRoomStorageToV4(state.storage);
+      migrateTableRoomStorageToV5(state.storage);
       const legacy = await verifyStoredGame(state.storage.sql);
       expect(legacy?.lastEventHash).toBe(
         tableRoomV3ActiveV1GameFixture.lastEventHash,
@@ -285,7 +357,7 @@ describe("TableRoom authority persistence primitives", () => {
     await runInDurableObject(stub, async (_instance, state) => {
       const sql = state.storage.sql;
       installActiveV3Fixture(sql);
-      migrateTableRoomStorageToV4(state.storage);
+      migrateTableRoomStorageToV5(state.storage);
       const legacy = await verifyStoredGame(sql);
       if (legacy === undefined) throw new Error("Fixture game is absent.");
       const upgrade = await prepareV1GameUpgrade(legacy);
@@ -330,7 +402,7 @@ describe("TableRoom authority persistence primitives", () => {
     const stub = tableRoom(`authority-rollback-${crypto.randomUUID()}`);
     await runInDurableObject(stub, async (_instance, state) => {
       installActiveV3Fixture(state.storage.sql);
-      migrateTableRoomStorageToV4(state.storage);
+      migrateTableRoomStorageToV5(state.storage);
       const legacy = await verifyStoredGame(state.storage.sql);
       if (legacy === undefined) throw new Error("Fixture game is absent.");
       const upgrade = await prepareV1GameUpgrade(legacy);
@@ -360,7 +432,7 @@ describe("TableRoom authority persistence primitives", () => {
   it("persists private intents without a public revision and resolves the third response atomically", async () => {
     const stub = tableRoom(`authority-private-${crypto.randomUUID()}`);
     await runInDurableObject(stub, async (_instance, state) => {
-      migrateTableRoomStorageToV4(state.storage);
+      migrateTableRoomStorageToV5(state.storage);
       const started = startHongKongV2Game(
         {
           east: "stable:east",
@@ -459,7 +531,7 @@ describe("TableRoom authority persistence primitives", () => {
     const stub = tableRoom(`authority-corrupt-${crypto.randomUUID()}`);
     await runInDurableObject(stub, async (_instance, state) => {
       installActiveV3Fixture(state.storage.sql);
-      migrateTableRoomStorageToV4(state.storage);
+      migrateTableRoomStorageToV5(state.storage);
       state.storage.sql.exec(
         "UPDATE game_events SET event_hash = ? WHERE sequence = 2",
         "0".repeat(64),
