@@ -231,9 +231,8 @@ export class ReconnectingSocketStatusMonitor
         ? 4001
         : run.status.state === "upgrade-required"
           ? 4406
-          : run.status.state === "protocol-error"
-            ? 1002
-            : 1000;
+          : 1000;
+    // Browser clients may send only 1000 or application close codes (3000–4999).
     try {
       connection.socket.close(code);
     } catch {

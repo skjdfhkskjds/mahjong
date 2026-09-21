@@ -58,7 +58,16 @@ const command: TableCommandEnvelope = {
 
 class LifecycleSocket {
   public readonly sent: string[] = [];
-  public readonly close = vi.fn<(code?: number, reason?: string) => void>();
+  public readonly close = vi.fn<(code?: number, reason?: string) => void>(
+    (code) => {
+      if (code !== undefined && code !== 1000 && (code < 3000 || code > 4999)) {
+        throw new DOMException(
+          "Invalid client close code",
+          "InvalidAccessError",
+        );
+      }
+    },
+  );
   private readonly listeners = new Map<string, Set<(event: Event) => void>>();
 
   public addEventListener(
@@ -480,6 +489,105 @@ describe("typed socket lifecycle and message delivery", () => {
     expect(statuses.at(-1)).toEqual({ state: "connected" });
   });
 
+  it.each(["stop", "restart"] as const)(
+    "skips the obsolete resync when an awaiting-snapshot callback requests %s",
+    (action) => {
+      const { monitor, currentSocket, statuses, createSocket } = setup();
+      let stopReplacement: (() => void) | undefined;
+      const stop = monitor.start((status) => {
+        statuses.push(status);
+        if (status.state !== "awaiting-snapshot") return;
+        if (action === "stop") {
+          stop();
+        } else {
+          stopReplacement = monitor.start((next) => statuses.push(next));
+        }
+      });
+      const first = currentSocket();
+      first.emit("open");
+      expect(first.sent).toEqual([]);
+      expect(first.close).toHaveBeenCalledOnce();
+      expect(statuses.some(({ state }) => state === "connected")).toBe(false);
+      expect(() => {
+        monitor.sendCommand(command);
+      }).toThrow();
+      vi.runAllTimers();
+
+      if (action === "stop") {
+        expect(statuses.at(-1)).toEqual({ state: "stopped" });
+        expect(createSocket).toHaveBeenCalledTimes(1);
+        return;
+      }
+
+      const replacement = currentSocket();
+      expect(replacement).not.toBe(first);
+      expect(createSocket).toHaveBeenCalledTimes(2);
+      stop();
+      expect(replacement.close).not.toHaveBeenCalled();
+      replacement.emit("open");
+      expect(replacement.sent).toEqual([
+        JSON.stringify({
+          type: "table/resync",
+          protocolVersion: 2,
+          lastSeenStateVersion: 0,
+        }),
+      ]);
+      expect(() => {
+        monitor.sendCommand(command);
+      }).toThrow();
+      replacement.message(snapshot);
+      expect(statuses.at(-1)).toEqual({ state: "connected" });
+      stopReplacement?.();
+    },
+  );
+
+  it.each([
+    {
+      type: "session/replaced",
+      protocolVersion: 2,
+      state: "session-replaced",
+    },
+    {
+      type: "table/upgrade-required",
+      protocolVersion: 2,
+      minimumSupportedVersion: 2,
+      state: "upgrade-required",
+    },
+  ] as const)(
+    "suppresses obsolete $type delivery when its terminal callback restarts",
+    ({ state, ...control }) => {
+      const { monitor, currentSocket, statuses, createSocket } = setup();
+      const receiveControl = vi.fn();
+      monitor.subscribe(control.type, receiveControl);
+      let stopReplacement: (() => void) | undefined;
+      const stop = monitor.start((status) => {
+        if (status.state === state) {
+          stopReplacement = monitor.start((next) => statuses.push(next));
+        }
+      });
+      const first = currentSocket();
+      first.emit("open");
+      first.message(snapshot);
+      first.message(control);
+
+      const replacement = currentSocket();
+      expect(replacement).not.toBe(first);
+      expect(first.close).toHaveBeenCalledOnce();
+      expect(receiveControl).not.toHaveBeenCalled();
+      expect(statuses).toEqual([{ state: "connecting", attempt: 1 }]);
+      stop();
+      expect(replacement.close).not.toHaveBeenCalled();
+      replacement.emit("open");
+      expect(() => {
+        monitor.sendCommand(command);
+      }).toThrow();
+      replacement.message(snapshot);
+      expect(statuses.at(-1)).toEqual({ state: "connected" });
+      expect(createSocket).toHaveBeenCalledTimes(2);
+      stopReplacement?.();
+    },
+  );
+
   it.each([
     {
       type: "session/replaced",
@@ -607,7 +715,7 @@ describe("typed socket lifecycle and message delivery", () => {
     socket.disconnect();
     vi.runAllTimers();
     expect(statuses.at(-1)).toEqual({ state: "protocol-error" });
-    expect(socket.close.mock.calls.map(([code]) => code)).toEqual([1002]);
+    expect(socket.close.mock.calls.map(([code]) => code)).toEqual([1000]);
     expect(received).not.toHaveBeenCalled();
     expect(createSocket).toHaveBeenCalledTimes(1);
     expect(() => {
