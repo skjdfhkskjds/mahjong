@@ -51,7 +51,7 @@ type Scenario = "claim" | "kong" | "result";
 
 const actors = {
   east: { displayName: "east player", id: "evidence:east" },
-  north: { displayName: "north player", id: "evidence:north" },
+  north: { displayName: "Practice bot", id: "bot:evidence:north" },
   south: { displayName: "south player", id: "evidence:south" },
   west: { displayName: "west player", id: "evidence:west" },
 } as const;
@@ -131,7 +131,7 @@ const baseSnapshot = strictSnapshot({
     },
     phase: "playing",
     seats: (["east", "south", "west", "north"] as const).map((seat) => ({
-      autopilot: false,
+      autopilot: seat === "south" || seat === "north",
       occupant: actors[seat],
       ready: true,
       seat,
