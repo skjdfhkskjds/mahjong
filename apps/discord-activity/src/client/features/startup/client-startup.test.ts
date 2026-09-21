@@ -98,10 +98,14 @@ function connectedSnapshot(): ViewerSafeTableSnapshot {
 }
 
 class TestSocket extends EventTarget {
+  public readyState: number = WebSocket.CONNECTING;
   public readonly send = vi.fn();
-  public readonly close = vi.fn();
+  public readonly close = vi.fn(() => {
+    this.readyState = WebSocket.CLOSING;
+  });
 
   public open(): void {
+    this.readyState = WebSocket.OPEN;
     this.dispatchEvent(new Event("open"));
   }
 
@@ -112,6 +116,7 @@ class TestSocket extends EventTarget {
   }
 
   public disconnect(code = 1006): void {
+    this.readyState = WebSocket.CLOSED;
     const event = new Event("close");
     Object.defineProperty(event, "code", { value: code });
     this.dispatchEvent(event);

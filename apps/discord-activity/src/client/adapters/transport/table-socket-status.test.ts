@@ -233,7 +233,7 @@ function projectedTile(id: number) {
 }
 
 class FakeSocket {
-  public readyState = 1;
+  public readyState: number = WebSocket.CONNECTING;
   public closed = false;
   public closeCode: number | undefined;
   public readonly sent: string[] = [];
@@ -261,6 +261,7 @@ class FakeSocket {
   }
 
   public close(code?: number): void {
+    this.readyState = WebSocket.CLOSING;
     this.closed = true;
     this.closeCode = code;
   }
@@ -270,6 +271,8 @@ class FakeSocket {
   }
 
   public emit(type: string, event: Event): void {
+    if (type === "open") this.readyState = WebSocket.OPEN;
+    if (type === "close") this.readyState = WebSocket.CLOSED;
     for (const listener of this.listeners.get(type) ?? []) {
       listener(event);
     }

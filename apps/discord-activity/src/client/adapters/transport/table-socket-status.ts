@@ -128,6 +128,12 @@ export class ReconnectingSocketStatusMonitor
     if (run?.status.state !== "connected" || !run.connection) {
       throw new Error("Table socket is not connected.");
     }
+    // The native closing handshake can precede its close callback; send() may
+    // silently discard then. Preserve that callback's terminal close code.
+    if (run.connection.socket.readyState !== WebSocket.OPEN) {
+      this.advance(run, { type: "error" });
+      throw new Error("Table socket is not connected.");
+    }
     try {
       run.connection.socket.send(JSON.stringify(command));
     } catch {

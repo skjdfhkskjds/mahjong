@@ -57,6 +57,7 @@ const command: TableCommandEnvelope = {
 };
 
 class LifecycleSocket {
+  public readyState: number = WebSocket.CONNECTING;
   public readonly sent: string[] = [];
   public readonly close = vi.fn<(code?: number, reason?: string) => void>(
     (code) => {
@@ -66,6 +67,7 @@ class LifecycleSocket {
           "InvalidAccessError",
         );
       }
+      this.readyState = WebSocket.CLOSING;
     },
   );
   private readonly listeners = new Map<string, Set<(event: Event) => void>>();
@@ -91,6 +93,8 @@ class LifecycleSocket {
   }
 
   public emit(type: string, event: Event = new Event(type)): void {
+    if (type === "open") this.readyState = WebSocket.OPEN;
+    if (type === "close") this.readyState = WebSocket.CLOSED;
     for (const listener of this.listeners.get(type) ?? []) listener(event);
   }
 
@@ -675,6 +679,43 @@ describe("typed socket lifecycle and message delivery", () => {
       expect(() => {
         monitor.sendCommand(command);
       }).toThrow();
+    },
+  );
+
+  it.each([
+    [1008, "authentication-required"],
+    [4001, "session-replaced"],
+    [4406, "upgrade-required"],
+  ] as const)(
+    "rejects sends while native closing preserves terminal close %s",
+    (code, state) => {
+      const { monitor, currentSocket, statuses, createSocket } = setup();
+      monitor.start((status) => statuses.push(status));
+      const socket = currentSocket();
+      socket.emit("open");
+      socket.message(snapshot);
+      expect(statuses.at(-1)).toEqual({ state: "connected" });
+      socket.sent.length = 0;
+
+      // Native CLOSING becomes visible before the close event is delivered.
+      socket.readyState = WebSocket.CLOSING;
+      expect(() => {
+        monitor.sendCommand(command);
+      }).toThrow();
+      expect(statuses.at(-1)?.state).toBe("disconnecting");
+      expect(socket.sent).toEqual([]);
+      expect(socket.close).not.toHaveBeenCalled();
+      vi.runAllTimers();
+      expect(createSocket).toHaveBeenCalledTimes(1);
+
+      socket.disconnect(code);
+      expect(statuses.at(-1)).toEqual({ state });
+      expect(() => {
+        monitor.sendCommand(command);
+      }).toThrow();
+      vi.runAllTimers();
+      expect(socket.sent).toEqual([]);
+      expect(createSocket).toHaveBeenCalledTimes(1);
     },
   );
 
