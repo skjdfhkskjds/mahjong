@@ -3,9 +3,7 @@ import {
   TABLE_PROTOCOL_VERSION,
   validateCommand,
   type TableCommandEnvelope,
-  type TableReceipt,
   type TableSocketMessage,
-  type ViewerSafeTableSnapshot,
 } from "./table-socket-protocol-v2.js";
 import {
   startTableSocketHeartbeat,
@@ -13,6 +11,13 @@ import {
   TABLE_HEARTBEAT_RESPONSE,
   type TableSocketHeartbeat,
 } from "./table-socket-heartbeat.js";
+import {
+  assertNever,
+  isSocketTerminal,
+  transitionSocket,
+  type SocketStatus,
+  type SocketTransition,
+} from "./table-socket-lifecycle.js";
 
 export {
   parseTableReceipt,
@@ -32,25 +37,28 @@ export {
   type ViewerSafeTableSnapshot,
 } from "./table-socket-protocol-v2.js";
 
-export type SocketConnectionState =
-  | "authentication-required"
-  | "connecting"
-  | "connected"
-  | "protocol-error"
-  | "reconnecting"
-  | "session-replaced"
-  | "stopped"
-  | "upgrade-required";
+export { type SocketStatus } from "./table-socket-lifecycle.js";
 
-export interface SocketStatus {
-  readonly state: SocketConnectionState;
-  readonly attempt: number;
-  readonly snapshot?: ViewerSafeTableSnapshot;
-  readonly latestReceipt?: TableReceipt;
-}
+export type TableMessageMap = {
+  readonly [K in TableSocketMessage["type"]]: Extract<
+    TableSocketMessage,
+    { readonly type: K }
+  >;
+};
+
+type MessageListener<K extends keyof TableMessageMap> = (
+  message: TableMessageMap[K],
+) => void;
+type MessageListeners = {
+  [K in keyof TableMessageMap]: Set<MessageListener<K>>;
+};
 
 export interface SocketStatusMonitor {
   start(onStatus: (status: SocketStatus) => void): () => void;
+  subscribe<K extends keyof TableMessageMap>(
+    type: K,
+    listener: MessageListener<K>,
+  ): () => void;
 }
 
 export interface TableSocketCommandController {
@@ -72,13 +80,36 @@ export function createTableSocketUrl(
   return url.toString();
 }
 
+interface Connection {
+  readonly socket: WebSocket;
+  readonly detach: () => void;
+}
+
+interface SocketRun {
+  status: SocketStatus;
+  readonly onStatus: (status: SocketStatus) => void;
+  connection: Connection | undefined;
+  retryTimer: ReturnType<typeof setTimeout> | undefined;
+  lastSeenStateVersion: number;
+  heartbeat: TableSocketHeartbeat | undefined;
+}
+
+/** One native connection with synchronous, ordered, separately typed delivery. */
 export class ReconnectingSocketStatusMonitor
   implements SocketStatusMonitor, TableSocketCommandController
 {
   private readonly url: string;
   private readonly createSocket: SocketFactory;
-  private activeSocket: WebSocket | undefined;
-  private connected = false;
+  private readonly heartbeatRequested: boolean;
+  private run: SocketRun | undefined;
+  private readonly messages: MessageListeners = {
+    "table/snapshot": new Set(),
+    "table/receipt": new Set(),
+    "session/replaced": new Set(),
+    "table/upgrade-required": new Set(),
+  };
+  private readonly events: (() => void)[] = [];
+  private delivering = false;
 
   public constructor(
     url: string,
@@ -86,242 +117,369 @@ export class ReconnectingSocketStatusMonitor
   ) {
     this.url = url;
     this.createSocket = createSocket;
+    const heartbeatVersions = new URL(url).searchParams.getAll("heartbeat");
+    this.heartbeatRequested =
+      heartbeatVersions.length === 1 && heartbeatVersions[0] === "1";
+  }
+
+  /** Subscriptions survive a run restart; their owner must unsubscribe on disposal. */
+  public subscribe<K extends keyof TableMessageMap>(
+    type: K,
+    listener: MessageListener<K>,
+  ): () => void {
+    const listeners = this.messages[type];
+    listeners.add(listener);
+    return () => {
+      listeners.delete(listener);
+    };
   }
 
   public sendCommand(command: TableCommandEnvelope): void {
     validateCommand(command);
-    if (!this.connected || !this.activeSocket) {
+    const run = this.run;
+    if (run?.status.state !== "connected" || !run.connection) {
       throw new Error("Table socket is not connected.");
     }
-    this.activeSocket.send(JSON.stringify(command));
+    // The native closing handshake can precede its close callback; send() may
+    // silently discard then. Preserve that callback's terminal close code.
+    if (run.connection.socket.readyState !== WebSocket.OPEN) {
+      this.advance(run, { type: "error" });
+      throw new Error("Table socket is not connected.");
+    }
+    try {
+      run.connection.socket.send(JSON.stringify(command));
+    } catch {
+      this.advance(run, { type: "close", code: 1006 });
+      throw new Error("Table command could not be sent.");
+    }
   }
 
   public start(onStatus: (status: SocketStatus) => void): () => void {
-    let attempt = 0;
-    let stopped = false;
-    let hasConnected = false;
-    let retryTimer: number | undefined;
-    let activeGeneration = 0;
-    let lastSnapshot: ViewerSafeTableSnapshot | undefined;
-    let latestReceipt: TableReceipt | undefined;
-    let activeHeartbeat: TableSocketHeartbeat | undefined;
-    const heartbeatRequested =
-      new URL(this.url).searchParams.get("heartbeat") === "1";
-    const stopHeartbeat = (): void => {
-      activeHeartbeat?.stop();
-      activeHeartbeat = undefined;
+    const previous = this.run;
+    const run: SocketRun = {
+      status: transitionSocket({ state: "stopped" }, { type: "start" }),
+      onStatus,
+      connection: undefined,
+      retryTimer: undefined,
+      lastSeenStateVersion: 0,
+      heartbeat: undefined,
     };
-
-    const publish = (
-      state: SocketConnectionState,
-      currentAttempt: number,
-    ): void => {
-      onStatus({
-        state,
-        attempt: currentAttempt,
-        ...(lastSnapshot ? { snapshot: lastSnapshot } : {}),
-        ...(latestReceipt ? { latestReceipt } : {}),
-      });
-    };
-
-    const stopForControl = (
-      state: "session-replaced" | "upgrade-required",
-      closeCode: number,
-      reason: string,
-      currentSocket: WebSocket,
-    ): void => {
-      stopped = true;
-      stopHeartbeat();
-      this.connected = false;
-      lastSnapshot = undefined;
-      latestReceipt = undefined;
-      currentSocket.close(closeCode, reason);
-      publish(state, 0);
-    };
-
-    const handleMessage = (
-      message: TableSocketMessage,
-      currentSocket: WebSocket,
-    ): void => {
-      if (message.type === "session/replaced") {
-        stopForControl(
-          "session-replaced",
-          4001,
-          "Session replaced",
-          currentSocket,
-        );
+    // Replace ownership before invoking callbacks: a reentrant start wins.
+    this.run = run;
+    if (previous && previous.status.state !== "stopped") {
+      previous.status = { state: "stopped" };
+      this.cleanup(previous);
+      this.notify(previous);
+    }
+    if (this.run === run) {
+      this.notify(run);
+      this.connect(run);
+    }
+    return () => {
+      if (this.run !== run || run.status.state === "stopped") {
         return;
       }
-      if (message.type === "table/upgrade-required") {
-        stopForControl(
-          "upgrade-required",
-          4406,
-          "Gameplay protocol upgrade required",
-          currentSocket,
-        );
-        return;
-      }
-      if (message.type === "table/receipt") {
-        latestReceipt = message;
-        publish(this.connected ? "connected" : "reconnecting", 0);
-        return;
-      }
-      lastSnapshot = message;
-      this.connected = true;
-      publish("connected", 0);
+      this.advance(run, { type: "stop" });
     };
+  }
 
-    const connect = (): void => {
-      stopHeartbeat();
-      const generation = activeGeneration + 1;
-      activeGeneration = generation;
-      attempt += 1;
-      this.connected = false;
-      publish(hasConnected ? "reconnecting" : "connecting", attempt);
-      const currentSocket = this.createSocket(this.url);
-      this.activeSocket = currentSocket;
-      const isCurrent = (): boolean =>
-        !stopped &&
-        activeGeneration === generation &&
-        this.activeSocket === currentSocket;
-      const scheduleReconnect = (): void => {
-        stopHeartbeat();
-        this.connected = false;
-        this.activeSocket = undefined;
-        const retryAttempt = Math.max(1, attempt);
-        const delay = Math.min(1_000 * 2 ** (retryAttempt - 1), 15_000);
-        retryTimer = window.setTimeout(connect, delay);
-        publish("reconnecting", retryAttempt);
-      };
+  private notify(run: SocketRun): void {
+    this.invoke(() => {
+      run.onStatus(run.status);
+    });
+  }
 
-      currentSocket.addEventListener("open", () => {
-        if (stopped) {
-          currentSocket.close(1000, "Client stopped");
+  private invoke(callback: () => void): void {
+    try {
+      callback();
+    } catch {
+      // Consumer exceptions cannot expose payloads, become protocol failures,
+      // interrupt another subscriber, or skip lifecycle cleanup.
+    }
+  }
+
+  private enqueue(callback: () => void): void {
+    this.events.push(callback);
+    if (this.delivering) {
+      return;
+    }
+    this.delivering = true;
+    try {
+      let next = this.events.shift();
+      while (next) {
+        next();
+        next = this.events.shift();
+      }
+    } finally {
+      this.delivering = false;
+    }
+  }
+
+  private emit<K extends keyof TableMessageMap>(
+    run: SocketRun,
+    type: K,
+    message: TableMessageMap[K],
+  ): void {
+    const listeners = this.messages[type];
+    const status = run.status;
+    for (const listener of [...listeners]) {
+      if (this.run !== run || run.status !== status) {
+        return;
+      }
+      if (listeners.has(listener)) {
+        this.invoke(() => {
+          listener(message);
+        });
+      }
+    }
+  }
+
+  private stopHeartbeat(run: SocketRun): void {
+    run.heartbeat?.stop();
+    run.heartbeat = undefined;
+  }
+
+  private cleanup(run: SocketRun, closeCode?: number): void {
+    this.stopHeartbeat(run);
+    const connection = run.connection;
+    run.connection = undefined;
+    if (run.retryTimer !== undefined) {
+      clearTimeout(run.retryTimer);
+    }
+    run.retryTimer = undefined;
+    if (!connection) {
+      return;
+    }
+    connection.detach();
+    const code =
+      closeCode ??
+      (run.status.state === "session-replaced"
+        ? 4001
+        : run.status.state === "upgrade-required"
+          ? 4406
+          : 1000);
+    // Browser clients may send only 1000 or application close codes (3000–4999).
+    try {
+      connection.socket.close(code);
+    } catch {
+      // Ownership and listeners are already retired, even if platform close fails.
+    }
+  }
+
+  private advance(run: SocketRun, input: SocketTransition): void {
+    if (this.run !== run) {
+      return;
+    }
+    const next = transitionSocket(run.status, input);
+    if (next === run.status) {
+      return;
+    }
+    run.status = next;
+    if (isSocketTerminal(next) || next.state === "reconnecting") {
+      this.cleanup(run, input.type === "heartbeat-timeout" ? 4000 : undefined);
+    }
+    if (next.state === "disconnecting") {
+      this.stopHeartbeat(run);
+    }
+    if (next.state === "reconnecting") {
+      run.retryTimer = setTimeout(() => {
+        this.enqueue(() => {
+          if (this.run !== run || run.status !== next) {
+            return;
+          }
+          run.retryTimer = undefined;
+          this.advance(run, { type: "retry" });
+          this.connect(run);
+        });
+      }, next.delayMs);
+    }
+    this.notify(run);
+  }
+
+  private connect(run: SocketRun): void {
+    if (this.run !== run || run.status.state !== "connecting") {
+      return;
+    }
+    const connecting = run.status;
+    let socket: WebSocket;
+    try {
+      socket = this.createSocket(this.url);
+    } catch {
+      this.advance(run, { type: "close", code: 1006 });
+      return;
+    }
+    // Factory hooks may synchronously stop or replace this run.
+    if (this.run !== run || run.status !== connecting) {
+      socket.close(1000);
+      return;
+    }
+    const current = (): boolean =>
+      this.run === run &&
+      run.connection?.socket === socket &&
+      !isSocketTerminal(run.status);
+    const open = (): void => {
+      this.enqueue(() => {
+        if (!current() || run.status.state !== "connecting") {
           return;
         }
-        if (!isCurrent()) return;
-        hasConnected = true;
-        attempt = 0;
-        if (lastSnapshot) {
-          publish("reconnecting", 0);
-          currentSocket.send(
+        this.advance(run, { type: "open" });
+        if (!current()) {
+          return;
+        }
+        try {
+          // Initial and reopened connections take the same initialization path.
+          socket.send(
             JSON.stringify({
               type: "table/resync",
               protocolVersion: TABLE_PROTOCOL_VERSION,
-              lastSeenStateVersion: lastSnapshot.stateVersion,
+              lastSeenStateVersion: run.lastSeenStateVersion,
             }),
           );
-        } else {
-          publish("connecting", 0);
+        } catch {
+          this.advance(run, { type: "close", code: 1006 });
         }
-      });
-      currentSocket.addEventListener(
-        "message",
-        (event: MessageEvent<unknown>) => {
-          if (!isCurrent()) return;
-          if (currentSocket.readyState !== 1) return;
-          if (heartbeatRequested && event.data === TABLE_HEARTBEAT_READY) {
-            activeHeartbeat ??= startTableSocketHeartbeat({
-              send: (frame) => {
-                if (!isCurrent()) return;
-                if (currentSocket.readyState !== 1) {
-                  stopHeartbeat();
-                  this.connected = false;
-                  publish("reconnecting", Math.max(1, attempt));
-                  return;
-                }
-                currentSocket.send(frame);
-              },
-              onTimeout: () => {
-                if (!isCurrent()) return;
-                if (currentSocket.readyState !== 1) {
-                  this.connected = false;
-                  publish("reconnecting", Math.max(1, attempt));
-                  return;
-                }
-                scheduleReconnect();
-                currentSocket.close(4000, "Heartbeat timeout");
-              },
-              scheduler: {
-                now: () => performance.now(),
-                setTimeout: (callback, delay) =>
-                  window.setTimeout(callback, delay),
-                clearTimeout: (timer) => {
-                  window.clearTimeout(timer);
-                },
-              },
-            });
-            return;
-          }
-          if (heartbeatRequested && event.data === TABLE_HEARTBEAT_RESPONSE) {
-            activeHeartbeat?.acknowledge();
-            return;
-          }
-          try {
-            handleMessage(parseSocketMessage(event), currentSocket);
-          } catch {
-            stopped = true;
-            stopHeartbeat();
-            this.connected = false;
-            currentSocket.close(1002, "Unsupported table protocol");
-            publish("protocol-error", attempt);
-          }
-        },
-      );
-      currentSocket.addEventListener("error", () => {
-        if (!isCurrent()) return;
-        stopHeartbeat();
-        this.connected = false;
-        publish("reconnecting", Math.max(1, attempt));
-      });
-      currentSocket.addEventListener("close", (event) => {
-        if (!isCurrent()) return;
-        stopHeartbeat();
-        this.connected = false;
-        this.activeSocket = undefined;
-        if (event.code === 4002) {
-          stopped = true;
-          lastSnapshot = undefined;
-          latestReceipt = undefined;
-          publish("stopped", 0);
-          return;
-        }
-        if (event.code === 4001) {
-          stopped = true;
-          lastSnapshot = undefined;
-          latestReceipt = undefined;
-          publish("session-replaced", 0);
-          return;
-        }
-        if (event.code === 4406) {
-          stopped = true;
-          lastSnapshot = undefined;
-          latestReceipt = undefined;
-          publish("upgrade-required", 0);
-          return;
-        }
-        if (event.code === 1008) {
-          stopped = true;
-          lastSnapshot = undefined;
-          latestReceipt = undefined;
-          publish("authentication-required", 0);
-          return;
-        }
-        scheduleReconnect();
       });
     };
+    const message = (event: MessageEvent): void => {
+      this.enqueue(() => {
+        if (!current() || socket.readyState !== WebSocket.OPEN) {
+          return;
+        }
+        if (this.heartbeatRequested && event.data === TABLE_HEARTBEAT_READY) {
+          if (
+            run.status.state === "awaiting-snapshot" ||
+            run.status.state === "connected"
+          ) {
+            run.heartbeat ??= this.startHeartbeat(run, socket, current);
+          }
+          return;
+        }
+        if (
+          this.heartbeatRequested &&
+          event.data === TABLE_HEARTBEAT_RESPONSE
+        ) {
+          run.heartbeat?.acknowledge();
+          return;
+        }
+        let parsed: TableSocketMessage;
+        try {
+          parsed = parseSocketMessage(event);
+        } catch {
+          this.advance(run, { type: "protocol-error" });
+          return;
+        }
+        this.deliverMessage(run, parsed, current);
+      });
+    };
+    const error = (): void => {
+      this.enqueue(() => {
+        if (current()) {
+          this.advance(run, { type: "error" });
+        }
+      });
+    };
+    const close = (event: CloseEvent): void => {
+      this.enqueue(() => {
+        if (current()) {
+          this.advance(run, { type: "close", code: event.code });
+        }
+      });
+    };
+    run.connection = {
+      socket,
+      detach: () => {
+        socket.removeEventListener("open", open);
+        socket.removeEventListener("message", message);
+        socket.removeEventListener("error", error);
+        socket.removeEventListener("close", close);
+      },
+    };
+    socket.addEventListener("open", open);
+    socket.addEventListener("message", message);
+    socket.addEventListener("error", error);
+    socket.addEventListener("close", close);
+  }
 
-    connect();
-    return () => {
-      const currentSocket = this.activeSocket;
-      stopped = true;
-      stopHeartbeat();
-      activeGeneration += 1;
-      this.connected = false;
-      this.activeSocket = undefined;
-      if (retryTimer !== undefined) window.clearTimeout(retryTimer);
-      currentSocket?.close(1000, "Client stopped");
-      publish("stopped", 0);
-    };
+  private startHeartbeat(
+    run: SocketRun,
+    socket: WebSocket,
+    current: () => boolean,
+  ): TableSocketHeartbeat {
+    const heartbeat = startTableSocketHeartbeat({
+      send: (frame) => {
+        if (!current() || run.heartbeat !== heartbeat) {
+          heartbeat.stop();
+          return;
+        }
+        if (socket.readyState !== WebSocket.OPEN) {
+          this.advance(run, { type: "error" });
+          return;
+        }
+        socket.send(frame);
+      },
+      onTimeout: () => {
+        this.enqueue(() => {
+          if (!current() || run.heartbeat !== heartbeat) return;
+          // A pending native terminal close (including deliberate departure)
+          // must win over heartbeat retry while the handshake is closing.
+          this.advance(run, {
+            type:
+              socket.readyState === WebSocket.OPEN
+                ? "heartbeat-timeout"
+                : "error",
+          });
+        });
+      },
+      scheduler: {
+        now: () => performance.now(),
+        setTimeout: (callback, delay) => window.setTimeout(callback, delay),
+        clearTimeout: (timer) => {
+          window.clearTimeout(timer);
+        },
+      },
+    });
+    return heartbeat;
+  }
+
+  private deliverMessage(
+    run: SocketRun,
+    message: TableSocketMessage,
+    current: () => boolean,
+  ): void {
+    switch (message.type) {
+      case "table/snapshot":
+        if (
+          run.status.state !== "awaiting-snapshot" &&
+          run.status.state !== "connected"
+        ) {
+          return;
+        }
+        run.lastSeenStateVersion = message.stateVersion;
+        this.emit(run, message.type, message);
+        // Application receives the fresh snapshot before commands are enabled.
+        if (current()) {
+          this.advance(run, { type: "snapshot" });
+        }
+        return;
+      case "table/receipt":
+        this.emit(run, message.type, message);
+        return;
+      case "session/replaced":
+      case "table/upgrade-required":
+        // Retire the connection and publish terminal state before the control.
+        this.advance(run, { type: message.type });
+        if (
+          this.run === run &&
+          run.status.state ===
+            (message.type === "session/replaced"
+              ? "session-replaced"
+              : "upgrade-required")
+        ) {
+          this.emit(run, message.type, message);
+        }
+        return;
+      default:
+        assertNever(message);
+    }
   }
 }

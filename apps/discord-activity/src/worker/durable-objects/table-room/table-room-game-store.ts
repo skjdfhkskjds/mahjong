@@ -5,18 +5,30 @@ import {
 } from "./table-room-bots.js";
 import {
   canonicalVersionedEventHashPayload,
-  canonicalVersionedGameEventJson,
   canonicalVersionedGameJson,
-  decodeCanonicalGameEventJson,
   decodeCanonicalVersionedGameEventJson,
   decodeCanonicalVersionedGameJson,
   reduceVersionedGameEvent,
-  upgradeCanonicalGameState,
-  type HongKongGameEvent,
-  type NonEmptyGameEventBatch,
   type VersionedCanonicalGameState,
   type VersionedHongKongGameEvent,
 } from "@mahjong/rules-hong-kong";
+
+import {
+  assertGameEventDigest,
+  digestGameEventPayload,
+  type EventDigest,
+  type PreparedGameEventBatch,
+  type VerifiedStoredGame,
+} from "./table-game-events.js";
+
+export {
+  prepareGameEventBatch,
+  prepareV1GameUpgrade,
+  type EventDigest,
+  type PreparedGameEventBatch,
+  type PreparedGameEventRow,
+  type VerifiedStoredGame,
+} from "./table-game-events.js";
 
 const SHA256_HEX_PATTERN = /^[0-9a-f]{64}$/u;
 
@@ -34,31 +46,6 @@ interface EventRow {
   readonly sequence: number;
 }
 
-export interface PreparedGameEventRow {
-  readonly eventHash: string;
-  readonly eventJson: string;
-  readonly previousHash: string | null;
-  readonly sequence: number;
-}
-
-export interface PreparedGameEventBatch {
-  readonly finalState: VersionedCanonicalGameState;
-  readonly finalStateJson: string;
-  readonly lastEventHash: string;
-  readonly rows: readonly [PreparedGameEventRow, ...PreparedGameEventRow[]];
-}
-
-export interface VerifiedStoredGame {
-  readonly events: readonly [
-    VersionedHongKongGameEvent,
-    ...VersionedHongKongGameEvent[],
-  ];
-  readonly lastEventHash: string;
-  readonly state: VersionedCanonicalGameState;
-}
-
-export type EventDigest = (payload: string) => Promise<string>;
-
 const CURRENT_SCHEMA_VERSION = 6;
 
 interface SchemaVersionRow {
@@ -71,22 +58,6 @@ interface ForeignKeyRow {
   readonly from: string;
   readonly table: string;
   readonly to: string;
-}
-
-async function sha256Hex(payload: string): Promise<string> {
-  const digest = await crypto.subtle.digest(
-    "SHA-256",
-    new TextEncoder().encode(payload),
-  );
-  return [...new Uint8Array(digest)]
-    .map((byte) => byte.toString(16).padStart(2, "0"))
-    .join("");
-}
-
-function assertDigest(value: string): void {
-  if (!SHA256_HEX_PATTERN.test(value)) {
-    throw new Error("The game event digest is not lowercase SHA-256.");
-  }
 }
 
 function persistedRows(sql: SqlStorage): readonly EventRow[] {
@@ -112,7 +83,7 @@ function persistedCheckpoint(sql: SqlStorage): CheckpointRow | undefined {
  */
 export async function verifyStoredGame(
   sql: SqlStorage,
-  digest: EventDigest = sha256Hex,
+  digest: EventDigest = digestGameEventPayload,
 ): Promise<VerifiedStoredGame | undefined> {
   const checkpoint = persistedCheckpoint(sql);
   const rows = persistedRows(sql);
@@ -152,7 +123,7 @@ export async function verifyStoredGame(
     const expectedHash = await digest(
       canonicalVersionedEventHashPayload(previousHash, event),
     );
-    assertDigest(expectedHash);
+    assertGameEventDigest(expectedHash);
     if (expectedHash !== row.event_hash) {
       throw new Error("Persisted game event hash verification failed.");
     }
@@ -174,46 +145,6 @@ export async function verifyStoredGame(
     throw new Error("Canonical game checkpoint diverges from event replay.");
   }
   return { events, lastEventHash: previousHash, state };
-}
-
-/**
- * Prepares hashes and the reduced checkpoint before entering SQLite. The caller
- * must serialize the verified read, preparation, and commit as one operation.
- */
-export async function prepareGameEventBatch(
-  prior: VerifiedStoredGame | undefined,
-  events: NonEmptyGameEventBatch,
-  digest: EventDigest = sha256Hex,
-): Promise<PreparedGameEventBatch> {
-  let state = prior?.state;
-  let previousHash = prior?.lastEventHash ?? null;
-  const rows: PreparedGameEventRow[] = [];
-  for (const event of events) {
-    const next = reduceVersionedGameEvent(state, event);
-    const eventJson = canonicalVersionedGameEventJson(event);
-    const eventHash = await digest(
-      canonicalVersionedEventHashPayload(previousHash, event),
-    );
-    assertDigest(eventHash);
-    rows.push({
-      eventHash,
-      eventJson,
-      previousHash,
-      sequence: event.sequence,
-    });
-    previousHash = eventHash;
-    state = next;
-  }
-  const first = rows[0];
-  if (first === undefined || state === undefined || previousHash === null) {
-    throw new Error("A persisted game batch must be nonempty.");
-  }
-  return {
-    finalState: state,
-    finalStateJson: canonicalVersionedGameJson(state),
-    lastEventHash: previousHash,
-    rows: [first, ...rows.slice(1)],
-  };
 }
 
 /**
@@ -258,40 +189,6 @@ export function persistPreparedGameBatchInTransaction(
     batch.finalStateJson,
     batch.lastEventHash,
   );
-}
-
-function legacyHistory(
-  game: VerifiedStoredGame,
-): readonly [HongKongGameEvent, ...HongKongGameEvent[]] {
-  if (game.state.schemaVersion !== 1) {
-    throw new Error("Only a verified canonical schema-v1 game can upgrade.");
-  }
-  const legacy: HongKongGameEvent[] = [];
-  for (const event of game.events) {
-    legacy.push(
-      decodeCanonicalGameEventJson(canonicalVersionedGameEventJson(event)),
-    );
-  }
-  const first = legacy[0];
-  if (first === undefined)
-    throw new Error("A legacy game has no genesis event.");
-  return [first, ...legacy.slice(1)];
-}
-
-/** Builds the sole deterministic hash-preserving v1-to-v2 upgrade batch. */
-export async function prepareV1GameUpgrade(
-  game: VerifiedStoredGame,
-  digest: EventDigest = sha256Hex,
-): Promise<PreparedGameEventBatch> {
-  const upgraded = upgradeCanonicalGameState(legacyHistory(game));
-  const batch = await prepareGameEventBatch(game, [upgraded.event], digest);
-  if (
-    canonicalVersionedGameJson(batch.finalState) !==
-    canonicalVersionedGameJson(upgraded.state)
-  ) {
-    throw new Error("Prepared upgrade checkpoint diverges from rules replay.");
-  }
-  return batch;
 }
 
 function requireExistingAuthorityTables(sql: SqlStorage): void {

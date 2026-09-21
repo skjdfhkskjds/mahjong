@@ -9,6 +9,7 @@
     "tooling/**/*.ts",
     "vite.config.ts",
     "vite.solo.config.ts",
+    "vitest.application.config.ts",
     "vitest.client.config.ts",
     "vitest.worker.config.ts"
   ]
