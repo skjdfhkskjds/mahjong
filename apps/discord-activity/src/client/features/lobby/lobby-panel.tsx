@@ -1,15 +1,25 @@
+import { GameIcon } from "../../presentation/game-icon.js";
+import { PlayerIcon } from "../../presentation/player-icon.js";
+
 import type { LobbyPanelProps, LobbySeatDisplay } from "./lobby-display.js";
 
 export function LobbySeat({ seat }: { readonly seat: LobbySeatDisplay }) {
   return (
     <li className="seat-card">
       <div className="seat-card__heading">
-        <h3>{seat.seat}</h3>
+        <h3>
+          <GameIcon kind="wind" wind={seat.seat} /> {seat.seat}
+        </h3>
         <span className={`ready-chip ${seat.ready ? "ready-chip--ready" : ""}`}>
           {seat.status}
         </span>
       </div>
-      <p>{seat.displayName}</p>
+      <div className="player-heading">
+        {seat.kind === null ? null : (
+          <PlayerIcon displayName={seat.displayName} kind={seat.kind} />
+        )}
+        <p>{seat.displayName}</p>
+      </div>
       {seat.onClaimSeat ? (
         <button
           className="lobby-button"

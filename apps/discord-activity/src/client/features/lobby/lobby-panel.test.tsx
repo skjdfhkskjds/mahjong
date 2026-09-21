@@ -1,9 +1,21 @@
 import { Children, isValidElement, type ReactNode } from "react";
-import { renderToStaticMarkup } from "react-dom/server";
+import { renderToStaticMarkup as renderMarkup } from "react-dom/server";
+import type { ReactElement } from "react";
+import { GameAssetsProvider } from "../../presentation/game-assets-provider.js";
+import { defaultGameAssetSet } from "../../presentation/assets/sample-asset-sets.js";
+
 import { describe, expect, it, vi } from "vitest";
 
 import type { LobbyPanelProps, LobbySeatDisplay } from "./lobby-display.js";
 import { LobbyPanel, LobbySeat } from "./lobby-panel.js";
+
+function renderToStaticMarkup(element: ReactElement) {
+  return renderMarkup(
+    <GameAssetsProvider assets={defaultGameAssetSet}>
+      {element}
+    </GameAssetsProvider>,
+  );
+}
 
 function buttons(
   node: ReactNode,
@@ -50,6 +62,23 @@ const panel: LobbyPanelProps = {
 };
 
 describe("lobby presentation", () => {
+  it("renders mapped human and bot artwork without giving vacant seats an identity", () => {
+    const markup = renderToStaticMarkup(
+      <LobbyPanel
+        {...panel}
+        seats={[
+          seat,
+          { ...seat, seat: "south", displayName: "Practice bot", kind: "bot" },
+          { ...seat, seat: "west", displayName: "Open seat", kind: null },
+        ]}
+      />,
+    );
+    expect(markup).toContain('aria-label="East player, human"');
+    expect(markup).toContain('aria-label="Practice bot, bot"');
+    expect(markup).not.toContain('aria-label="Open seat,');
+    expect(markup.match(/class="player-icon"/gu)).toHaveLength(2);
+  });
+
   it("renders seat and spectator display props without network state", () => {
     const markup = renderToStaticMarkup(<LobbyPanel {...panel} />);
     expect(markup).toContain("East player");

@@ -3,13 +3,6 @@ import type { ReactElement } from "react";
 import { GameAssetsProvider } from "../presentation/game-assets-provider.js";
 import { defaultGameAssetSet } from "../presentation/assets/sample-asset-sets.js";
 
-function renderToStaticMarkup(element: ReactElement) {
-  return renderMarkup(
-    <GameAssetsProvider assets={defaultGameAssetSet}>
-      {element}
-    </GameAssetsProvider>,
-  );
-}
 import { describe, expect, it, vi } from "vitest";
 
 import type {
@@ -18,6 +11,14 @@ import type {
 } from "../adapters/transport/table-socket-status.js";
 import { LobbyController } from "../features/lobby/lobby-controller.js";
 import { GameController } from "../features/gameplay/game-controller.js";
+
+function renderToStaticMarkup(element: ReactElement) {
+  return renderMarkup(
+    <GameAssetsProvider assets={defaultGameAssetSet}>
+      {element}
+    </GameAssetsProvider>,
+  );
+}
 
 const actors = [
   { displayName: "east player", id: "actor:east" },

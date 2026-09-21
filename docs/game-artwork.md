@@ -122,9 +122,12 @@ Credential-free Vite mock fixture, issue #23 worktree, port 5178:
   the loaded image no longer obscures the state indicator. Light custom board
   art cannot remove the independent dark content backing.
 
-The current stack is based on #24's main-compatible controller extraction.
-Human and bot default components are covered independently; persistent bot-seat
-identity integration awaits the canonical #21 implementation and #24's follow-up
-integration. Autopilot on a human seat deliberately retains the human icon.
+The final stack includes the canonical persistent bot implementation and the
+shared feature-level `mapPlayerIdentity` mapper. Both lobby and gameplay consume
+its narrow human/bot identity props; vacant lobby seats have no player icon.
+Dedicated bot identities use the selected bot default, while temporary autopilot
+on a human seat deliberately retains the human icon. The strict viewer evidence
+fixture includes both cases, and focused tests cover identity mapping, lobby
+vacancy, pack defaults, and preservation of a personal avatar across packs.
 These checks are local presentation evidence, not Discord-proxied deployment or
 server-authority evidence.

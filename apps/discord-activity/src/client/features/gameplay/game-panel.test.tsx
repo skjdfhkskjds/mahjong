@@ -5,6 +5,11 @@ import type { ReactElement } from "react";
 import { GameAssetsProvider } from "../../presentation/game-assets-provider.js";
 import { defaultGameAssetSet } from "../../presentation/assets/sample-asset-sets.js";
 
+import { describe, expect, it, vi } from "vitest";
+
+import type { GameDisplay, GamePanelProps } from "./game-display.js";
+import { GamePanel } from "./game-panel.js";
+
 function renderToStaticMarkup(element: ReactElement) {
   return renderMarkup(
     <GameAssetsProvider assets={defaultGameAssetSet}>
@@ -12,10 +17,6 @@ function renderToStaticMarkup(element: ReactElement) {
     </GameAssetsProvider>,
   );
 }
-import { describe, expect, it, vi } from "vitest";
-
-import type { GameDisplay, GamePanelProps } from "./game-display.js";
-import { GamePanel } from "./game-panel.js";
 
 const tile = {
   id: 4,
@@ -38,9 +39,6 @@ const game: GameDisplay = {
       kind: "human",
       isTurn: true,
       autopilot: true,
-      displayName: "East player",
-      kind: "human",
-      isTurn: true,
       concealedCount: 1,
       bonuses: [
         {

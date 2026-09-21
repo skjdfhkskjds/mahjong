@@ -179,6 +179,33 @@ describe("game artwork mapping", () => {
     ).toBe(true);
   });
 
+  it("selects dedicated bot artwork independently of temporary seat automation", () => {
+    const mapping = input();
+    for (const autopilot of [false, true]) {
+      const snapshot: ViewerSafeTableSnapshot = {
+        ...mapping.snapshot,
+        view: {
+          ...mapping.snapshot.view,
+          seats: [
+            {
+              seat: "east",
+              occupant: { id: "bot:practice", displayName: "Practice bot" },
+              ready: true,
+              autopilot,
+            },
+          ],
+        },
+      };
+      expect(
+        mapGameDisplay({ ...mapping, snapshot })?.players[0],
+      ).toMatchObject({
+        displayName: "Practice bot",
+        kind: "bot",
+        autopilot,
+      });
+    }
+  });
+
   it("retains exact reaction callback IDs while using descriptive action labels", () => {
     const onCommand = vi.fn(() => true);
     const onSent = vi.fn();
