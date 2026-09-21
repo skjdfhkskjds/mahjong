@@ -82,12 +82,3 @@ export function normalizeReactionWindow(
   }
   return { outcome: { type: "all-pass" }, responses };
 }
-
-export function allRespondersSubmitted(
-  state: CanonicalGameStateV2,
-  window: ReactionWindow,
-): boolean {
-  return window.responderOrder.every((seat) =>
-    Object.hasOwn(window.intents, playerAt(state.players, seat).actorId),
-  );
-}

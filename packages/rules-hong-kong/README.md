@@ -6,7 +6,30 @@ The project-defined, accepted Hong Kong rules profile and its pure implementatio
 
 ## Does not own
 
-Discord, Cloudflare, storage, networking, UI, room membership, table access, operational timeout policy, or match progression.
+Discord, Cloudflare, storage, networking, UI, room membership, table access,
+presence/controller policy, timer scheduling, or match progression. Participant
+validation, active-turn gating, reaction completion, and logical expiry belong
+to the concrete shared engine in `game-core`.
+
+## Gameplay composition
+
+`hongKongGameEngine` composes that shared engine with the Hong Kong policy. Its
+`execute` result distinguishes rejected moves, applied moves, private pending
+reactions, and resolved results. A resolved win contains the finalized score;
+a pending win contains only the accepted response and window identity. Reaction
+resolution identifies the actual winner and whether each legal claimant was
+awarded the win. Those claimants remain authority-only.
+
+The policy uses the existing legality, scoring, replacement, and replay
+implementations. It supplies deterministic draw/discard/pass timeout moves;
+the engine coordinates their execution with explicit logical deadlines. The
+application chooses when an actor is automated and schedules the actual alarm.
+See the [flow-to-policy mapping](../../docs/architecture/shared-game-engine.md).
+
+Historical `decideGameCommandV2`, `applyGameCommandV2`, and
+`decideReactionExpiration` entrypoints delegate to the same engine and retain
+their event/decision shape. Runtime integrations use the engine directly so
+they can act on typed visibility and targeted expiry without reading event names.
 
 ## Dependencies
 
