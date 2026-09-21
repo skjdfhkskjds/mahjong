@@ -183,7 +183,10 @@ bounded retry delay. A transport error enters `disconnecting` while awaiting
 the close code, preserving authorization/replacement/upgrade close semantics.
 An ordinary close retires listeners and schedules a retry. Authentication,
 replacement, upgrade, malformed protocol, and explicit stop are terminal for
-that run. The application clears its snapshot and receipt whenever connection
+that run. A deliberate active-hand departure closes with application code
+`4002`, which enters `stopped` and never retries automatically. A new explicit
+startup may reconnect and must receive a fresh snapshot; normal close `1000`
+retains transient retry behavior. The application clears its snapshot and receipt whenever connection
 usability is lost. Only `connected` permits a validated command send, and no
 command is queued or automatically replayed.
 

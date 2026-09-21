@@ -437,6 +437,34 @@ describe("client startup", () => {
     stop();
   });
 
+  it("clears application controls without reconnecting after an explicit departure close", async () => {
+    vi.useFakeTimers();
+    const statuses: ClientStartupStatus[] = [];
+    const harness = socketHarness();
+    const stop = startClientStartup({
+      config,
+      bridge,
+      api: createApi(),
+      socket: harness.monitor,
+      onStatus: (status) => statuses.push(status),
+    });
+    await flushPromises();
+    harness.current().open();
+    harness.current().message(connectedSnapshot());
+    harness.current().message(receipt);
+    harness.current().disconnect(4002);
+    vi.runAllTimers();
+    expect(harness.connections).toHaveLength(1);
+    expect(statuses.at(-1)).toMatchObject({
+      complete: false,
+      tableSnapshot: undefined,
+      latestReceipt: undefined,
+      socket: { state: "warning" },
+      session: { state: "ready" },
+    });
+    stop();
+  });
+
   it("unsubscribes on disposal and ignores later messages from a restarted monitor", async () => {
     const statuses: ClientStartupStatus[] = [];
     const harness = socketHarness();

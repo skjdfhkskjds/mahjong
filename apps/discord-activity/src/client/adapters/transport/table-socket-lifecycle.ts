@@ -85,6 +85,9 @@ export function transitionSocket(
     case "protocol-error":
       return { state: "protocol-error" };
     case "close":
+      if (input.code === 4002) {
+        return { state: "stopped" };
+      }
       if (input.code === 4001) {
         return { state: "session-replaced" };
       }

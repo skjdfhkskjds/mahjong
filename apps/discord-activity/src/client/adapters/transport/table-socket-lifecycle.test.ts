@@ -177,68 +177,71 @@ describe("typed socket lifecycle and message delivery", () => {
     expectTypeOf(typecheckInvalidSubscriptions).toEqualTypeOf<() => void>();
   });
 
-  it("requires a fresh snapshot on initial open and on reconnect before enabling commands", () => {
-    const { monitor, currentSocket, statuses, createSocket } = setup();
-    const duringSnapshot: boolean[] = [];
-    monitor.subscribe("table/snapshot", () => {
-      try {
+  it.each([1000, 1006])(
+    "requires a fresh snapshot on initial open and reconnect after close %s",
+    (closeCode) => {
+      const { monitor, currentSocket, statuses, createSocket } = setup();
+      const duringSnapshot: boolean[] = [];
+      monitor.subscribe("table/snapshot", () => {
+        try {
+          monitor.sendCommand(command);
+          duringSnapshot.push(true);
+        } catch {
+          duringSnapshot.push(false);
+        }
+      });
+      const stop = monitor.start((status) => statuses.push(status));
+      expect(statuses).toEqual([{ state: "connecting", attempt: 1 }]);
+      expect(() => {
         monitor.sendCommand(command);
-        duringSnapshot.push(true);
-      } catch {
-        duringSnapshot.push(false);
-      }
-    });
-    const stop = monitor.start((status) => statuses.push(status));
-    expect(statuses).toEqual([{ state: "connecting", attempt: 1 }]);
-    expect(() => {
+      }).toThrow();
+      const first = currentSocket();
+      first.emit("open");
+      expect(statuses.at(-1)).toMatchObject({ state: "awaiting-snapshot" });
+      expect(first.sent).toEqual([
+        JSON.stringify({
+          type: "table/resync",
+          protocolVersion: 2,
+          lastSeenStateVersion: 0,
+        }),
+      ]);
+      expect(() => {
+        monitor.sendCommand(command);
+      }).toThrow();
+      first.message(receipt);
+      expect(statuses.at(-1)?.state).toBe("awaiting-snapshot");
+      first.message(snapshot);
+      expect(statuses.at(-1)).toEqual({ state: "connected" });
       monitor.sendCommand(command);
-    }).toThrow();
-    const first = currentSocket();
-    first.emit("open");
-    expect(statuses.at(-1)).toMatchObject({ state: "awaiting-snapshot" });
-    expect(first.sent).toEqual([
-      JSON.stringify({
-        type: "table/resync",
-        protocolVersion: 2,
-        lastSeenStateVersion: 0,
-      }),
-    ]);
-    expect(() => {
+      first.message({ ...receipt, stateVersion: 5 });
+      first.disconnect(closeCode);
+      expect(() => {
+        monitor.sendCommand(command);
+      }).toThrow();
+      vi.advanceTimersByTime(1_000);
+      const second = currentSocket();
+      second.emit("open");
+      expect(statuses.at(-1)?.state).toBe("awaiting-snapshot");
+      expect(second.sent).toEqual([
+        JSON.stringify({
+          type: "table/resync",
+          protocolVersion: 2,
+          lastSeenStateVersion: 4,
+        }),
+      ]);
+      expect(() => {
+        monitor.sendCommand(command);
+      }).toThrow();
+      second.message(snapshot);
+      expect(duringSnapshot).toEqual([false, false]);
+      expect(statuses.at(-1)).toEqual({ state: "connected" });
+      expect(createSocket).toHaveBeenCalledTimes(2);
+      expect(second.sent).toHaveLength(1);
       monitor.sendCommand(command);
-    }).toThrow();
-    first.message(receipt);
-    expect(statuses.at(-1)?.state).toBe("awaiting-snapshot");
-    first.message(snapshot);
-    expect(statuses.at(-1)).toEqual({ state: "connected" });
-    monitor.sendCommand(command);
-    first.message({ ...receipt, stateVersion: 5 });
-    first.disconnect();
-    expect(() => {
-      monitor.sendCommand(command);
-    }).toThrow();
-    vi.advanceTimersByTime(1_000);
-    const second = currentSocket();
-    second.emit("open");
-    expect(statuses.at(-1)?.state).toBe("awaiting-snapshot");
-    expect(second.sent).toEqual([
-      JSON.stringify({
-        type: "table/resync",
-        protocolVersion: 2,
-        lastSeenStateVersion: 4,
-      }),
-    ]);
-    expect(() => {
-      monitor.sendCommand(command);
-    }).toThrow();
-    second.message(snapshot);
-    expect(duringSnapshot).toEqual([false, false]);
-    expect(statuses.at(-1)).toEqual({ state: "connected" });
-    expect(createSocket).toHaveBeenCalledTimes(2);
-    expect(second.sent).toHaveLength(1);
-    monitor.sendCommand(command);
-    expect(second.sent.at(-1)).toBe(JSON.stringify(command));
-    stop();
-  });
+      expect(second.sent.at(-1)).toBe(JSON.stringify(command));
+      stop();
+    },
+  );
 
   it("finishes snapshot delivery before connected and preserves private receipt ordering", () => {
     const { monitor, currentSocket } = setup();
@@ -658,6 +661,7 @@ describe("typed socket lifecycle and message delivery", () => {
   it.each([
     [1008, "authentication-required"],
     [4001, "session-replaced"],
+    [4002, "stopped"],
     [4406, "upgrade-required"],
   ] as const)(
     "treats close code %s as terminal without synthesizing messages",
@@ -685,6 +689,7 @@ describe("typed socket lifecycle and message delivery", () => {
   it.each([
     [1008, "authentication-required"],
     [4001, "session-replaced"],
+    [4002, "stopped"],
     [4406, "upgrade-required"],
   ] as const)(
     "rejects sends while native closing preserves terminal close %s",
@@ -722,6 +727,7 @@ describe("typed socket lifecycle and message delivery", () => {
   it.each([
     [1008, "authentication-required"],
     [4001, "session-replaced"],
+    [4002, "stopped"],
     [4406, "upgrade-required"],
   ] as const)(
     "blocks sends after error while preserving terminal close %s",
@@ -743,6 +749,39 @@ describe("typed socket lifecycle and message delivery", () => {
       expect(createSocket).toHaveBeenCalledTimes(1);
     },
   );
+
+  it("keeps deliberate departure stopped until an explicit fresh initialization", () => {
+    const { monitor, currentSocket, statuses, createSocket } = setup();
+    const stop = monitor.start((status) => statuses.push(status));
+    const departed = currentSocket();
+    departed.emit("open");
+    departed.message(snapshot);
+    const staleMessage = departed.capture("message");
+    departed.disconnect(4002);
+    staleMessage(
+      new MessageEvent("message", { data: JSON.stringify(snapshot) }),
+    );
+    vi.runAllTimers();
+    expect(statuses.at(-1)).toEqual({ state: "stopped" });
+    expect(createSocket).toHaveBeenCalledTimes(1);
+    expect(() => {
+      monitor.sendCommand(command);
+    }).toThrow("not connected");
+
+    const stopRestart = monitor.start((status) => statuses.push(status));
+    const restarted = currentSocket();
+    stop();
+    restarted.emit("open");
+    expect(statuses.at(-1)?.state).toBe("awaiting-snapshot");
+    expect(() => {
+      monitor.sendCommand(command);
+    }).toThrow("not connected");
+    restarted.message({ ...snapshot, stateVersion: 6 });
+    expect(statuses.at(-1)).toEqual({ state: "connected" });
+    monitor.sendCommand({ ...command, expectedStateVersion: 6 });
+    expect(restarted.sent).toHaveLength(2);
+    stopRestart();
+  });
 
   it("rejects malformed wire data terminally without delivering application messages", () => {
     const { monitor, currentSocket, statuses, createSocket } = setup();
