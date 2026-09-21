@@ -1,0 +1,177 @@
+.game-artwork {
+  display: block;
+  width: 100%;
+  height: 100%;
+}
+
+.game-tile {
+  --tile-width: 58px;
+  display: inline-grid;
+  width: var(--tile-width);
+  height: calc(var(--tile-width) * 1.4);
+  flex: none;
+  place-items: center;
+  border: 1px solid #80958a;
+  border-radius: 6px;
+  color: #132c22;
+  background: #fff8e8;
+  box-shadow: 0 3px 0 #80958a;
+  vertical-align: middle;
+}
+
+.game-tile--small {
+  --tile-width: 38px;
+}
+
+.game-tile__face {
+  display: grid;
+  width: var(--tile-width);
+  height: calc(var(--tile-width) * 1.4);
+  place-items: center;
+  overflow: hidden;
+  border-radius: inherit;
+}
+
+.game-tile--sideways {
+  width: calc(var(--tile-width) * 1.4);
+  height: var(--tile-width);
+}
+
+.game-tile--sideways .game-tile__face {
+  transform: rotate(90deg);
+}
+
+.game-tile__label {
+  max-width: 100%;
+  padding: 3px;
+  font-size: 0.66rem;
+  font-weight: 750;
+  line-height: 1.15;
+  overflow-wrap: anywhere;
+  text-align: center;
+}
+
+.game-tile--selected {
+  outline: 3px solid var(--jade);
+  outline-offset: 3px;
+}
+
+.game-tile--highlighted {
+  border: 3px dashed #8a5200;
+}
+
+.board-surface {
+  position: relative;
+  isolation: isolate;
+  min-width: 0;
+  border-radius: 14px;
+  padding: 12px;
+  background: #123b2c;
+}
+
+.board-surface__art {
+  position: absolute;
+  z-index: -1;
+  overflow: hidden;
+  border-radius: inherit;
+  inset: 0;
+  pointer-events: none;
+}
+
+.board-surface__content {
+  min-width: 0;
+}
+
+.player-icon,
+.player-icon > span {
+  display: inline-grid;
+  width: 36px;
+  height: 36px;
+  flex: none;
+  place-items: center;
+  overflow: hidden;
+  border-radius: 50%;
+  color: #102c22;
+  background: #eee9d9;
+  font-size: 0.8rem;
+  font-weight: 750;
+}
+
+.game-icon {
+  display: inline-block;
+  width: 22px;
+  height: 22px;
+  flex: none;
+  vertical-align: middle;
+}
+
+.player-heading {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 5px;
+}
+
+.game-panel button:focus-visible,
+.seat-card button:focus-visible {
+  outline: 3px solid #fff;
+  outline-offset: 4px;
+}
+
+.game-panel .public-tiles > li {
+  display: block;
+  border: 0;
+  padding: 0;
+  background: transparent;
+}
+
+.game-panel .game-players > li {
+  min-width: 0;
+  background: rgba(8, 24, 18, 0.88);
+  overflow-wrap: anywhere;
+}
+
+.game-panel .public-meld {
+  min-width: 0;
+  padding: 6px;
+}
+
+.game-panel .private-hand ul {
+  grid-template-columns: repeat(auto-fit, minmax(70px, 1fr));
+}
+
+.game-panel .private-hand button {
+  min-width: 0;
+  padding: 7px 3px;
+  background: transparent;
+  box-shadow: none;
+}
+
+.game-panel .private-hand button small {
+  color: var(--ink);
+  opacity: 1;
+}
+
+.reaction-choice-tiles {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: center;
+  gap: 5px;
+  margin-top: 8px;
+}
+
+@media (max-width: 500px) {
+  .game-panel .panel__heading {
+    align-items: flex-start;
+    flex-direction: column;
+  }
+
+  .game-panel .game-players {
+    grid-template-columns: 1fr;
+  }
+
+  .game-panel .game-actions > button {
+    max-width: 100%;
+    overflow-wrap: anywhere;
+  }
+}
