@@ -1,4 +1,15 @@
-import { renderToStaticMarkup } from "react-dom/server";
+import { renderToStaticMarkup as renderMarkup } from "react-dom/server";
+import type { ReactElement } from "react";
+import { GameAssetsProvider } from "../presentation/game-assets-provider.js";
+import { defaultGameAssetSet } from "../presentation/assets/sample-asset-sets.js";
+
+function renderToStaticMarkup(element: ReactElement) {
+  return renderMarkup(
+    <GameAssetsProvider assets={defaultGameAssetSet}>
+      {element}
+    </GameAssetsProvider>,
+  );
+}
 import { describe, expect, it, vi } from "vitest";
 
 import type {
@@ -222,7 +233,7 @@ describe("GameController integration", () => {
     expect(markup).not.toContain("concealed concealed");
     expect(markup).not.toContain("exposed exposed");
     expect(markup).toContain("Concealed kong");
-    expect(markup).toContain("Add tile #4 to kong");
+    expect(markup).toContain("Add 2 characters to kong");
     expect(markup).toContain("Declare self-drawn win");
   });
 
@@ -276,7 +287,7 @@ describe("GameController integration", () => {
       />,
     );
     expect(open).toContain("Pass");
-    expect(open).toContain("Chow with tiles 4, 8");
+    expect(open).toContain("Chow with 2 characters, Unknown tile");
     expect(open).toContain("Declare win");
 
     const submitted = renderToStaticMarkup(

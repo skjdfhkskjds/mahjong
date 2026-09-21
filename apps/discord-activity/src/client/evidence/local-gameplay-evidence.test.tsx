@@ -8,7 +8,7 @@ describe("local gameplay browser evidence", () => {
     const markup = renderToStaticMarkup(<LocalGameplayEvidence />);
 
     expect(markup).toContain("Gameplay viewer smoke");
-    expect(markup).toContain("Chow with tiles 44, 48");
+    expect(markup).toContain("Chow with 3 circles, 4 circles");
     expect(markup).toContain("Declare win");
     expect(markup).not.toContain("canonicalState");
     expect(markup).not.toContain("eventHash");

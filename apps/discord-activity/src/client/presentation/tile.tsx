@@ -7,7 +7,7 @@ import { ArtworkImage } from "./artwork-image.js";
 import { useGameAssets } from "./game-assets-provider.js";
 
 export interface TileProps {
-  readonly kind?: TileKind;
+  readonly kind?: TileKind | undefined;
   readonly faceDown?: boolean;
   readonly size?: "small" | "medium";
   readonly orientation?: "upright" | "sideways";

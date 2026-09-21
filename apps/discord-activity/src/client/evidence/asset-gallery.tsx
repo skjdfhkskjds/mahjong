@@ -20,7 +20,10 @@ export function AssetGallery() {
         <ul className="public-tiles" aria-label="Every tile artwork">
           {TILE_KINDS.map((kind, index) => (
             <li key={index}>
-              <Tile kind={kind} />
+              <Tile
+                kind={kind}
+                size={kind.type === "bonus" ? "small" : "medium"}
+              />
             </li>
           ))}
           <li>

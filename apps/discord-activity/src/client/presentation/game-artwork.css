@@ -6,12 +6,13 @@
 
 .game-tile {
   --tile-width: 58px;
+  --tile-border: 1px;
   display: inline-grid;
   width: var(--tile-width);
   height: calc(var(--tile-width) * 1.4);
   flex: none;
   place-items: center;
-  border: 1px solid #80958a;
+  border: var(--tile-border) solid #80958a;
   border-radius: 6px;
   color: #132c22;
   background: #fff8e8;
@@ -25,8 +26,8 @@
 
 .game-tile__face {
   display: grid;
-  width: var(--tile-width);
-  height: calc(var(--tile-width) * 1.4);
+  width: calc(var(--tile-width) - 2 * var(--tile-border));
+  height: calc(var(--tile-width) * 1.4 - 2 * var(--tile-border));
   place-items: center;
   overflow: hidden;
   border-radius: inherit;
@@ -57,7 +58,8 @@
 }
 
 .game-tile--highlighted {
-  border: 3px dashed #8a5200;
+  --tile-border: 3px;
+  border: var(--tile-border) dashed #8a5200;
 }
 
 .board-surface {
@@ -80,6 +82,8 @@
 
 .board-surface__content {
   min-width: 0;
+  border-radius: 8px;
+  background: rgba(8, 24, 18, 0.94);
 }
 
 .player-icon,
@@ -140,14 +144,14 @@
   grid-template-columns: repeat(auto-fit, minmax(70px, 1fr));
 }
 
-.game-panel .private-hand button {
+.game-panel .private-hand > ul button {
   min-width: 0;
   padding: 7px 3px;
   background: transparent;
   box-shadow: none;
 }
 
-.game-panel .private-hand button small {
+.game-panel .private-hand > ul button small {
   color: var(--ink);
   opacity: 1;
 }
@@ -174,4 +178,17 @@
     max-width: 100%;
     overflow-wrap: anywhere;
   }
+}
+
+.game-panel .game-actions button {
+  display: block;
+  width: auto;
+  min-height: 44px;
+  color: #092016;
+  background: var(--jade);
+}
+
+.game-tile--small .game-tile__label {
+  font-size: 0.55rem;
+  line-height: 1.1;
 }

@@ -35,7 +35,10 @@ const failedArtwork: Artwork = {
 const brokenAssets = resolveGameAssetSet({
   overrides: {
     tiles: {
-      faces: { "suited:circles:3": failedArtwork },
+      faces: {
+        "suited:circles:3": failedArtwork,
+        "bonus:flower:chrysanthemum": failedArtwork,
+      },
       back: failedArtwork,
     },
     board: { surface: failedArtwork },

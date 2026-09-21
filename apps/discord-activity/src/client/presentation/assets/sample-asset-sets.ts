@@ -56,7 +56,7 @@ function tileFace(kind: TileKind, palette: Palette): Artwork {
   return svg(
     72,
     100,
-    `<rect x="1" y="1" width="70" height="98" rx="${palette.angular ? "2" : "9"}" fill="${palette.paper}" stroke="${palette.accent}" stroke-width="2"/><path d="M8 10H64" stroke="${palette.accent}" stroke-width="4"/><text x="36" y="44" text-anchor="middle" font-family="sans-serif" font-size="27" fill="${palette.ink}">${glyph}</text><text x="36" y="67" text-anchor="middle" font-family="sans-serif" font-size="${title.length > 8 ? "9" : "12"}" font-weight="bold" fill="${palette.ink}">${title}</text><text x="36" y="86" text-anchor="middle" font-family="sans-serif" font-size="9" fill="${palette.ink}">${label}</text>`,
+    `<rect x="1" y="1" width="70" height="98" rx="${palette.angular ? "2" : "9"}" fill="${palette.paper}" stroke="${palette.accent}" stroke-width="2"/><path d="M8 10H64" stroke="${palette.accent}" stroke-width="4"/><text x="36" y="44" text-anchor="middle" font-family="sans-serif" font-size="27" fill="${palette.ink}">${glyph}</text><text x="36" y="67" text-anchor="middle" font-family="sans-serif" font-size="${kind.type === "suited" ? "26" : title.length > 8 ? "9" : "14"}" font-weight="bold" fill="${palette.ink}">${title}</text><text x="36" y="86" text-anchor="middle" font-family="sans-serif" font-size="9" fill="${palette.ink}">${label}</text>`,
   );
 }
 
