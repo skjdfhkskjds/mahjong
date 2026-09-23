@@ -24,7 +24,7 @@ or opponent hand and is independent of `hong-kong/v1` rules semantics. Bots
 are distinct from disconnected-human autopilot. They are excluded from human
 presence accounting and pause when the room is abandoned.
 
-Storage schema v5 adds `bot_players` and `bot_work`. Pending work contains a
+The initial storage schema v1 includes `bot_players` and `bot_work`. Pending work contains a
 stable command ID, due time, and turn-sequence or reaction-window target.
 The same SQLite transaction that accepts a command reconciles resulting bot
 work. Durable Object alarms process human deadlines first and then at most
@@ -32,13 +32,10 @@ three due bot jobs. Recovery repairs the alarm from persisted work; stale
 work is reconciled away. Private bot intent does not advance public state or
 broadcast, and repeated delivery cannot submit the same intent twice.
 
-Protocol v2 gains two closed commands with a seat: `lobby/add-bot` and
-`lobby/remove-bot`. Snapshots/receipts remain unchanged. Old v2 clients can
-read bot occupants; old Workers reject new bot commands. Deploy the Worker
-and content-hashed client together. Schema v5 is forward-only: rollback must
-understand v5 or restore the complete prior deployment and storage backup.
-Permanent v1 and active-v3 fixtures remain, with a retained v4 schema fixture
-proving migration without altering existing seats or lifecycle.
+Protocol v1 includes two closed commands with a seat: `lobby/add-bot` and
+`lobby/remove-bot`. Snapshots/receipts remain unchanged. The client and Worker ship together with content-hashed assets. A permanent
+complete-v1 storage fixture proves bot identity and pending-work recovery.
+There is no prelaunch storage migration path; see ADR 0017.
 
 ## Consequences
 

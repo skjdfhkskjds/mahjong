@@ -1,11 +1,10 @@
 import { DurableObject } from "cloudflare:workers";
 import {
-  decodeCanonicalVersionedGameJson,
+  decodeCanonicalGameJson,
   HONG_KONG_V1_RANDOM_BYTES,
-  type CanonicalGameStateV2,
-  type GameViewV2,
-  type HongKongGameCommandV2,
-  type VersionedCanonicalGameState,
+  type CanonicalGameStateV1,
+  type GameViewV1,
+  type HongKongGameCommandV1,
 } from "@mahjong/rules-hong-kong";
 
 import { appendAutomaticReactionPasses } from "./table-room/table-room-automation.js";
@@ -49,10 +48,10 @@ import {
   type SystemCommandResult,
 } from "./table-room/deadline-queue.js";
 import {
-  migrateTableRoomStorageToV5,
+  createTableRoomSchemaV1,
   persistPreparedGameBatchInTransaction,
   prepareGameEventBatch,
-  prepareV1GameUpgrade,
+  validateTableRoomStorageV1,
   verifyStoredGame,
   type PreparedGameEventBatch,
 } from "./table-room/table-room-game-store.js";
@@ -145,7 +144,7 @@ interface ConnectionAttachment {
   readonly connectionGeneration: string;
   readonly connectionId: string;
   readonly sessionExpiresAt: number;
-  readonly version: 2;
+  readonly version: 1;
 }
 
 interface ConnectionGrantRow {
@@ -222,12 +221,12 @@ interface ViewerSafeActor {
 
 interface ViewerSafeTableSnapshot {
   readonly type: "table/snapshot";
-  readonly protocolVersion: 2;
+  readonly protocolVersion: 1;
   readonly stateVersion: number;
   readonly view: {
     readonly phase:
       "abandoned" | "complete" | "exhausted" | "lobby" | "playing";
-    readonly game?: GameViewV2 & { readonly deadlineAt: number | null };
+    readonly game?: GameViewV1 & { readonly deadlineAt: number | null };
     readonly seats: readonly {
       readonly occupant: ViewerSafeActor | null;
       readonly autopilot: boolean;
@@ -248,7 +247,7 @@ interface ViewerSafeTableSnapshot {
 
 interface ViewerSafeTableReceipt {
   readonly type: "table/receipt";
-  readonly protocolVersion: 2;
+  readonly protocolVersion: 1;
   readonly commandId: string;
   readonly outcome: "applied" | "rejected";
   readonly stateVersion: number;
@@ -257,7 +256,7 @@ interface ViewerSafeTableReceipt {
 
 interface ViewerSafeSessionReplaced {
   readonly type: "session/replaced";
-  readonly protocolVersion: 2;
+  readonly protocolVersion: 1;
 }
 
 type ViewerSafeServerMessage =
@@ -281,7 +280,7 @@ function hasExactKeys(
 
 function isGameCommand(
   command: TableCommandEnvelope["command"],
-): command is HongKongGameCommandV2 {
+): command is HongKongGameCommandV1 {
   return command.type.startsWith("game/") && command.type !== "game/start";
 }
 
@@ -542,7 +541,7 @@ function connectionAttachment(
       "sessionExpiresAt",
       "version",
     ]) ||
-    value["version"] !== 2 ||
+    value["version"] !== 1 ||
     !validActorId(value["actorId"]) ||
     typeof value["connectionId"] !== "string" ||
     !SHORT_TOKEN_PATTERN.test(value["connectionId"]) ||
@@ -670,23 +669,16 @@ export class TableRoom extends DurableObject<Env> {
         sql.exec(
           "CREATE TABLE connection_grants (connection_generation TEXT PRIMARY KEY, actor_id TEXT NOT NULL, display_name TEXT NOT NULL, instance_id TEXT NOT NULL, table_id TEXT NOT NULL, binding_generation INTEGER NOT NULL, binding_proof TEXT NOT NULL, session_generation INTEGER NOT NULL, expires_at INTEGER NOT NULL)",
         );
+        createTableRoomSchemaV1(sql);
       });
     }
-    migrateTableRoomStorageToV5(this.ctx.storage);
+    validateTableRoomStorageV1(this.ctx.storage);
     void this.ctx.blockConcurrencyWhile(async () => {
       verifyDeadlinePersistence(sql);
-      let game = await verifyStoredGame(sql);
-      if (game?.state.schemaVersion === 1) {
-        const upgrade = await prepareV1GameUpgrade(game);
-        this.ctx.storage.transactionSync(() => {
-          persistPreparedGameBatchInTransaction(sql, upgrade);
-        });
-        game = await verifyStoredGame(sql);
-      }
+      const game = await verifyStoredGame(sql);
       const now = Date.now();
       this.ctx.storage.transactionSync(() => {
-        const canonical =
-          game?.state.schemaVersion === 2 ? game.state : undefined;
+        const canonical = game?.state;
         reconcilePresenceDeadlines(sql, {
           now,
           observations: this.presenceObservations(),
@@ -786,7 +778,7 @@ export class TableRoom extends DurableObject<Env> {
   }
 
   private gameState():
-    | { readonly state: CanonicalGameStateV2; readonly lastEventHash: string }
+    | { readonly state: CanonicalGameStateV1; readonly lastEventHash: string }
     | undefined {
     const row = this.ctx.storage.sql
       .exec<{ state_json: string; last_event_hash: string }>(
@@ -794,10 +786,7 @@ export class TableRoom extends DurableObject<Env> {
       )
       .toArray()[0];
     if (row === undefined) return undefined;
-    const state = decodeCanonicalVersionedGameJson(row.state_json);
-    if (state.schemaVersion !== 2) {
-      throw new Error("TableRoom did not upgrade its canonical game.");
-    }
+    const state = decodeCanonicalGameJson(row.state_json);
     return { state, lastEventHash: row.last_event_hash };
   }
 
@@ -998,7 +987,7 @@ export class TableRoom extends DurableObject<Env> {
         }
       } else if (isGameCommand(envelope.command)) {
         const stored = await verifyStoredGame(this.ctx.storage.sql);
-        if (stored?.state.schemaVersion !== 2) {
+        if (stored === undefined) {
           preparedRejection = {
             code: "game-not-started",
             message: "The game has not started.",
@@ -1269,17 +1258,10 @@ export class TableRoom extends DurableObject<Env> {
 
   private replaceGameDeadlines(
     sql: SqlStorage,
-    state: VersionedCanonicalGameState,
+    state: CanonicalGameStateV1,
     now: number,
     processingDeadlineId = "",
   ): void {
-    if (state.schemaVersion !== 2) {
-      sql.exec(
-        "UPDATE deadlines SET status = 'cancelled', processed_at = NULL WHERE status = 'pending' AND kind IN ('reaction', 'turn') AND deadline_id <> ?",
-        processingDeadlineId,
-      );
-      return;
-    }
     const target = tableGameDeadline(state);
     sql.exec(
       "UPDATE deadlines SET status = 'cancelled', processed_at = NULL WHERE status = 'pending' AND kind IN ('reaction', 'turn') AND deadline_id <> ? AND deadline_id <> ?",
@@ -1356,7 +1338,7 @@ export class TableRoom extends DurableObject<Env> {
 
   private deadlineStillTargetsCurrent(
     deadline: PendingDeadline,
-    state: CanonicalGameStateV2 | undefined,
+    state: CanonicalGameStateV1 | undefined,
     now: number,
   ): boolean {
     const payload = deadline.payload;
@@ -1393,7 +1375,7 @@ export class TableRoom extends DurableObject<Env> {
     now: number,
   ): Promise<boolean> {
     const stored = await verifyStoredGame(this.ctx.storage.sql);
-    const state = stored?.state.schemaVersion === 2 ? stored.state : undefined;
+    const state = stored?.state;
     let batch: PreparedGameEventBatch | undefined;
     let batchVisibility: "private" | "public" = "private";
     if (
@@ -2255,7 +2237,7 @@ export class TableRoom extends DurableObject<Env> {
       connectionGeneration,
       connectionId: crypto.randomUUID(),
       sessionExpiresAt,
-      version: 2,
+      version: 1,
     };
     const pair = new WebSocketPair();
     const client = pair[0];

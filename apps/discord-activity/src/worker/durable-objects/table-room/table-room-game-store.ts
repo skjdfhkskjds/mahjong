@@ -1,17 +1,14 @@
 import { createBotTables, verifyBotPersistence } from "./table-room-bots.js";
 import {
-  canonicalVersionedEventHashPayload,
-  canonicalVersionedGameEventJson,
-  canonicalVersionedGameJson,
+  canonicalEventHashPayload,
+  canonicalGameEventJson,
+  canonicalGameJson,
   decodeCanonicalGameEventJson,
-  decodeCanonicalVersionedGameEventJson,
-  decodeCanonicalVersionedGameJson,
-  reduceVersionedGameEvent,
-  upgradeCanonicalGameState,
-  type HongKongGameEvent,
+  decodeCanonicalGameJson,
+  reduceGameEvent,
   type NonEmptyGameEventBatch,
-  type VersionedCanonicalGameState,
-  type VersionedHongKongGameEvent,
+  type CanonicalGameStateV1,
+  type HongKongGameEventV1,
 } from "@mahjong/rules-hong-kong";
 
 const SHA256_HEX_PATTERN = /^[0-9a-f]{64}$/u;
@@ -38,24 +35,19 @@ export interface PreparedGameEventRow {
 }
 
 export interface PreparedGameEventBatch {
-  readonly finalState: VersionedCanonicalGameState;
+  readonly finalState: CanonicalGameStateV1;
   readonly finalStateJson: string;
   readonly lastEventHash: string;
   readonly rows: readonly [PreparedGameEventRow, ...PreparedGameEventRow[]];
 }
 
 export interface VerifiedStoredGame {
-  readonly events: readonly [
-    VersionedHongKongGameEvent,
-    ...VersionedHongKongGameEvent[],
-  ];
+  readonly events: readonly [HongKongGameEventV1, ...HongKongGameEventV1[]];
   readonly lastEventHash: string;
-  readonly state: VersionedCanonicalGameState;
+  readonly state: CanonicalGameStateV1;
 }
 
 export type EventDigest = (payload: string) => Promise<string>;
-
-const CURRENT_SCHEMA_VERSION = 5;
 
 interface SchemaVersionRow {
   readonly [key: string]: SqlStorageValue;
@@ -103,8 +95,8 @@ function persistedCheckpoint(sql: SqlStorage): CheckpointRow | undefined {
 
 /**
  * Verifies the complete authority-only event chain before trusting its eager
- * checkpoint. Persisted JSON is decoded through the rules package's closed
- * versioned codecs; unknown state or event versions therefore fail closed.
+ * checkpoint. Persisted JSON is decoded through the rules package's v1
+ * codecs; unsupported state or event shapes therefore fail closed.
  */
 export async function verifyStoredGame(
   sql: SqlStorage,
@@ -124,10 +116,9 @@ export async function verifyStoredGame(
   }
 
   let previousHash: string | null = null;
-  let state: VersionedCanonicalGameState | undefined;
-  const firstEvent = decodeCanonicalVersionedGameEventJson(firstRow.event_json);
-  const events: [VersionedHongKongGameEvent, ...VersionedHongKongGameEvent[]] =
-    [firstEvent];
+  let state: CanonicalGameStateV1 | undefined;
+  const firstEvent = decodeCanonicalGameEventJson(firstRow.event_json);
+  const events: [HongKongGameEventV1, ...HongKongGameEventV1[]] = [firstEvent];
 
   for (const [index, row] of rows.entries()) {
     if (
@@ -139,33 +130,28 @@ export async function verifyStoredGame(
       throw new Error("Persisted game event chain is non-contiguous.");
     }
     const event =
-      index === 0
-        ? firstEvent
-        : decodeCanonicalVersionedGameEventJson(row.event_json);
+      index === 0 ? firstEvent : decodeCanonicalGameEventJson(row.event_json);
     if (event.sequence !== row.sequence) {
       throw new Error("Persisted event sequence does not match its row.");
     }
     const expectedHash = await digest(
-      canonicalVersionedEventHashPayload(previousHash, event),
+      canonicalEventHashPayload(previousHash, event),
     );
     assertDigest(expectedHash);
     if (expectedHash !== row.event_hash) {
       throw new Error("Persisted game event hash verification failed.");
     }
-    state = reduceVersionedGameEvent(state, event);
+    state = reduceGameEvent(state, event);
     previousHash = row.event_hash;
     if (index !== 0) events.push(event);
   }
 
-  const checkpointState = decodeCanonicalVersionedGameJson(
-    checkpoint.state_json,
-  );
+  const checkpointState = decodeCanonicalGameJson(checkpoint.state_json);
   if (
     state === undefined ||
     previousHash === null ||
     checkpoint.last_event_hash !== previousHash ||
-    canonicalVersionedGameJson(state) !==
-      canonicalVersionedGameJson(checkpointState)
+    canonicalGameJson(state) !== canonicalGameJson(checkpointState)
   ) {
     throw new Error("Canonical game checkpoint diverges from event replay.");
   }
@@ -185,10 +171,10 @@ export async function prepareGameEventBatch(
   let previousHash = prior?.lastEventHash ?? null;
   const rows: PreparedGameEventRow[] = [];
   for (const event of events) {
-    const next = reduceVersionedGameEvent(state, event);
-    const eventJson = canonicalVersionedGameEventJson(event);
+    const next = reduceGameEvent(state, event);
+    const eventJson = canonicalGameEventJson(event);
     const eventHash = await digest(
-      canonicalVersionedEventHashPayload(previousHash, event),
+      canonicalEventHashPayload(previousHash, event),
     );
     assertDigest(eventHash);
     rows.push({
@@ -206,7 +192,7 @@ export async function prepareGameEventBatch(
   }
   return {
     finalState: state,
-    finalStateJson: canonicalVersionedGameJson(state),
+    finalStateJson: canonicalGameJson(state),
     lastEventHash: previousHash,
     rows: [first, ...rows.slice(1)],
   };
@@ -233,7 +219,7 @@ export function persistPreparedGameBatch<Result = void>(
 /**
  * Writes a prepared batch inside an existing TableRoom SQLite transaction.
  * Production callers hold blockConcurrencyWhile from verified read through
- * commit (commands, deadlines, and constructor upgrade). Do not independently
+ * commit (commands and deadlines). Do not independently
  * prepare competing batches and hand them to this writer.
  */
 export function persistPreparedGameBatchInTransaction(
@@ -254,40 +240,6 @@ export function persistPreparedGameBatchInTransaction(
     batch.finalStateJson,
     batch.lastEventHash,
   );
-}
-
-function legacyHistory(
-  game: VerifiedStoredGame,
-): readonly [HongKongGameEvent, ...HongKongGameEvent[]] {
-  if (game.state.schemaVersion !== 1) {
-    throw new Error("Only a verified canonical schema-v1 game can upgrade.");
-  }
-  const legacy: HongKongGameEvent[] = [];
-  for (const event of game.events) {
-    legacy.push(
-      decodeCanonicalGameEventJson(canonicalVersionedGameEventJson(event)),
-    );
-  }
-  const first = legacy[0];
-  if (first === undefined)
-    throw new Error("A legacy game has no genesis event.");
-  return [first, ...legacy.slice(1)];
-}
-
-/** Builds the sole deterministic hash-preserving v1-to-v2 upgrade batch. */
-export async function prepareV1GameUpgrade(
-  game: VerifiedStoredGame,
-  digest: EventDigest = sha256Hex,
-): Promise<PreparedGameEventBatch> {
-  const upgraded = upgradeCanonicalGameState(legacyHistory(game));
-  const batch = await prepareGameEventBatch(game, [upgraded.event], digest);
-  if (
-    canonicalVersionedGameJson(batch.finalState) !==
-    canonicalVersionedGameJson(upgraded.state)
-  ) {
-    throw new Error("Prepared upgrade checkpoint diverges from rules replay.");
-  }
-  return batch;
 }
 
 function requireExistingAuthorityTables(sql: SqlStorage): void {
@@ -330,7 +282,7 @@ function requireGameTables(sql: SqlStorage): void {
   );
 }
 
-function requireV4Tables(sql: SqlStorage): void {
+function requireCurrentTables(sql: SqlStorage): void {
   sql.exec(
     "SELECT deadline_id, kind, due_at, target_generation, payload_json, status, processed_at FROM deadlines LIMIT 0",
   );
@@ -365,19 +317,56 @@ function requireV4Tables(sql: SqlStorage): void {
         foreignKey.to === "actor_id",
     )
   ) {
-    throw new Error("TableRoom schema-v4 foreign keys are missing.");
+    throw new Error("TableRoom schema-v1 foreign keys are missing.");
   }
 }
 
-/**
- * Transactionally advances every supported TableRoom schema root to v5.
- * TableRoom construction validates the complete schema before recovery.
- */
-export function migrateTableRoomStorageToV5(
+/** Creates the complete initial schema for a fresh table. */
+export function createTableRoomSchemaV1(sql: SqlStorage): void {
+  sql.exec(
+    "CREATE TABLE lobby_state (singleton INTEGER PRIMARY KEY CHECK (singleton = 1), state_version INTEGER NOT NULL CHECK (state_version >= 0))",
+  );
+  sql.exec("INSERT INTO lobby_state (singleton, state_version) VALUES (1, 0)");
+  sql.exec(
+    "CREATE TABLE lobby_seats (seat TEXT PRIMARY KEY CHECK (seat IN ('east', 'south', 'west', 'north')), actor_id TEXT NOT NULL UNIQUE, display_name TEXT NOT NULL, ready INTEGER NOT NULL CHECK (ready IN (0, 1)))",
+  );
+  sql.exec(
+    "CREATE TABLE lobby_command_receipts (command_id TEXT PRIMARY KEY, actor_id TEXT NOT NULL, request_json TEXT NOT NULL, response_json TEXT NOT NULL, created_at INTEGER NOT NULL)",
+  );
+  sql.exec(
+    "CREATE TABLE canonical_game_state (singleton INTEGER PRIMARY KEY CHECK (singleton = 1), state_json TEXT NOT NULL, last_event_hash TEXT NOT NULL)",
+  );
+  sql.exec(
+    "CREATE TABLE game_events (sequence INTEGER PRIMARY KEY CHECK (sequence >= 1), event_json TEXT NOT NULL, previous_hash TEXT, event_hash TEXT NOT NULL UNIQUE)",
+  );
+  sql.exec(
+    "CREATE TABLE deadlines (deadline_id TEXT PRIMARY KEY CHECK (length(deadline_id) BETWEEN 1 AND 96), kind TEXT NOT NULL CHECK (kind IN ('reaction', 'turn', 'disconnect', 'abandonment')), due_at INTEGER NOT NULL CHECK (due_at BETWEEN 0 AND 9007199254740991), target_generation INTEGER NOT NULL CHECK (target_generation BETWEEN 0 AND 9007199254740991), payload_json TEXT NOT NULL CHECK (length(payload_json) BETWEEN 2 AND 4096), status TEXT NOT NULL CHECK (status IN ('pending', 'processed', 'cancelled')), processed_at INTEGER CHECK (processed_at IS NULL OR processed_at BETWEEN 0 AND 9007199254740991))",
+  );
+  sql.exec(
+    "CREATE INDEX deadlines_pending_due ON deadlines (due_at, deadline_id) WHERE status = 'pending'",
+  );
+  sql.exec(
+    "CREATE TABLE system_command_receipts (command_id TEXT PRIMARY KEY CHECK (length(command_id) BETWEEN 1 AND 96), request_json TEXT NOT NULL CHECK (length(request_json) BETWEEN 2 AND 4096), result_json TEXT NOT NULL CHECK (length(result_json) BETWEEN 2 AND 1024), processed_at INTEGER NOT NULL CHECK (processed_at BETWEEN 0 AND 9007199254740991), FOREIGN KEY (command_id) REFERENCES deadlines(deadline_id) ON DELETE RESTRICT)",
+  );
+  sql.exec(
+    "CREATE TABLE room_lifecycle (singleton INTEGER PRIMARY KEY CHECK (singleton = 1), room_activity_generation INTEGER NOT NULL CHECK (room_activity_generation BETWEEN 0 AND 9007199254740991), abandoned INTEGER NOT NULL CHECK (abandoned IN (0, 1)), updated_at INTEGER NOT NULL CHECK (updated_at BETWEEN 0 AND 9007199254740991))",
+  );
+  sql.exec(
+    "INSERT INTO room_lifecycle (singleton, room_activity_generation, abandoned, updated_at) VALUES (1, 0, 0, 0)",
+  );
+  sql.exec(
+    "CREATE TABLE player_automation (actor_id TEXT PRIMARY KEY CHECK (length(actor_id) BETWEEN 1 AND 96), connection_generation INTEGER NOT NULL CHECK (connection_generation BETWEEN 0 AND 9007199254740991), autopilot INTEGER NOT NULL CHECK (autopilot IN (0, 1)), updated_at INTEGER NOT NULL CHECK (updated_at BETWEEN 0 AND 9007199254740991), FOREIGN KEY (actor_id) REFERENCES members(actor_id) ON DELETE CASCADE)",
+  );
+  createBotTables(sql);
+}
+
+/** Validates the sole supported TableRoom format before recovery. */
+export function validateTableRoomStorageV1(
   storage: DurableObjectStorage,
 ): void {
   storage.sql.exec("PRAGMA foreign_keys = ON");
-  const foreignKeysEnabled = storage.sql
+  const sql = storage.sql;
+  const foreignKeysEnabled = sql
     .exec<{ [key: string]: SqlStorageValue; foreign_keys: number }>(
       "PRAGMA foreign_keys",
     )
@@ -385,87 +374,20 @@ export function migrateTableRoomStorageToV5(
   if (foreignKeysEnabled !== 1) {
     throw new Error("TableRoom SQLite foreign-key enforcement is unavailable.");
   }
-  storage.transactionSync(() => {
-    const sql = storage.sql;
-    const metadata = sql
-      .exec<SchemaVersionRow>(
-        "SELECT schema_version FROM storage_metadata WHERE singleton = 1",
-      )
-      .one();
-    if (
-      !Number.isSafeInteger(metadata.schema_version) ||
-      metadata.schema_version < 1 ||
-      metadata.schema_version > CURRENT_SCHEMA_VERSION
-    ) {
-      throw new Error("Unsupported TableRoom storage schema version.");
-    }
-    requireExistingAuthorityTables(sql);
-    let version = metadata.schema_version;
-    if (version === 1) {
-      sql.exec(
-        "CREATE TABLE lobby_state (singleton INTEGER PRIMARY KEY CHECK (singleton = 1), state_version INTEGER NOT NULL CHECK (state_version >= 0))",
-      );
-      sql.exec(
-        "INSERT INTO lobby_state (singleton, state_version) VALUES (1, 0)",
-      );
-      sql.exec(
-        "CREATE TABLE lobby_seats (seat TEXT PRIMARY KEY CHECK (seat IN ('east', 'south', 'west', 'north')), actor_id TEXT NOT NULL UNIQUE, display_name TEXT NOT NULL, ready INTEGER NOT NULL CHECK (ready IN (0, 1)))",
-      );
-      sql.exec(
-        "CREATE TABLE lobby_command_receipts (command_id TEXT PRIMARY KEY, actor_id TEXT NOT NULL, request_json TEXT NOT NULL, response_json TEXT NOT NULL, created_at INTEGER NOT NULL)",
-      );
-      sql.exec(
-        "UPDATE storage_metadata SET schema_version = 2 WHERE singleton = 1",
-      );
-      version = 2;
-    }
-    requireLobbyTables(sql);
-    if (version === 2) {
-      sql.exec(
-        "CREATE TABLE canonical_game_state (singleton INTEGER PRIMARY KEY CHECK (singleton = 1), state_json TEXT NOT NULL, last_event_hash TEXT NOT NULL)",
-      );
-      sql.exec(
-        "CREATE TABLE game_events (sequence INTEGER PRIMARY KEY CHECK (sequence >= 1), event_json TEXT NOT NULL, previous_hash TEXT, event_hash TEXT NOT NULL UNIQUE)",
-      );
-      sql.exec(
-        "UPDATE storage_metadata SET schema_version = 3 WHERE singleton = 1",
-      );
-      version = 3;
-    }
-    requireGameTables(sql);
-    if (version === 3) {
-      sql.exec(
-        "CREATE TABLE deadlines (deadline_id TEXT PRIMARY KEY CHECK (length(deadline_id) BETWEEN 1 AND 96), kind TEXT NOT NULL CHECK (kind IN ('reaction', 'turn', 'disconnect', 'abandonment')), due_at INTEGER NOT NULL CHECK (due_at BETWEEN 0 AND 9007199254740991), target_generation INTEGER NOT NULL CHECK (target_generation BETWEEN 0 AND 9007199254740991), payload_json TEXT NOT NULL CHECK (length(payload_json) BETWEEN 2 AND 4096), status TEXT NOT NULL CHECK (status IN ('pending', 'processed', 'cancelled')), processed_at INTEGER CHECK (processed_at IS NULL OR processed_at BETWEEN 0 AND 9007199254740991))",
-      );
-      sql.exec(
-        "CREATE INDEX deadlines_pending_due ON deadlines (due_at, deadline_id) WHERE status = 'pending'",
-      );
-      sql.exec(
-        "CREATE TABLE system_command_receipts (command_id TEXT PRIMARY KEY CHECK (length(command_id) BETWEEN 1 AND 96), request_json TEXT NOT NULL CHECK (length(request_json) BETWEEN 2 AND 4096), result_json TEXT NOT NULL CHECK (length(result_json) BETWEEN 2 AND 1024), processed_at INTEGER NOT NULL CHECK (processed_at BETWEEN 0 AND 9007199254740991), FOREIGN KEY (command_id) REFERENCES deadlines(deadline_id) ON DELETE RESTRICT)",
-      );
-      sql.exec(
-        "CREATE TABLE room_lifecycle (singleton INTEGER PRIMARY KEY CHECK (singleton = 1), room_activity_generation INTEGER NOT NULL CHECK (room_activity_generation BETWEEN 0 AND 9007199254740991), abandoned INTEGER NOT NULL CHECK (abandoned IN (0, 1)), updated_at INTEGER NOT NULL CHECK (updated_at BETWEEN 0 AND 9007199254740991))",
-      );
-      sql.exec(
-        "INSERT INTO room_lifecycle (singleton, room_activity_generation, abandoned, updated_at) VALUES (1, 0, 0, 0)",
-      );
-      sql.exec(
-        "CREATE TABLE player_automation (actor_id TEXT PRIMARY KEY CHECK (length(actor_id) BETWEEN 1 AND 96), connection_generation INTEGER NOT NULL CHECK (connection_generation BETWEEN 0 AND 9007199254740991), autopilot INTEGER NOT NULL CHECK (autopilot IN (0, 1)), updated_at INTEGER NOT NULL CHECK (updated_at BETWEEN 0 AND 9007199254740991), FOREIGN KEY (actor_id) REFERENCES members(actor_id) ON DELETE CASCADE)",
-      );
-      sql.exec(
-        "UPDATE storage_metadata SET schema_version = 4 WHERE singleton = 1",
-      );
-    }
-    requireV4Tables(sql);
-    if (version <= 4) {
-      createBotTables(sql);
-      sql.exec(
-        "UPDATE storage_metadata SET schema_version = 5 WHERE singleton = 1",
-      );
-    }
-    verifyBotPersistence(sql);
-    if (sql.exec("PRAGMA foreign_key_check").toArray().length !== 0) {
-      throw new Error("TableRoom storage violates schema-v5 foreign keys.");
-    }
-  });
+  const metadata = sql
+    .exec<SchemaVersionRow>(
+      "SELECT schema_version FROM storage_metadata WHERE singleton = 1",
+    )
+    .one();
+  if (metadata.schema_version !== 1) {
+    throw new Error("Unsupported TableRoom storage schema version.");
+  }
+  requireExistingAuthorityTables(sql);
+  requireLobbyTables(sql);
+  requireGameTables(sql);
+  requireCurrentTables(sql);
+  verifyBotPersistence(sql);
+  if (sql.exec("PRAGMA foreign_key_check").toArray().length !== 0) {
+    throw new Error("TableRoom storage violates schema-v1 foreign keys.");
+  }
 }

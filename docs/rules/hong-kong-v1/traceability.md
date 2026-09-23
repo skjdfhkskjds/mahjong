@@ -52,15 +52,15 @@ scoring DSL records physical IDs, declared meld history, winning source,
 seat/prevailing winds, bonuses, wall position, kong chain, expected detected and
 awarded patterns, and expected payments.
 
-Cross-cutting fixtures additionally prove canonical state-v1 to state-v2 event
-upgrade, byte-equivalent replay, all-144-tile conservation, private projection
-noninterference, canonical private-intent recovery, strict protocol-v2 decoding
-with v1 rejection, atomic hashed-asset rollout/rollback, and TableRoom storage
-v1/v3 to v4 migration.
+Cross-cutting fixtures additionally prove canonical v1 byte-equivalent replay,
+all-144-tile conservation, private projection noninterference, canonical
+private-intent recovery, strict protocol-v1 decoding with unsupported-version
+rejection, atomic hashed-asset rollout/rollback, and complete-v1 TableRoom
+storage recovery.
 
 Bot table policy TP-009 is covered by `table-room-bots.test.ts` (legal-action
 selection, submitted/terminal stop), `table-room.test.ts` (owner controls,
 private reactions, full hand, recovery, retries, and abandonment), and the
-permanent v4 migration fixture in `table-room-authority-persistence.test.ts`.
-The client lobby and transport tests cover controls and unchanged v2 snapshot
+permanent v1 recovery fixture in `table-room-authority-persistence.test.ts`.
+The client lobby and transport tests cover controls and v1 snapshot
 compatibility. No rules-semantic fixture changes are required.

@@ -21,7 +21,7 @@ const actors = [
 ] as const;
 
 const snapshot: ViewerSafeTableSnapshot = {
-  protocolVersion: 2,
+  protocolVersion: 1,
   stateVersion: 12,
   type: "table/snapshot",
   view: {
@@ -89,7 +89,7 @@ const rejectedReceipt: TableReceipt = {
   commandId: "game-command",
   error: { code: "not-your-turn", message: "Another player has the turn." },
   outcome: "rejected",
-  protocolVersion: 2,
+  protocolVersion: 1,
   stateVersion: 12,
   type: "table/receipt",
 };
@@ -206,7 +206,7 @@ describe("GamePanel", () => {
         latestReceipt: {
           commandId: "reaction-command",
           outcome: "applied",
-          protocolVersion: 2,
+          protocolVersion: 1,
           stateVersion: 12,
           type: "table/receipt",
         },

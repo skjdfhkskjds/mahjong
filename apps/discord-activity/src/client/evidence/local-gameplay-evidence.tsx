@@ -37,7 +37,7 @@ function suitedTile(
 }
 
 const baseSnapshot = strictSnapshot({
-  protocolVersion: 2,
+  protocolVersion: 1,
   stateVersion: 24,
   type: "table/snapshot",
   view: {
@@ -298,7 +298,7 @@ export function LocalGameplayEvidence() {
       command,
       commandId: "local-evidence",
       expectedStateVersion: snapshot.stateVersion,
-      protocolVersion: 2,
+      protocolVersion: 1,
       type: "table/command",
     });
     setStatus(commandJson);
@@ -325,7 +325,7 @@ export function LocalGameplayEvidence() {
           <p className="eyebrow">Development-only evidence</p>
           <h1>Gameplay viewer smoke</h1>
           <p className="hero__copy">
-            This mock-only page renders allowlisted protocol-v2 projections. It
+            This mock-only page renders allowlisted protocol-v1 projections. It
             contains no wall, opponent hand, canonical event, hash, or authority
             mutation.
           </p>

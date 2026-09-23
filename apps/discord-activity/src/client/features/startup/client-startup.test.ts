@@ -75,7 +75,7 @@ function createApi(overrides: Partial<ActivityApi> = {}): ActivityApi {
 function connectedSnapshot(): ViewerSafeTableSnapshot {
   return {
     type: "table/snapshot",
-    protocolVersion: 2,
+    protocolVersion: 1,
     stateVersion: 0,
     view: {
       phase: "lobby",
@@ -216,7 +216,7 @@ describe("client startup", () => {
           attempt: 0,
           snapshot: {
             type: "table/snapshot",
-            protocolVersion: 2,
+            protocolVersion: 1,
             stateVersion: 0,
             view: {
               phase: "lobby",
@@ -306,8 +306,8 @@ describe("client startup", () => {
       session: { state: "failed" },
       socket: { state: "failed" },
     });
-    expect(finalStatus?.session.detail).toContain("protocol v2");
-    expect(finalStatus?.socket.detail).toContain("protocol v2");
+    expect(finalStatus?.session.detail).toContain("protocol v1");
+    expect(finalStatus?.socket.detail).toContain("protocol v1");
     expect(finalStatus?.tableSnapshot).toBeUndefined();
   });
 });

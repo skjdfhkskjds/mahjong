@@ -1,6 +1,15 @@
 # Implementation roadmap
 
-Last reviewed: 2026-09-01
+Last reviewed: 2026-09-23
+
+## Prelaunch version baseline (issue #38)
+
+The Activity is not live. Session payload, gameplay wire protocol, canonical
+game state, and the complete TableRoom storage layout each start at v1.
+Intermediate development versions and their migrations are retired because
+there is no deployed data to preserve. The `hong-kong/v1` rules profile,
+shuffle algorithm, and version-1 event-hash encoding retain their meanings.
+See [ADR 0017](decisions/0017-prelaunch-v1-baseline.md).
 
 ## Bot-player feature (issue #21)
 
@@ -8,11 +17,11 @@ Owners can add/remove random legal-move bots before a hand in Discord and
 browser tables, including mixed human/bot games. This supersedes the earlier
 exclusion of computer players for this limited random policy; strategic AI
 remains out of scope. Server-owned bot identities and queued actions persist
-in storage schema v5. Canonical rules state remains v2 and the wire change is
-additive within protocol v2. See [ADR 0015](decisions/0015-persistent-bot-players.md)
+in storage schema v1. Canonical rules state and the wire protocol are v1.
+See [ADR 0015](decisions/0015-persistent-bot-players.md)
 for recovery, privacy, and deployment overlap. Focused evidence covers a full
 hand, eviction, private reaction retries, abandonment, access controls, strict
-commands, and permanent v1/v3/v4 migration fixtures. Next-hand progression is
+commands, and a permanent complete-v1 recovery fixture. Next-hand progression is
 still Milestone 7.
 
 ## Goal and release boundary
@@ -153,7 +162,7 @@ Exit criteria:
 Evidence:
 
 - Discord authentication resolves `/users/@me`, verifies the exact application and Activity instance through the bot-authenticated Activity Instance API, and requires the trusted actor ID in its current `users` list before issuing a session.
-- Signed session payload v2 is scoped to the verified instance and a server-side actor generation. Replacement and logout invalidate older HTTP and WebSocket authority; current/previous HMAC keys retain bounded rotation support.
+- Signed session payload v1 is scoped to the verified instance and a server-side actor generation. Replacement and logout invalidate older HTTP and WebSocket authority; current/previous HMAC keys retain bounded rotation support.
 - The SQLite-backed `ActivityInstance` persists one unpredictable table binding per instance. `TableRoom` owns the table ACL, immutable owner, actor-bound invitations, owner-only resume capabilities, binding receipts, session generations, and connection grants.
 - Runtime tests prove same-instance convergence, different-instance separation, duplicate-session replacement, actor-bound invitation redemption, owner-only rebinding, old-instance rejection, forced-eviction recovery, and rejection of browser-selected table locators.
 - Binding operation receipts and table-owned operation IDs make create/resume replay safe when either side loses a response before finalizing the cross-object saga.
@@ -186,7 +195,7 @@ Exit criteria:
 
 Evidence:
 
-- `TableRoom` storage schema v2 transactionally migrates the committed Milestone 2 schema while preserving table ownership, ACL members, binding receipts, capabilities, actor sessions, and connection grants. Unknown future schema versions fail closed.
+- The complete `TableRoom` storage schema starts at v1 with table ownership, ACL members, binding receipts, capabilities, actor sessions, connection grants, game state, deadlines, and bots. Unknown schema versions fail closed.
 - SQLite owns the room revision, four exclusive actor-reserved seats, ready state, and actor-scoped command receipts. Membership and accepted lobby mutations increment the viewer-visible revision exactly once; reconnect and socket closure do not release a seat.
 - Protocol-v1 command envelopes are runtime validated. Identical same-actor retries replay the stored receipt, changed or cross-actor command-ID reuse returns a generic collision, and stale commands receive a rejection followed by a current viewer-specific snapshot.
 - Every snapshot is independently projected from allowlisted lobby fields for its authenticated viewer. Strict client decoding rejects extra canonical/hidden fields, malformed seat topology, duplicate identities, and inconsistent viewer roles.
@@ -231,8 +240,8 @@ Evidence:
 - Invariant and simulation tests cover 144-tile conservation, physical-ID
   uniqueness, phase hand sizes, invalid actions, JSON round trips, event replay,
   long games, and player/spectator projection noninterference.
-- `TableRoom` schema v3 migrates v1/v2 storage and persists canonical state plus
-  its append-only hash-linked event stream. Game commands retain the actor-bound
+- `TableRoom` schema v1 persists canonical state plus its append-only
+  hash-linked event stream. Game commands retain the actor-bound
   idempotent receipt and optimistic-version behavior established in Milestone 3.
 - Viewer snapshots contain only public bonuses/discards/counts and the connected
   player's own hand. The strict client decoder rejects extra fields and the UI
@@ -255,7 +264,7 @@ the [Milestones 5–6 plan](implementation-plans/milestones-5-6.md).
 Deliverables:
 
 - Legal reaction calculation and private prompts.
-- Canonical v2 reaction state with hash-linked authority-only intent events;
+- Canonical v1 reaction state with hash-linked authority-only intent events;
   private submissions do not advance public room `stateVersion` or broadcast.
 - Deterministic resolution independent of arrival order.
 - Pass, chow, pung, kong, and provisional win intentions.
@@ -274,7 +283,7 @@ Exit criteria:
 
 Evidence:
 
-- Canonical state v2 and batch-only command application enumerate exact
+- Canonical state v1 and batch-only command application enumerate exact
   physical chow/pung/kong actions, normalize every responder in turn order, and
   replay concealed, exposed, added, robbed, chained, bonus-chain, and exhausted
   kong paths while conserving all 144 tiles.
@@ -283,15 +292,14 @@ Evidence:
   persists its intent and normalized resolution in one transaction before a
   viewer-safe broadcast. Actor/opponent/spectator noninterference survives
   forced eviction and reconnect.
-- SQLite schema v4 owns validated deadlines and idempotent system receipts.
+- SQLite schema v1 owns validated deadlines and idempotent system receipts.
   Workers-runtime fixtures cover the half-open deadline boundary, bounded
   ordering, duplicate/late alarms, transaction rollback, stale generation,
   reconnect cancellation, constructor alarm repair, immediate deterministic
   autopilot, and recoverable abandonment without deletion.
-- Permanent fixtures `tests/fixtures/table-room-v1-schema.ts` and
-  `tests/fixtures/table-room-v3-active-v1-game.ts` prove the oldest room
-  migration root and an active canonical-v1 hash chain upgrade through schema
-  v4, including continued play after eviction.
+- The permanent `tests/fixtures/table-room-v1-current-schema.ts` fixture proves
+  current-schema recovery and continued play after eviction. Earlier prelaunch
+  migration fixtures are retired.
 
 ## Milestone 6 — Winning hands and scoring
 
@@ -335,11 +343,12 @@ Evidence:
   minimum succeeds. It selects exactly one reaction winner by capped faan then
   turn distance, independently verifies terminal provenance and payments on
   replay, and rejects forged completions without a public transition.
-- Protocol v2 strictly decodes viewer-safe melds, legal actions, deadlines, and
-  score results; rejects version 1, unknown fields, duplicate visible IDs, and
-  incoherent private actions; cross-checks the terminal result against the
-  public winner's meld, bonus, and concealed-count projection plus the winner
-  viewer's hand; and renders all exact controls plus a reproducible zero-sum
+- Protocol v1 strictly decodes viewer-safe melds, legal actions, deadlines, and
+  score results; rejects absent or unsupported versions, unknown fields,
+  duplicate visible IDs, and incoherent private actions; cross-checks the
+  terminal result against the public winner's meld, bonus, and concealed-count
+  projection plus the winner viewer's hand; and renders all exact controls plus
+  a reproducible zero-sum
   explanation.
 
 Compatibility and release evidence:
@@ -347,13 +356,11 @@ Compatibility and release evidence:
 - Rules semantics change only `hong-kong/v1` behavior newly introduced by
   Milestones 5–6; the accepted decisions, Worked Examples 2–6, and permanent
   traceability fixtures define that compatibility promise.
-- Wire protocol changes from the historical v1 fixture to strict v2 with no
-  live dual-reader window. Client and Worker ship atomically from one deployment
-  using content-hashed assets; rollback restores both wire halves together.
-- Persisted room storage advances to schema v4 and canonical game state to v2.
-  Historical event hashes retain encoding v1, and upgrade is an explicit,
-  hash-linked event rather than reinterpretation. A code rollback must remain
-  schema-v4-aware or restore the complete pre-migration deployment and backup.
+- The complete gameplay wire contract is protocol v1. Client and Worker ship
+  atomically from one deployment using content-hashed assets; rollback restores
+  both wire halves together.
+- Room storage and canonical game state both start at schema v1. Event hashes
+  retain encoding v1. No prelaunch migration or state-upgrade path remains.
 - Privacy boundaries remain viewer-projected: no opponent action eligibility,
   response status, losing score, concealed tile, canonical event/hash, wall
   order, or raw deadline receipt crosses the live socket.
@@ -373,7 +380,7 @@ and was not performed by this local release.
 
 The development-only viewer fixture was exercised in the in-app browser at
 1280×900 and 390×844. Across those viewport passes the real controls emitted
-exact protocol-v2 claim/kong/win command bodies, the structured result rendered
+exact protocol-v1 claim/kong/win command bodies, the structured result rendered
 awarded patterns and zero-sum payments, and reconnect preserved the result
 projection. Each viewport measured zero pixels of horizontal overflow and had
 no browser-console errors or warnings. A separate clean mock-mode Activity

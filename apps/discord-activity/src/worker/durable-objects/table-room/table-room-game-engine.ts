@@ -1,8 +1,8 @@
 import {
   hongKongGameEngine,
-  projectGameV2,
-  startHongKongV2Game,
-  type CanonicalGameStateV2,
+  projectGameV1,
+  startHongKongV1Game,
+  type CanonicalGameStateV1,
   type HongKongEngineResult,
   type NonEmptyGameEventBatch,
 } from "@mahjong/rules-hong-kong";
@@ -12,11 +12,11 @@ import type { TableSeat } from "./table-room-protocol.js";
 
 /** Ruleset selection and compatibility translation belong at composition. */
 export const tableGameEngine = hongKongGameEngine;
-export const startTableGame = startHongKongV2Game;
-export const projectTableGame = projectGameV2;
+export const startTableGame = startHongKongV1Game;
+export const projectTableGame = projectGameV1;
 
 export interface TableGameTransition {
-  readonly state: CanonicalGameStateV2;
+  readonly state: CanonicalGameStateV1;
   readonly events: NonEmptyGameEventBatch;
   readonly visibility: "private" | "public";
 }
@@ -48,7 +48,7 @@ type TableGameDeadline =
     };
 
 export function tableGameActorAt(
-  state: CanonicalGameStateV2,
+  state: CanonicalGameStateV1,
   seat: TableSeat,
 ): string {
   const participant = tableGameEngine
@@ -60,16 +60,16 @@ export function tableGameActorAt(
 }
 
 export function tableGamePhase(
-  state: CanonicalGameStateV2,
+  state: CanonicalGameStateV1,
 ): "playing" | "complete" | "exhausted" {
   if (tableGameEngine.lifecycle(state).phase.kind !== "finished")
     return "playing";
   return state.phase === "complete" ? "complete" : "exhausted";
 }
 
-/** Retains the schema-v4 operational payload without persisting engine internals. */
+/** Retains the schema-v1 operational payload without persisting engine internals. */
 export function tableGameDeadline(
-  state: CanonicalGameStateV2,
+  state: CanonicalGameStateV1,
 ): TableGameDeadline | null {
   const target = tableGameEngine.deadlineTarget(state);
   if (target === null) return null;
@@ -100,7 +100,7 @@ export function tableGameDeadline(
 }
 
 export function tableGameDeadlineMatches(
-  state: CanonicalGameStateV2,
+  state: CanonicalGameStateV1,
   payload: GameplayPayload,
 ): boolean {
   const target = tableGameEngine.deadlineTarget(state);
@@ -118,7 +118,7 @@ export function tableGameDeadlineMatches(
 }
 
 export function expireTableGame(
-  state: CanonicalGameStateV2,
+  state: CanonicalGameStateV1,
   deadline: PendingDeadline,
   now: number,
 ): HongKongEngineResult {

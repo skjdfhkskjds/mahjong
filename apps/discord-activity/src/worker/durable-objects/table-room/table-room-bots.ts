@@ -1,8 +1,8 @@
 import {
-  projectGameV2,
-  type CanonicalGameStateV2,
-  type GameViewV2,
-  type HongKongGameCommandV2,
+  projectGameV1,
+  type CanonicalGameStateV1,
+  type GameViewV1,
+  type HongKongGameCommandV1,
 } from "@mahjong/rules-hong-kong";
 import type { TableSeat } from "./table-room-protocol.js";
 
@@ -12,8 +12,8 @@ const BOT_MOVE_DELAY_MS = 750;
 
 /** Policy input is a single player's projection, never canonical game state. */
 export function botLegalMoves(
-  view: GameViewV2,
-): readonly HongKongGameCommandV2[] {
+  view: GameViewV1,
+): readonly HongKongGameCommandV1[] {
   if (view.phase === "complete" || view.phase === "exhausted") return [];
   const reaction = view.viewerActions?.reaction;
   if (reaction) {
@@ -29,9 +29,9 @@ export function botLegalMoves(
 }
 
 export function chooseBotMove(
-  view: GameViewV2,
+  view: GameViewV1,
   random: number,
-): HongKongGameCommandV2 | undefined {
+): HongKongGameCommandV1 | undefined {
   if (!Number.isFinite(random) || random < 0 || random >= 1)
     throw new Error("Invalid bot randomness.");
   const actions = botLegalMoves(view);
@@ -70,7 +70,7 @@ export function verifyBotPersistence(sql: SqlStorage): void {
           key.on_delete === "CASCADE",
       )
     ) {
-      throw new Error("TableRoom schema-v5 bot foreign keys are missing.");
+      throw new Error("TableRoom schema-v1 bot foreign keys are missing.");
     }
   }
   readBotWork(sql);
@@ -127,10 +127,10 @@ export function readBotWork(sql: SqlStorage): readonly BotWork[] {
 }
 
 export function botWorkTarget(
-  state: CanonicalGameStateV2,
+  state: CanonicalGameStateV1,
   actorId: string,
 ): string | undefined {
-  const view = projectGameV2(state, actorId);
+  const view = projectGameV1(state, actorId);
   if (botLegalMoves(view).length === 0) return undefined;
   return view.reaction
     ? `reaction:${view.reaction.windowId}`
@@ -140,7 +140,7 @@ export function botWorkTarget(
 /** Called inside the same transaction as the transition that creates work. */
 export function reconcileBotWork(
   sql: SqlStorage,
-  state: CanonicalGameStateV2 | undefined,
+  state: CanonicalGameStateV1 | undefined,
   now: number,
   abandoned: boolean,
 ): void {

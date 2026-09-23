@@ -7,7 +7,7 @@ This application is the single deployable React client and Cloudflare Worker. Th
 - `src/client` owns React, the Embedded App SDK adapter, browser transport, and presentation state.
 - `src/worker` owns HTTP authentication, request policy, platform integrations, and Durable Objects.
 - Client and Worker source may import pure packages through public exports but may not import one another.
-- The WebSocket carries runtime-validated protocol-v2 lobby/game commands,
+- The WebSocket carries runtime-validated protocol-v1 lobby/game commands,
   actor-scoped receipts, and viewer-safe snapshots only. The Worker remains the
   authority for game creation, ordering, private reactions, deadlines, and
   scored completion.
@@ -35,7 +35,7 @@ Set `VITE_ACTIVITY_MODE=mock` in `.env.local`. A mock cookie must not use the `_
 
 For deterministic local UI evidence, append `?localEvidence=gameplay` while the
 Vite server is running in development mock mode. This page feeds only strict,
-allowlisted protocol-v2 viewer snapshots through the production parser and real
+allowlisted protocol-v1 viewer snapshots through the production parser and real
 gameplay presentation controls. It is not an authority simulator and cannot
 expose a wall, opponent hand, canonical event, or hash. The explicit
 development guard and lazy import remove its marker and fixture bytes from the
@@ -101,17 +101,17 @@ All authenticated mutations require exact origin, JSON, and the current session'
 
 ## Table WebSocket protocol
 
-The client connects to `/api/table/socket?protocolVersion=2`. An absent,
-duplicate, version-1, or unsupported major version is rejected before gameplay
-messages are accepted. There is no live dual-reader window because no earlier
-protocol was externally deployed.
+The client connects to `/api/table/socket?protocolVersion=1`. An absent,
+duplicate, or unsupported major version is rejected before gameplay messages
+are accepted. There is no live dual-reader window because no earlier protocol
+was externally deployed.
 
 An authorized socket receives a complete viewer-specific snapshot containing
 four ordered seats, persistent occupants and ready state, spectators, the
 viewer's role, and the current room `stateVersion`. During play it adds public
 melds, discards, bonuses, turn/deadline state, only the seated viewer's hand and
 exact actions, and a structured terminal score. Lobby and game commands use a
-closed protocol-v2 envelope carrying a bounded `commandId` and the snapshot
+closed protocol-v1 envelope carrying a bounded `commandId` and the snapshot
 version it acted on.
 
 Accepted room transitions commit their SQLite mutation and actor-scoped receipt atomically, increment `stateVersion` once, and then broadcast a freshly projected snapshot to each current viewer. An identical retry by the same actor returns the stored receipt without applying twice. A stale version returns a rejection plus a fresh snapshot; command-ID collisions return a generic rejection without exposing the original actor or command.
@@ -125,12 +125,10 @@ until the player explicitly leaves. WebSocket attachments retain only bounded
 connection/session identity; room/game authority, deadlines, revisions, and
 receipts remain in SQLite.
 
-Schema v5 adds persisted bot identities and scheduled work. It retains the permanent migration roots
-`tests/fixtures/table-room-v1-schema.ts` and
-`tests/fixtures/table-room-v3-active-v1-game.ts`, plus the pre-bot
-`tests/fixtures/table-room-v4-schema.ts`. The active-game fixture verifies its
-historical v1 hash chain, appends one explicit state-upgrade event, and
-continues play as canonical state v2.
+Schema v1 includes persisted bot identities, scheduled work, game state,
+deadlines, and access records from first creation. The permanent
+`tests/fixtures/table-room-v1-current-schema.ts` fixture verifies recovery of
+the complete baseline. Unsupported schema versions fail closed.
 
 ## Verification
 
@@ -149,22 +147,17 @@ Regenerate them whenever bindings, compatibility date, or flags change.
 
 ## Deployment
 
-Protocol v2 is an atomic client/Worker release. The Worker serves
+Protocol v1 is an atomic client/Worker release. The Worker serves
 content-hashed client assets from the same deployment, so rollout replaces both
 wire endpoints together and rollback restores both together. Do not roll back
 only the Worker or reuse an older HTML shell with a newer Worker. Storage schema
-v5 remains forward-only across a code rollback; use the previous release only
-if it understands schema v5, otherwise restore the complete pre-migration
-deployment and storage backup rather than attempting to reinterpret v5 rows.
+v1 is the first supported persisted layout; an incompatible future layout needs
+an explicit migration and rollback plan before deployment.
 
 Bot management adds `lobby/add-bot` and `lobby/remove-bot` commands with a
-`seat` field to protocol v2; the snapshot and receipt shapes are unchanged.
-Older v2 clients can observe and play at bot tables. A newer client cannot
-manage bots against an older Worker, which rejects the unknown commands, so
-ship bot controls and Worker support together. Existing tables migrate to v5
-without changing seats, game events, or hashes. Rollback to pre-bot code needs
-the complete pre-migration backup because that code rejects schema v5.
-See [ADR 0015](../../docs/decisions/0015-persistent-bot-players.md).
+`seat` field to protocol v1. Ship bot controls and Worker support together.
+There is no prelaunch migration path. See
+[ADR 0017](../../docs/decisions/0017-prelaunch-v1-baseline.md).
 
 The production command fails before building unless `VITE_ACTIVITY_MODE=discord` and a valid `VITE_DISCORD_CLIENT_ID` are present. The production Wrangler environment does not inherit the committed mock signing key.
 

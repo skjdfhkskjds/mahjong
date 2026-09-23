@@ -5,7 +5,7 @@ import { describe, expect, it } from "vitest";
 const origin = "https://activity.example";
 
 interface SnapshotMessage {
-  readonly protocolVersion: 2;
+  readonly protocolVersion: 1;
   readonly stateVersion: number;
   readonly type: "table/snapshot";
   readonly view: {
@@ -35,7 +35,7 @@ interface SnapshotMessage {
 interface ReceiptMessage {
   readonly commandId: string;
   readonly outcome: "applied" | "rejected";
-  readonly protocolVersion: 2;
+  readonly protocolVersion: 1;
   readonly stateVersion: number;
   readonly type: "table/receipt";
 }
@@ -140,8 +140,8 @@ describe("public table WebSocket boundary", () => {
 
     for (const query of [
       "",
-      "?protocolVersion=1",
-      "?protocolVersion=2&protocolVersion=2",
+      "?protocolVersion=2",
+      "?protocolVersion=1&protocolVersion=1",
     ]) {
       const rejectedProtocol = await exports.default.fetch(
         new Request(`${origin}/api/table/socket${query}`, {
@@ -165,8 +165,8 @@ describe("public table WebSocket boundary", () => {
       const closed = nextClose(rejectedSocket);
       rejectedSocket.accept();
       await expect(control).resolves.toEqual({
-        minimumSupportedVersion: 2,
-        protocolVersion: 2,
+        minimumSupportedVersion: 1,
+        protocolVersion: 1,
         type: "table/upgrade-required",
       });
       await expect(closed).resolves.toMatchObject({ code: 4406 });
@@ -174,7 +174,7 @@ describe("public table WebSocket boundary", () => {
 
     const upgradeResponse = await exports.default.fetch(
       new Request(
-        `${origin}/api/table/socket?tableId=browser-chosen-decoy&protocolVersion=2`,
+        `${origin}/api/table/socket?tableId=browser-chosen-decoy&protocolVersion=1`,
         {
           headers: {
             Cookie: refreshedCookie ?? "",
@@ -194,7 +194,7 @@ describe("public table WebSocket boundary", () => {
     socket.accept();
     const initial = await initialMessage;
     expect(initial).toMatchObject({
-      protocolVersion: 2,
+      protocolVersion: 1,
       stateVersion: 0,
       type: "table/snapshot",
       view: {
@@ -214,7 +214,7 @@ describe("public table WebSocket boundary", () => {
     socket.send(
       JSON.stringify({
         type: "table/command",
-        protocolVersion: 2,
+        protocolVersion: 1,
         commandId: "public-owner-east",
         expectedStateVersion: 0,
         command: { type: "lobby/claim-seat", seat: "east" },
@@ -250,7 +250,7 @@ describe("public table WebSocket boundary", () => {
     socket.send(
       JSON.stringify({
         lastSeenStateVersion: 1,
-        protocolVersion: 2,
+        protocolVersion: 1,
         type: "table/resync",
       }),
     );
@@ -278,7 +278,7 @@ describe("public table WebSocket boundary", () => {
     expect(candidateCookie).not.toBeNull();
 
     const candidateDenied = await exports.default.fetch(
-      new Request(`${origin}/api/table/socket?protocolVersion=2`, {
+      new Request(`${origin}/api/table/socket?protocolVersion=1`, {
         headers: {
           Cookie: candidateCookie ?? "",
           Origin: origin,
@@ -339,7 +339,7 @@ describe("public table WebSocket boundary", () => {
     });
 
     const candidateUpgrade = await exports.default.fetch(
-      new Request(`${origin}/api/table/socket?protocolVersion=2`, {
+      new Request(`${origin}/api/table/socket?protocolVersion=1`, {
         headers: {
           Cookie: candidateCookie ?? "",
           Origin: origin,

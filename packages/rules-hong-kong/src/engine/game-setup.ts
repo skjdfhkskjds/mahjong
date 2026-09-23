@@ -9,24 +9,22 @@ import {
   HONG_KONG_V1_SHUFFLE_ALGORITHM,
   selectInitialDealerPosition,
 } from "../wall/deterministic-shuffle.js";
-import type { StartedEventV1, StartedEventV2 } from "./game-contracts.js";
-import { assertGameInvariants } from "./game-invariants-migration.js";
+import type { StartedEventV1 } from "./game-contracts.js";
+import { assertGameInvariants } from "./game-invariants.js";
 import {
   playerAt,
   seatName,
   type CanonicalGameStateV1,
-  type CanonicalGameStateV2,
   type CanonicalPlayerStateV1,
-  type CanonicalPlayerStateV2,
   type SeatMap,
 } from "./game-state.js";
 
 const inventory = createHongKongV1TileSet();
 
-export function startHongKongV2Game(
+export function startHongKongV1Game(
   stablePositions: SeatMap<string>,
   randomness: Uint8Array,
-): { readonly event: StartedEventV2; readonly state: CanonicalGameStateV2 } {
+): { readonly event: StartedEventV1; readonly state: CanonicalGameStateV1 } {
   if (new Set(Object.values(stablePositions)).size !== seats.length) {
     throw new TypeError("A game requires four distinct seated actors.");
   }
@@ -52,7 +50,7 @@ export function startHongKongV2Game(
       },
     ]),
   ) as unknown as SeatMap<
-    CanonicalPlayerStateV2 & { bonuses: TileId[]; hand: TileId[] }
+    CanonicalPlayerStateV1 & { bonuses: TileId[]; hand: TileId[] }
   >;
   const acquired = Object.fromEntries(
     seats.map((currentSeat) => [currentSeat, [] as TileId[]]),
@@ -93,7 +91,7 @@ export function startHongKongV2Game(
     }
   }
   const eastHand = mutable.east.hand;
-  const state: CanonicalGameStateV2 = {
+  const state: CanonicalGameStateV1 = {
     completionProvenance: null,
     phase: exhausted ? "exhausted" : "awaiting-dealer-discard",
     players: mutable,
@@ -101,7 +99,7 @@ export function startHongKongV2Game(
     reactionWindow: null,
     result: null,
     ruleset: "hong-kong/v1",
-    schemaVersion: 2,
+    schemaVersion: 1,
     sequence: 1,
     shuffleAlgorithm: HONG_KONG_V1_SHUFFLE_ALGORITHM,
     turn: seat("east"),
@@ -116,40 +114,6 @@ export function startHongKongV2Game(
       replacementPending: false,
     },
     wall: { head, order, tail },
-  };
-  assertGameInvariants(state);
-  return { event: { type: "game/started", sequence: 1, state }, state };
-}
-
-/** Starts the deployed schema-v1 lifecycle. */
-export function startHongKongV1Game(
-  stablePositions: SeatMap<string>,
-  randomness: Uint8Array,
-): { readonly event: StartedEventV1; readonly state: CanonicalGameStateV1 } {
-  const v2 = startHongKongV2Game(stablePositions, randomness).state;
-  const state: CanonicalGameStateV1 = {
-    phase: v2.phase === "awaiting-dealer-discard" ? v2.phase : "exhausted",
-    players: Object.fromEntries(
-      seats.map((currentSeat) => {
-        const player = playerAt(v2.players, currentSeat);
-        return [
-          currentSeat,
-          {
-            actorId: player.actorId,
-            bonuses: player.bonuses,
-            discards: player.discards,
-            hand: player.hand,
-            seat: player.seat,
-          },
-        ];
-      }),
-    ) as unknown as SeatMap<CanonicalPlayerStateV1>,
-    ruleset: v2.ruleset,
-    schemaVersion: 1,
-    sequence: v2.sequence,
-    shuffleAlgorithm: v2.shuffleAlgorithm,
-    turn: v2.turn,
-    wall: v2.wall,
   };
   assertGameInvariants(state);
   return { event: { type: "game/started", sequence: 1, state }, state };

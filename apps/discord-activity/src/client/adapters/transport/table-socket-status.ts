@@ -6,7 +6,7 @@ import {
   type TableReceipt,
   type TableSocketMessage,
   type ViewerSafeTableSnapshot,
-} from "./table-socket-protocol-v2.js";
+} from "./table-socket-protocol-v1.js";
 
 export {
   parseTableReceipt,
@@ -24,7 +24,7 @@ export {
   type TableSeat,
   type TableSeatView,
   type ViewerSafeTableSnapshot,
-} from "./table-socket-protocol-v2.js";
+} from "./table-socket-protocol-v1.js";
 
 export type SocketConnectionState =
   | "authentication-required"

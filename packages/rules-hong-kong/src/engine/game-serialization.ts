@@ -1,71 +1,35 @@
 import { canonicalJson } from "./game-codec.js";
-import type {
-  HongKongGameEvent,
-  VersionedHongKongGameEvent,
-} from "./game-contracts.js";
-import {
-  assertGameInvariants,
-  assertLegacyGameEvent,
-  assertVersionedGameEvent,
-} from "./game-invariants-migration.js";
-import type {
-  CanonicalGameState,
-  VersionedCanonicalGameState,
-} from "./game-state.js";
+import type { HongKongGameEventV1 } from "./game-contracts.js";
+import { assertGameEvent, assertGameInvariants } from "./game-invariants.js";
+import type { CanonicalGameStateV1 } from "./game-state.js";
 
-export function canonicalGameJson(state: CanonicalGameState): string {
+export function canonicalGameJson(state: CanonicalGameStateV1): string {
   assertGameInvariants(state);
+  if (state.phase === "pending-win-validation") {
+    throw new Error("Implementation-only win validation is not deployable.");
+  }
   return canonicalJson(state);
 }
 
-export function decodeCanonicalGameJson(value: string): CanonicalGameState {
+export function decodeCanonicalGameJson(value: string): CanonicalGameStateV1 {
   const parsed = JSON.parse(value) as unknown;
   assertGameInvariants(parsed);
-  if (parsed.schemaVersion !== 1) {
-    throw new Error("Legacy canonical game state must use schema version one.");
-  }
   if (canonicalGameJson(parsed) !== value) {
     throw new Error("Canonical game state bytes are not canonical.");
   }
   return parsed;
 }
 
-export function canonicalVersionedGameJson(
-  state: VersionedCanonicalGameState,
-): string {
-  assertGameInvariants(state);
-  if (state.schemaVersion === 2 && state.phase === "pending-win-validation") {
-    throw new Error("Implementation-only win validation is not deployable.");
-  }
-  return canonicalJson(state);
-}
-
-export function decodeCanonicalVersionedGameJson(
-  value: string,
-): VersionedCanonicalGameState {
-  // This closed codec validates canonical shape and internal rules coherence.
-  // Event-chain authenticity requires replay/checkpoint verification by the
-  // persistence boundary; alternate coherent histories cannot be identified
-  // from standalone state bytes.
-  const parsed = JSON.parse(value) as unknown;
-  assertGameInvariants(parsed);
-  if (parsed.schemaVersion === 2 && parsed.phase === "pending-win-validation") {
-    throw new Error("Implementation-only win validation is not deployable.");
-  }
-  if (canonicalVersionedGameJson(parsed) !== value) {
-    throw new Error("Canonical versioned game state bytes are not canonical.");
-  }
-  return parsed;
-}
-
-export function canonicalGameEventJson(event: HongKongGameEvent): string {
-  assertLegacyGameEvent(event);
+export function canonicalGameEventJson(event: HongKongGameEventV1): string {
+  assertGameEvent(event);
   return canonicalJson(event);
 }
 
-export function decodeCanonicalGameEventJson(value: string): HongKongGameEvent {
+export function decodeCanonicalGameEventJson(
+  value: string,
+): HongKongGameEventV1 {
   const parsed = JSON.parse(value) as unknown;
-  assertLegacyGameEvent(parsed);
+  assertGameEvent(parsed);
   if (canonicalGameEventJson(parsed) !== value) {
     throw new Error("Canonical game event bytes are not canonical.");
   }
@@ -74,40 +38,9 @@ export function decodeCanonicalGameEventJson(value: string): HongKongGameEvent {
 
 export function canonicalEventHashPayload(
   previousHash: string | null,
-  event: HongKongGameEvent,
+  event: HongKongGameEventV1,
 ): string {
-  assertLegacyGameEvent(event);
-  if (previousHash !== null && !/^[0-9a-f]{64}$/u.test(previousHash)) {
-    throw new TypeError(
-      "Previous event hash must be null or lowercase SHA-256.",
-    );
-  }
-  return canonicalJson({ event, previousHash, version: 1 });
-}
-
-export function canonicalVersionedGameEventJson(
-  event: VersionedHongKongGameEvent,
-): string {
-  assertVersionedGameEvent(event);
-  return canonicalJson(event);
-}
-
-export function decodeCanonicalVersionedGameEventJson(
-  value: string,
-): VersionedHongKongGameEvent {
-  const parsed = JSON.parse(value) as unknown;
-  assertVersionedGameEvent(parsed);
-  if (canonicalVersionedGameEventJson(parsed) !== value) {
-    throw new Error("Canonical versioned game event bytes are not canonical.");
-  }
-  return parsed;
-}
-
-export function canonicalVersionedEventHashPayload(
-  previousHash: string | null,
-  event: VersionedHongKongGameEvent,
-): string {
-  assertVersionedGameEvent(event);
+  assertGameEvent(event);
   if (previousHash !== null && !/^[0-9a-f]{64}$/u.test(previousHash)) {
     throw new TypeError(
       "Previous event hash must be null or lowercase SHA-256.",

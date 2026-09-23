@@ -177,7 +177,7 @@ function seatedActors(sql: SqlStorage): readonly string[] {
 
 /**
  * Rebuilds recoverable lifecycle work from authoritative seats, the canonical
- * game, and hibernating socket attachments. This is safe after v3 migration,
+ * game, and hibernating socket attachments. This is safe with v1 storage,
  * eviction, or a silently expired grant.
  */
 export function reconcilePresenceDeadlines(

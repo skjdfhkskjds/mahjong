@@ -1,6 +1,6 @@
 # Open technical and product decisions
 
-Last reviewed: 2026-09-01
+Last reviewed: 2026-09-23
 
 This register covers non-rules decisions. Game semantics belong in the Hong Kong rules decision register. `Recommended` is a starting position for review, not an accepted decision.
 
@@ -14,17 +14,17 @@ This register covers non-rules decisions. Game semantics belong in the Hong Kong
 | TQ-006 | Room/game aggregates          | Keep `RoomState` and rules-owned `GameState` distinct; lobby room revision is separate from the future rules-event sequence; see ADR 0011                                                                                    | M3          | accepted    |
 | TQ-007 | Genesis/replay root           | Versioned JSON-safe genesis snapshot fixed at event sequence zero, followed by an ordered replayable event tail                                                                                                              | M0B         | accepted    |
 | TQ-008 | State version increments      | One `stateVersion` per atomic viewer-visible room transition; rejected, replayed, connection-only, and authority-only operations do not increment; see ADR 0011                                                              | M3          | accepted    |
-| TQ-009 | Private reaction persistence  | Append each valid intent as an authority-only canonical event in v2 reaction state, advancing game sequence/hash/checkpoint but not public room `stateVersion` or broadcasts; SQL may only index derived facts; see ADR 0013 | M5          | accepted    |
+| TQ-009 | Private reaction persistence  | Append each valid intent as an authority-only canonical event in v1 reaction state, advancing game sequence/hash/checkpoint but not public room `stateVersion` or broadcasts; SQL may only index derived facts; see ADR 0013 | M5          | accepted    |
 | TQ-010 | Reaction response replacement | First valid response is final for `hong-kong/v1`; an invalid response does not consume the opportunity; see ADR 0013                                                                                                         | M5          | accepted    |
-| TQ-011 | Protocol deployment overlap   | Because there was no external v1 deployment, atomically replace client and Worker with protocol v2, reject/close v1 requests, use hashed assets, and roll back both halves together; see ADR 0014                            | M3/M5       | accepted    |
+| TQ-011 | Protocol deployment overlap   | The first live client and Worker share protocol v1, reject unsupported versions, use hashed assets, and roll back together; see ADR 0017                                                                                     | M3/M5       | accepted    |
 | TQ-012 | Event/receipt retention       | Preserve complete active-match history; snapshot at hand boundaries; define export, compaction, and deletion before full match history ships                                                                                 | M7          | open        |
 | TQ-013 | Logging policy                | Allowlist identifiers, versions, event names, durations, and error codes; never serialize arbitrary payloads or state                                                                                                        | M1          | recommended |
 | TQ-014 | Cloudflare operating tier     | Free plan for development/private alpha; move to Paid before availability commitments or measured usage approaches daily limits                                                                                              | M9          | recommended |
 | TQ-015 | Public state update format    | Send complete viewer-specific snapshots after accepted mutations; add separately typed projected deltas only if measurement justifies them; see ADR 0011                                                                     | M3          | accepted    |
 | TQ-016 | `messageId` purpose           | Use only the idempotent `commandId`; no separate transport-level `messageId` exists; see ADR 0011                                                                                                                            | M3          | accepted    |
 | TQ-017 | Deadline multiplexing         | Persist a typed deadline queue, use the one Durable Object alarm only as a wake-up, and process due work as explicit idempotent system commands; see ADR 0013                                                                | M5          | accepted    |
-| TQ-018 | Canonical game upgrade        | Verify historical schema-v1 bytes, append a deterministic hash-linked upgrade event, and continue from canonical state schema v2 without rewriting history; see ADR 0014                                                     | M5          | accepted    |
-| TQ-019 | Gameplay wire evolution       | Support only explicit protocol v2; absent, v1, and unsupported majors receive upgrade-required and close, with no dual reader or overlap modules/tests; see ADR 0014                                                         | M5/M6       | accepted    |
+| TQ-018 | Canonical game upgrade        | Use the complete prelaunch canonical game shape as schema v1; no earlier persisted game requires an upgrade; see ADR 0017                                                                                                    | M5          | accepted    |
+| TQ-019 | Gameplay wire evolution       | Support only explicit protocol v1; absent and unsupported majors receive upgrade-required and close, with no dual reader; see ADR 0017                                                                                       | M5/M6       | accepted    |
 
 ## Resolution process
 

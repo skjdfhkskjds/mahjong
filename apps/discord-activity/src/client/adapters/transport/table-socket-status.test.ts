@@ -14,11 +14,11 @@ import {
   type TableCommand,
 } from "./table-socket-status.js";
 
-import { validateCommand } from "./table-socket-protocol-v2.js";
+import { validateCommand } from "./table-socket-protocol-v1.js";
 
 const snapshot = {
   type: "table/snapshot",
-  protocolVersion: 2,
+  protocolVersion: 1,
   stateVersion: 0,
   view: {
     phase: "lobby",
@@ -267,13 +267,13 @@ describe("viewer-safe table snapshots", () => {
   it("builds a server-resolved table socket URL without a table locator", () => {
     expect(
       createTableSocketUrl("", { origin: "https://activity.example" }),
-    ).toBe("wss://activity.example/api/table/socket?protocolVersion=2");
+    ).toBe("wss://activity.example/api/table/socket?protocolVersion=1");
   });
 
   it("parses the walking-skeleton lobby projection", () => {
     expect(parseTableSnapshot(snapshot)).toEqual({
       type: "table/snapshot",
-      protocolVersion: 2,
+      protocolVersion: 1,
       stateVersion: 0,
       view: {
         phase: "lobby",
@@ -297,7 +297,7 @@ describe("viewer-safe table snapshots", () => {
     expect(() =>
       parseTableSnapshot({
         type: "table/snapshot",
-        protocolVersion: 2,
+        protocolVersion: 1,
         stateVersion: 0,
         view: {
           phase: "lobby",
@@ -311,8 +311,8 @@ describe("viewer-safe table snapshots", () => {
 
   it("rejects an unsupported protocol version", () => {
     expect(() =>
-      parseTableSnapshot({ ...snapshot, protocolVersion: 1 }),
-    ).toThrow("protocol v2");
+      parseTableSnapshot({ ...snapshot, protocolVersion: 2 }),
+    ).toThrow("protocol v1");
   });
 
   it("parses a player projection when the viewer matches the occupied seat", () => {
@@ -890,7 +890,7 @@ describe("viewer-safe table snapshots", () => {
       projectedTile(id),
     );
     const completeSnapshot = {
-      protocolVersion: 2,
+      protocolVersion: 1,
       stateVersion: 20,
       type: "table/snapshot",
       view: {
@@ -1213,7 +1213,7 @@ describe("viewer-safe table snapshots", () => {
     expect(
       parseTableReceipt({
         type: "table/receipt",
-        protocolVersion: 2,
+        protocolVersion: 1,
         commandId: "command-1",
         stateVersion: 2,
         outcome: "applied",
@@ -1222,7 +1222,7 @@ describe("viewer-safe table snapshots", () => {
     expect(
       parseTableReceipt({
         type: "table/receipt",
-        protocolVersion: 2,
+        protocolVersion: 1,
         commandId: "command-2",
         stateVersion: 2,
         outcome: "rejected",
@@ -1239,7 +1239,7 @@ describe("viewer-safe table snapshots", () => {
     expect(() =>
       parseTableReceipt({
         type: "table/receipt",
-        protocolVersion: 2,
+        protocolVersion: 1,
         commandId: "command-1",
         stateVersion: 2,
         outcome: "applied",
@@ -1252,7 +1252,7 @@ describe("viewer-safe table snapshots", () => {
     vi.stubGlobal("window", globalThis);
     const socket = new FakeSocket();
     const monitor = new ReconnectingSocketStatusMonitor(
-      "ws://activity.test/api/table/socket?protocolVersion=2",
+      "ws://activity.test/api/table/socket?protocolVersion=1",
       () => socket as unknown as WebSocket,
     );
     monitor.start(() => undefined);
@@ -1260,35 +1260,35 @@ describe("viewer-safe table snapshots", () => {
 
     monitor.sendCommand({
       type: "table/command",
-      protocolVersion: 2,
+      protocolVersion: 1,
       commandId: "claim-1",
       expectedStateVersion: 0,
       command: { type: "lobby/claim-seat", seat: "east" },
     });
     monitor.sendCommand({
       type: "table/command",
-      protocolVersion: 2,
+      protocolVersion: 1,
       commandId: "ready-1",
       expectedStateVersion: 1,
       command: { type: "lobby/set-ready", ready: true },
     });
     monitor.sendCommand({
       type: "table/command",
-      protocolVersion: 2,
+      protocolVersion: 1,
       commandId: "leave-1",
       expectedStateVersion: 2,
       command: { type: "lobby/leave-seat" },
     });
     monitor.sendCommand({
       type: "table/command",
-      protocolVersion: 2,
+      protocolVersion: 1,
       commandId: "discard-1",
       expectedStateVersion: 3,
       command: { type: "game/discard", tileId: 42 },
     });
     monitor.sendCommand({
       type: "table/command",
-      protocolVersion: 2,
+      protocolVersion: 1,
       commandId: "reaction-1",
       expectedStateVersion: 4,
       command: {
@@ -1299,7 +1299,7 @@ describe("viewer-safe table snapshots", () => {
     });
     monitor.sendCommand({
       type: "table/command",
-      protocolVersion: 2,
+      protocolVersion: 1,
       commandId: "concealed-kong-1",
       expectedStateVersion: 5,
       command: {
@@ -1309,7 +1309,7 @@ describe("viewer-safe table snapshots", () => {
     });
     monitor.sendCommand({
       type: "table/command",
-      protocolVersion: 2,
+      protocolVersion: 1,
       commandId: "added-kong-1",
       expectedStateVersion: 6,
       command: {
@@ -1320,7 +1320,7 @@ describe("viewer-safe table snapshots", () => {
     });
     monitor.sendCommand({
       type: "table/command",
-      protocolVersion: 2,
+      protocolVersion: 1,
       commandId: "win-1",
       expectedStateVersion: 7,
       command: { type: "game/declare-win" },
@@ -1329,35 +1329,35 @@ describe("viewer-safe table snapshots", () => {
     expect(socket.sent).toEqual([
       JSON.stringify({
         type: "table/command",
-        protocolVersion: 2,
+        protocolVersion: 1,
         commandId: "claim-1",
         expectedStateVersion: 0,
         command: { type: "lobby/claim-seat", seat: "east" },
       }),
       JSON.stringify({
         type: "table/command",
-        protocolVersion: 2,
+        protocolVersion: 1,
         commandId: "ready-1",
         expectedStateVersion: 1,
         command: { type: "lobby/set-ready", ready: true },
       }),
       JSON.stringify({
         type: "table/command",
-        protocolVersion: 2,
+        protocolVersion: 1,
         commandId: "leave-1",
         expectedStateVersion: 2,
         command: { type: "lobby/leave-seat" },
       }),
       JSON.stringify({
         type: "table/command",
-        protocolVersion: 2,
+        protocolVersion: 1,
         commandId: "discard-1",
         expectedStateVersion: 3,
         command: { type: "game/discard", tileId: 42 },
       }),
       JSON.stringify({
         type: "table/command",
-        protocolVersion: 2,
+        protocolVersion: 1,
         commandId: "reaction-1",
         expectedStateVersion: 4,
         command: {
@@ -1368,7 +1368,7 @@ describe("viewer-safe table snapshots", () => {
       }),
       JSON.stringify({
         type: "table/command",
-        protocolVersion: 2,
+        protocolVersion: 1,
         commandId: "concealed-kong-1",
         expectedStateVersion: 5,
         command: {
@@ -1378,7 +1378,7 @@ describe("viewer-safe table snapshots", () => {
       }),
       JSON.stringify({
         type: "table/command",
-        protocolVersion: 2,
+        protocolVersion: 1,
         commandId: "added-kong-1",
         expectedStateVersion: 6,
         command: {
@@ -1389,7 +1389,7 @@ describe("viewer-safe table snapshots", () => {
       }),
       JSON.stringify({
         type: "table/command",
-        protocolVersion: 2,
+        protocolVersion: 1,
         commandId: "win-1",
         expectedStateVersion: 7,
         command: { type: "game/declare-win" },
@@ -1404,7 +1404,7 @@ describe("viewer-safe table snapshots", () => {
       Parameters<ReconnectingSocketStatusMonitor["start"]>[0]
     >[0][] = [];
     const monitor = new ReconnectingSocketStatusMonitor(
-      "ws://activity.test/api/table/socket?protocolVersion=2",
+      "ws://activity.test/api/table/socket?protocolVersion=1",
       () => socket as unknown as WebSocket,
     );
     monitor.start((status) => statuses.push(status));
@@ -1414,7 +1414,7 @@ describe("viewer-safe table snapshots", () => {
       new MessageEvent("message", {
         data: JSON.stringify({
           type: "table/receipt",
-          protocolVersion: 2,
+          protocolVersion: 1,
           commandId: "command-1",
           stateVersion: 1,
           outcome: "applied",
@@ -1433,7 +1433,7 @@ describe("viewer-safe table snapshots", () => {
     vi.stubGlobal("window", globalThis);
     const socket = new FakeSocket();
     const monitor = new ReconnectingSocketStatusMonitor(
-      "ws://activity.test/api/table/socket?protocolVersion=2",
+      "ws://activity.test/api/table/socket?protocolVersion=1",
       () => socket as unknown as WebSocket,
     );
     monitor.start(() => undefined);
@@ -1466,7 +1466,7 @@ describe("viewer-safe table snapshots", () => {
     commands.forEach((command, index) => {
       monitor.sendCommand({
         type: "table/command",
-        protocolVersion: 2,
+        protocolVersion: 1,
         commandId: `command-${String(index)}`,
         expectedStateVersion: 12,
         command,
@@ -1477,7 +1477,7 @@ describe("viewer-safe table snapshots", () => {
       commands.map((command, index) =>
         JSON.stringify({
           type: "table/command",
-          protocolVersion: 2,
+          protocolVersion: 1,
           commandId: `command-${String(index)}`,
           expectedStateVersion: 12,
           command,
@@ -1494,7 +1494,7 @@ describe("viewer-safe table snapshots", () => {
     const sockets = [first, second];
     const states: string[] = [];
     const monitor = new ReconnectingSocketStatusMonitor(
-      "ws://activity.test/api/table/socket?protocolVersion=2",
+      "ws://activity.test/api/table/socket?protocolVersion=1",
       () => sockets.shift() as unknown as WebSocket,
     );
     const stop = monitor.start((status) => states.push(status.state));
@@ -1511,7 +1511,7 @@ describe("viewer-safe table snapshots", () => {
     expect(second.sent).toEqual([
       JSON.stringify({
         type: "table/resync",
-        protocolVersion: 2,
+        protocolVersion: 1,
         lastSeenStateVersion: 0,
       }),
     ]);
@@ -1519,7 +1519,7 @@ describe("viewer-safe table snapshots", () => {
     expect(() => {
       monitor.sendCommand({
         type: "table/command",
-        protocolVersion: 2,
+        protocolVersion: 1,
         commandId: "stale-ui-command",
         expectedStateVersion: 0,
         command: { type: "lobby/leave-seat" },
@@ -1545,7 +1545,7 @@ describe("viewer-safe table snapshots", () => {
       Parameters<ReconnectingSocketStatusMonitor["start"]>[0]
     >[0][] = [];
     const monitor = new ReconnectingSocketStatusMonitor(
-      "ws://activity.test/api/table/socket?protocolVersion=2",
+      "ws://activity.test/api/table/socket?protocolVersion=1",
       createSocket,
     );
     const stop = monitor.start((status) => statuses.push(status));
@@ -1582,7 +1582,7 @@ describe("viewer-safe table snapshots", () => {
     expect(createSocket).toHaveBeenCalledTimes(2);
     monitor.sendCommand({
       type: "table/command",
-      protocolVersion: 2,
+      protocolVersion: 1,
       commandId: "new-generation-command",
       expectedStateVersion: 7,
       command: { type: "lobby/leave-seat" },
@@ -1590,7 +1590,7 @@ describe("viewer-safe table snapshots", () => {
     expect(second.sent.at(-1)).toBe(
       JSON.stringify({
         type: "table/command",
-        protocolVersion: 2,
+        protocolVersion: 1,
         commandId: "new-generation-command",
         expectedStateVersion: 7,
         command: { type: "lobby/leave-seat" },
@@ -1606,7 +1606,7 @@ describe("viewer-safe table snapshots", () => {
     const createSocket = vi.fn(() => socket as unknown as WebSocket);
     const states: string[] = [];
     const monitor = new ReconnectingSocketStatusMonitor(
-      "ws://activity.test/api/table/socket?protocolVersion=2",
+      "ws://activity.test/api/table/socket?protocolVersion=1",
       createSocket,
     );
     monitor.start((status) => states.push(status.state));
@@ -1617,7 +1617,7 @@ describe("viewer-safe table snapshots", () => {
       new MessageEvent("message", {
         data: JSON.stringify({
           type: "session/replaced",
-          protocolVersion: 2,
+          protocolVersion: 1,
         }),
       }),
     );
@@ -1636,7 +1636,7 @@ describe("viewer-safe table snapshots", () => {
     const createSocket = vi.fn(() => socket as unknown as WebSocket);
     const states: string[] = [];
     const monitor = new ReconnectingSocketStatusMonitor(
-      "ws://activity.test/api/table/socket?protocolVersion=2",
+      "ws://activity.test/api/table/socket?protocolVersion=1",
       createSocket,
     );
     monitor.start((status) => states.push(status.state));
@@ -1646,8 +1646,8 @@ describe("viewer-safe table snapshots", () => {
       "message",
       new MessageEvent("message", {
         data: JSON.stringify({
-          minimumSupportedVersion: 2,
-          protocolVersion: 2,
+          minimumSupportedVersion: 1,
+          protocolVersion: 1,
           type: "table/upgrade-required",
         }),
       }),
@@ -1666,7 +1666,7 @@ describe("viewer-safe table snapshots", () => {
     const createSocket = vi.fn(() => socket as unknown as WebSocket);
     const states: string[] = [];
     const monitor = new ReconnectingSocketStatusMonitor(
-      "ws://activity.test/api/table/socket?protocolVersion=2",
+      "ws://activity.test/api/table/socket?protocolVersion=1",
       createSocket,
     );
     monitor.start((status) => states.push(status.state));
@@ -1686,7 +1686,7 @@ describe("viewer-safe table snapshots", () => {
     const createSocket = vi.fn(() => socket as unknown as WebSocket);
     const states: string[] = [];
     const monitor = new ReconnectingSocketStatusMonitor(
-      "ws://activity.test/api/table/socket?protocolVersion=2",
+      "ws://activity.test/api/table/socket?protocolVersion=1",
       createSocket,
     );
     monitor.start((status) => states.push(status.state));
@@ -1700,12 +1700,12 @@ describe("viewer-safe table snapshots", () => {
   });
 });
 
-describe("bot protocol-v2 compatibility", () => {
+describe("bot protocol-v1 compatibility", () => {
   it("accepts additive bot commands and rejects unknown command fields", () => {
     for (const type of ["lobby/add-bot", "lobby/remove-bot"]) {
       const envelope = {
         type: "table/command",
-        protocolVersion: 2,
+        protocolVersion: 1,
         commandId: "bot-command",
         expectedStateVersion: 0,
         command: { type, seat: "south" },
@@ -1724,7 +1724,7 @@ describe("bot protocol-v2 compatibility", () => {
       }).toThrow();
     }
   });
-  it("reads bot occupants through the unchanged v2 snapshot shape", () => {
+  it("reads bot occupants through the v1 snapshot shape", () => {
     const botTable = {
       ...snapshot,
       view: {
