@@ -14,6 +14,8 @@ import {
   type TableCommand,
 } from "./table-socket-status.js";
 
+import { validateCommand } from "./table-socket-protocol-v2.js";
+
 const snapshot = {
   type: "table/snapshot",
   protocolVersion: 2,
@@ -1695,5 +1697,52 @@ describe("viewer-safe table snapshots", () => {
 
     expect(states.at(-1)).toBe("authentication-required");
     expect(createSocket).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe("bot protocol-v2 compatibility", () => {
+  it("accepts additive bot commands and rejects unknown command fields", () => {
+    for (const type of ["lobby/add-bot", "lobby/remove-bot"]) {
+      const envelope = {
+        type: "table/command",
+        protocolVersion: 2,
+        commandId: "bot-command",
+        expectedStateVersion: 0,
+        command: { type, seat: "south" },
+      };
+      expect(() => {
+        validateCommand(envelope);
+      }).not.toThrow();
+      expect(() => {
+        validateCommand({
+          ...envelope,
+          command: { ...envelope.command, actorId: "injected" },
+        });
+      }).toThrow();
+      expect(() => {
+        validateCommand({ ...envelope, command: { type, seat: "invalid" } });
+      }).toThrow();
+    }
+  });
+  it("reads bot occupants through the unchanged v2 snapshot shape", () => {
+    const botTable = {
+      ...snapshot,
+      view: {
+        ...snapshot.view,
+        seats: snapshot.view.seats.map((seat) =>
+          seat.seat === "south"
+            ? {
+                ...seat,
+                ready: true,
+                occupant: {
+                  id: "bot:00000000-0000-4000-8000-000000000000",
+                  displayName: "Bot South",
+                },
+              }
+            : seat,
+        ),
+      },
+    };
+    expect(parseTableSnapshot(botTable)).toEqual(botTable);
   });
 });

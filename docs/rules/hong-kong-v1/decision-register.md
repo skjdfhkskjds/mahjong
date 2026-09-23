@@ -202,6 +202,7 @@ These choices affect deterministic play but are not inherently Hong Kong scoring
 | TP-006 | Table owner/host powers                       | M2          |
 | TP-007 | Abandonment, retention, archive, and deletion | M7          |
 | TP-008 | Missing entropy contribution abort/fallback   | M8          |
+| TP-009 | Owner-managed random bot players              | Issue #21   |
 
 Accepted Milestone 5 operational policy:
 
@@ -220,6 +221,13 @@ Accepted Milestone 5 operational policy:
   storage. A valid seated reconnect clears abandonment and resumes. Cleanup,
   archive, and deletion remain open for M7. Stored grants alone are not
   presence.
+
+- TP-009: a seated owner can add/remove up to three bots in the lobby. Bots
+  are ready immediately, choose uniformly among their own legal viewer
+  actions after a 750 ms scheduling delay, and have no sessions or sockets.
+  They do not count as human presence and pause on recoverable abandonment.
+  This policy changes no Mahjong semantics; see
+  [ADR 0015](../../decisions/0015-persistent-bot-players.md).
 
 ## Required validation families
 

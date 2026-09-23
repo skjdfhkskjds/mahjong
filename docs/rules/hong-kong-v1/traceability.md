@@ -57,3 +57,10 @@ upgrade, byte-equivalent replay, all-144-tile conservation, private projection
 noninterference, canonical private-intent recovery, strict protocol-v2 decoding
 with v1 rejection, atomic hashed-asset rollout/rollback, and TableRoom storage
 v1/v3 to v4 migration.
+
+Bot table policy TP-009 is covered by `table-room-bots.test.ts` (legal-action
+selection, submitted/terminal stop), `table-room.test.ts` (owner controls,
+private reactions, full hand, recovery, retries, and abandonment), and the
+permanent v4 migration fixture in `table-room-authority-persistence.test.ts`.
+The client lobby and transport tests cover controls and unchanged v2 snapshot
+compatibility. No rules-semantic fixture changes are required.

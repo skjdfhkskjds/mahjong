@@ -11,6 +11,7 @@
   "scripts": {
     "app:build": "corepack pnpm --filter @mahjong/discord-activity build",
     "app:dev": "corepack pnpm --filter @mahjong/discord-activity dev",
+    "app:dev:solo": "corepack pnpm --filter @mahjong/discord-activity dev:solo",
     "app:preview": "corepack pnpm --filter @mahjong/discord-activity preview",
     "boundaries": "node tooling/check-import-boundaries.ts",
     "check": "corepack pnpm format:check && corepack pnpm lint && corepack pnpm typecheck && corepack pnpm boundaries && corepack pnpm exports:check && corepack pnpm test",

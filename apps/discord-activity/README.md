@@ -41,6 +41,38 @@ expose a wall, opponent hand, canonical event, or hash. The explicit
 development guard and lazy import remove its marker and fixture bytes from the
 production bundle.
 
+## Playing with bots
+
+Bots are a normal table feature in both Discord and the standalone browser.
+The table owner claims a seat, selects **Add bot** on each empty seat, marks
+themselves ready, and selects **Start hand** once all four seats are ready.
+Add one to three bots to play with friends or alone. Bots are ready immediately;
+the owner can select **Remove bot** before the hand starts to make room for a
+human player. Seats cannot be replaced during a hand.
+
+Bots choose random legal actions, including claims, passes, kongs, and wins.
+They have no strategic difficulty setting. The Worker makes each decision from
+that bot's own viewer projection and schedules it about 750 ms after an action
+becomes available. Private reactions stay private until resolution. Bot
+identities and pending work persist across browser reloads, disconnection, and
+Durable Object eviction; bots do not need Discord accounts or client sockets.
+Existing human timeout/reconnect rules apply. Bots do not keep an otherwise
+empty room alive: abandonment pauses their work until a seated human returns.
+
+For a quick browser session without changing your Discord credentials, run:
+
+```text
+corepack pnpm app:dev:solo
+```
+
+Open the printed local URL and use the same **Add bot** controls. This launcher
+uses mock authentication and temporary storage with the production bot
+implementation. It ignores local Discord credentials and browser API/mode
+overrides. Restarting the launcher creates a fresh table; normal `app:dev`
+uses persistent local storage. Keep the same origin and browser profile while
+playing. Mock sessions retain the existing one-hour lifetime. Next-hand and
+match progression remain separate Milestone 7 work.
+
 ## Discord-proxied development
 
 1. Create a Discord application and enable Activities.
@@ -93,9 +125,10 @@ until the player explicitly leaves. WebSocket attachments retain only bounded
 connection/session identity; room/game authority, deadlines, revisions, and
 receipts remain in SQLite.
 
-Schema v4 retains the permanent migration roots
+Schema v5 adds persisted bot identities and scheduled work. It retains the permanent migration roots
 `tests/fixtures/table-room-v1-schema.ts` and
-`tests/fixtures/table-room-v3-active-v1-game.ts`. The latter verifies its
+`tests/fixtures/table-room-v3-active-v1-game.ts`, plus the pre-bot
+`tests/fixtures/table-room-v4-schema.ts`. The active-game fixture verifies its
 historical v1 hash chain, appends one explicit state-upgrade event, and
 continues play as canonical state v2.
 
@@ -120,9 +153,18 @@ Protocol v2 is an atomic client/Worker release. The Worker serves
 content-hashed client assets from the same deployment, so rollout replaces both
 wire endpoints together and rollback restores both together. Do not roll back
 only the Worker or reuse an older HTML shell with a newer Worker. Storage schema
-v4 remains forward-only across a code rollback; use the previous release only
-if it understands schema v4, otherwise restore the complete pre-migration
-deployment and storage backup rather than attempting to reinterpret v4 rows.
+v5 remains forward-only across a code rollback; use the previous release only
+if it understands schema v5, otherwise restore the complete pre-migration
+deployment and storage backup rather than attempting to reinterpret v5 rows.
+
+Bot management adds `lobby/add-bot` and `lobby/remove-bot` commands with a
+`seat` field to protocol v2; the snapshot and receipt shapes are unchanged.
+Older v2 clients can observe and play at bot tables. A newer client cannot
+manage bots against an older Worker, which rejects the unknown commands, so
+ship bot controls and Worker support together. Existing tables migrate to v5
+without changing seats, game events, or hashes. Rollback to pre-bot code needs
+the complete pre-migration backup because that code rejects schema v5.
+See [ADR 0015](../../docs/decisions/0015-persistent-bot-players.md).
 
 The production command fails before building unless `VITE_ACTIVITY_MODE=discord` and a valid `VITE_DISCORD_CLIENT_ID` are present. The production Wrangler environment does not inherit the committed mock signing key.
 
