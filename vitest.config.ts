@@ -5,7 +5,11 @@ export default defineConfig({
     coverage: {
       enabled: false,
     },
-    include: ["packages/**/*.test.ts", "tooling/**/*.test.ts"],
+    include: [
+      "packages/**/*.test.ts",
+      "tooling/**/*.test.ts",
+      "apps/*/tooling/**/*.test.ts",
+    ],
     passWithNoTests: false,
     sequence: {
       shuffle: true,

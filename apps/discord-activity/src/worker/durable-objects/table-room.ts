@@ -1,24 +1,24 @@
 import { DurableObject } from "cloudflare:workers";
 import {
-  applyGameCommandV2,
-  decideReactionExpiration,
   decodeCanonicalVersionedGameJson,
   HONG_KONG_V1_RANDOM_BYTES,
-  projectGameV2,
-  reduceVersionedGameEvent,
-  startHongKongV2Game,
   type CanonicalGameStateV2,
   type GameViewV2,
   type HongKongGameCommandV2,
-  type NonEmptyGameEventBatch,
   type VersionedCanonicalGameState,
 } from "@mahjong/rules-hong-kong";
 
+import { appendAutomaticReactionPasses } from "./table-room/table-room-automation.js";
 import {
-  automaticGameEvents,
-  automaticReactionPassEvents,
-  gamePlayerAt,
-} from "./table-room/table-room-automation.js";
+  expireTableGame,
+  projectTableGame,
+  startTableGame,
+  tableGameActorAt,
+  tableGameDeadline,
+  tableGameDeadlineMatches,
+  tableGameEngine,
+  tableGamePhase,
+} from "./table-room/table-room-game-engine.js";
 import {
   botWorkTarget,
   changeBotSeat,
@@ -847,7 +847,7 @@ export class TableRoom extends DurableObject<Env> {
       game === undefined
         ? seats.find(({ actor_id }) => actor_id === attachment.actorId)?.seat
         : SEATS.find(
-            (seat) => game.state.players[seat].actorId === attachment.actorId,
+            (seat) => tableGameActorAt(game.state, seat) === attachment.actorId,
           );
     const viewer = this.ctx.storage.sql
       .exec<{ actor_id: string; display_name: string }>(
@@ -873,21 +873,18 @@ export class TableRoom extends DurableObject<Env> {
           ? "abandoned"
           : game === undefined
             ? "lobby"
-            : game.state.phase === "exhausted"
-              ? "exhausted"
-              : game.state.phase === "complete"
-                ? "complete"
-                : "playing",
+            : tableGamePhase(game.state),
         ...(game === undefined
           ? {}
           : {
               game: {
-                ...projectGameV2(game.state, attachment.actorId),
+                ...projectTableGame(game.state, attachment.actorId),
                 deadlineAt: this.gameDeadlineAt(),
               },
             }),
         seats: SEATS.map((seat) => {
-          const gameActorId = game?.state.players[seat].actorId;
+          const gameActorId =
+            game === undefined ? undefined : tableGameActorAt(game.state, seat);
           const row =
             gameActorId === undefined
               ? seatsByName.get(seat)
@@ -936,6 +933,7 @@ export class TableRoom extends DurableObject<Env> {
     }
   }
 
+  /** Caller holds blockConcurrencyWhile across preparation and atomic commit. */
   private async applyTableCommand(
     actorId: string,
     envelope: TableCommandEnvelope,
@@ -949,6 +947,7 @@ export class TableRoom extends DurableObject<Env> {
   }> {
     const requestJson = canonicalTableRequest(envelope);
     let preparedGame: PreparedGameEventBatch | undefined;
+    let preparedVisibility: "private" | "public" = "public";
     let preparedRejection:
       { readonly code: string; readonly message: string } | undefined;
     if (envelope.expectedStateVersion === this.stateVersion()) {
@@ -988,7 +987,7 @@ export class TableRoom extends DurableObject<Env> {
             ) {
               throw new Error("A ready table has an incomplete seat map.");
             }
-            const started = startHongKongV2Game(
+            const started = startTableGame(
               { east, north, south, west },
               crypto.getRandomValues(new Uint8Array(HONG_KONG_V1_RANDOM_BYTES)),
             );
@@ -1005,30 +1004,22 @@ export class TableRoom extends DurableObject<Env> {
             message: "The game has not started.",
           };
         } else {
-          const decision = applyGameCommandV2(
+          const decision = tableGameEngine.execute(
             stored.state,
             actorId,
             envelope.command,
           );
-          if (!decision.accepted) {
+          if (decision.kind === "rejected") {
             preparedRejection = decision.error;
           } else {
-            if (decision.state === undefined) {
-              throw new Error("Accepted game command produced no state.");
-            }
-            const automaticPasses = automaticReactionPassEvents(
-              decision.state,
+            const transition = appendAutomaticReactionPasses(
+              decision,
               this.automatedActorIds(),
             );
+            preparedVisibility = transition.visibility;
             preparedGame = await prepareGameEventBatch(
               stored,
-              automaticPasses === undefined
-                ? decision.events
-                : [
-                    decision.events[0],
-                    ...decision.events.slice(1),
-                    ...automaticPasses,
-                  ],
+              transition.events,
             );
           }
         }
@@ -1098,36 +1089,18 @@ export class TableRoom extends DurableObject<Env> {
             message: "The game state changed; resynchronize and retry.",
           };
         } else {
-          const current = this.gameState();
-          const validPrevious =
-            preparedGame.expectedPreviousHash === null
-              ? current === undefined
-              : current?.lastEventHash === preparedGame.expectedPreviousHash;
-          if (!validPrevious) {
-            stale = true;
-            rejection = {
-              code: "stale-state-version",
-              message: "The table state changed; resynchronize and retry.",
-            };
-          } else {
-            persistPreparedGameBatchInTransaction(
+          persistPreparedGameBatchInTransaction(
+            this.ctx.storage.sql,
+            preparedGame,
+          );
+          applied = true;
+          publicTransition = preparedVisibility === "public";
+          if (publicTransition) {
+            this.replaceGameDeadlines(
               this.ctx.storage.sql,
-              preparedGame,
+              preparedGame.finalState,
+              now,
             );
-            applied = true;
-            publicTransition = !preparedGame.rows.every((row) => {
-              const event = JSON.parse(row.eventJson) as {
-                readonly type?: unknown;
-              };
-              return event.type === "game/reaction-intent-submitted";
-            });
-            if (publicTransition) {
-              this.replaceGameDeadlines(
-                this.ctx.storage.sql,
-                preparedGame.finalState,
-                now,
-              );
-            }
           }
         }
       } else if (this.gameState() !== undefined) {
@@ -1307,81 +1280,39 @@ export class TableRoom extends DurableObject<Env> {
       );
       return;
     }
-    const window = state.reactionWindow;
-    if (window !== null) {
-      const deadlineId = `reaction:${String(window.openingSequence)}`;
-      sql.exec(
-        "UPDATE deadlines SET status = 'cancelled', processed_at = NULL WHERE status = 'pending' AND kind IN ('reaction', 'turn') AND deadline_id <> ? AND deadline_id <> ?",
-        deadlineId,
-        processingDeadlineId,
-      );
-      const existing = sql
-        .exec<{ status: string }>(
-          "SELECT status FROM deadlines WHERE deadline_id = ?",
-          deadlineId,
-        )
-        .toArray()[0];
-      if (existing?.status === "pending") return;
-      scheduleDeadline(sql, {
-        deadlineId,
-        dueAt: now + REACTION_DEADLINE_MS,
-        kind: "reaction",
-        payload: {
-          type: "system/reaction-expired",
-          openingSequence: window.openingSequence,
-          windowId: window.id,
-        },
-        status: "pending",
-        targetGeneration: window.openingSequence,
-      });
-      return;
-    }
-    if (
-      state.phase !== "awaiting-dealer-discard" &&
-      state.phase !== "awaiting-discard" &&
-      state.phase !== "awaiting-draw"
-    ) {
-      sql.exec(
-        "UPDATE deadlines SET status = 'cancelled', processed_at = NULL WHERE status = 'pending' AND kind IN ('reaction', 'turn') AND deadline_id <> ?",
-        processingDeadlineId,
-      );
-      return;
-    }
-    const actorId = gamePlayerAt(state, state.turn).actorId;
-    const automation = sql
-      .exec<{ autopilot: number }>(
-        "SELECT autopilot FROM player_automation WHERE actor_id = ?",
-        actorId,
-      )
-      .toArray()[0];
-    const deadlineId = `turn:${String(state.sequence)}`;
+    const target = tableGameDeadline(state);
     sql.exec(
       "UPDATE deadlines SET status = 'cancelled', processed_at = NULL WHERE status = 'pending' AND kind IN ('reaction', 'turn') AND deadline_id <> ? AND deadline_id <> ?",
-      deadlineId,
+      target?.deadlineId ?? "",
       processingDeadlineId,
     );
-    const connected = this.hasValidSocket(actorId, now);
-    if (!connected && automation?.autopilot !== 1) return;
-    const dueAt = automation?.autopilot === 1 ? now : now + TURN_DEADLINE_MS;
+    if (target === null) return;
+    let dueAt = now + REACTION_DEADLINE_MS;
+    if (target.kind === "turn") {
+      const automation = sql
+        .exec<{ autopilot: number }>(
+          "SELECT autopilot FROM player_automation WHERE actor_id = ?",
+          target.actorId,
+        )
+        .toArray()[0];
+      const connected = this.hasValidSocket(target.actorId, now);
+      if (!connected && automation?.autopilot !== 1) return;
+      dueAt = automation?.autopilot === 1 ? now : now + TURN_DEADLINE_MS;
+    }
     const existing = sql
       .exec<{ status: string }>(
         "SELECT status FROM deadlines WHERE deadline_id = ?",
-        deadlineId,
+        target.deadlineId,
       )
       .toArray()[0];
     if (existing?.status === "pending") return;
     scheduleDeadline(sql, {
-      deadlineId,
+      deadlineId: target.deadlineId,
       dueAt,
-      kind: "turn",
-      payload: {
-        type: "system/turn-expired",
-        openingSequence: state.sequence,
-        phase: state.phase,
-        seat: state.turn,
-      },
+      kind: target.kind,
+      payload: target.payload,
       status: "pending",
-      targetGeneration: state.sequence,
+      targetGeneration: target.targetGeneration,
     });
   }
 
@@ -1423,13 +1354,6 @@ export class TableRoom extends DurableObject<Env> {
     });
   }
 
-  private gameBatchIsPublic(batch: PreparedGameEventBatch): boolean {
-    return !batch.rows.every((row) => {
-      const value = JSON.parse(row.eventJson) as { readonly type?: unknown };
-      return value.type === "game/reaction-intent-submitted";
-    });
-  }
-
   private deadlineStillTargetsCurrent(
     deadline: PendingDeadline,
     state: CanonicalGameStateV2 | undefined,
@@ -1438,16 +1362,8 @@ export class TableRoom extends DurableObject<Env> {
     const payload = deadline.payload;
     switch (payload.type) {
       case "system/reaction-expired":
-        return (
-          state?.reactionWindow?.id === payload.windowId &&
-          state.reactionWindow.openingSequence === payload.openingSequence
-        );
       case "system/turn-expired":
-        return (
-          state?.sequence === payload.openingSequence &&
-          state.phase === payload.phase &&
-          state.turn === payload.seat
-        );
+        return state !== undefined && tableGameDeadlineMatches(state, payload);
       case "system/disconnect-grace-expired": {
         const row = this.ctx.storage.sql
           .exec<{ connection_generation: number; autopilot: number }>(
@@ -1479,43 +1395,27 @@ export class TableRoom extends DurableObject<Env> {
     const stored = await verifyStoredGame(this.ctx.storage.sql);
     const state = stored?.state.schemaVersion === 2 ? stored.state : undefined;
     let batch: PreparedGameEventBatch | undefined;
-    if (this.deadlineStillTargetsCurrent(deadline, state, now)) {
+    let batchVisibility: "private" | "public" = "private";
+    if (
+      state !== undefined &&
+      stored !== undefined &&
+      this.deadlineStillTargetsCurrent(deadline, state, now)
+    ) {
       const payload = deadline.payload;
-      let events: NonEmptyGameEventBatch | undefined;
-      if (payload.type === "system/reaction-expired" && state !== undefined) {
-        const decision = decideReactionExpiration(state);
-        events = decision.accepted ? decision.events : undefined;
-      } else if (
-        payload.type === "system/turn-expired" &&
-        state !== undefined
-      ) {
-        events = automaticGameEvents(
-          state,
-          gamePlayerAt(state, payload.seat).actorId,
-        );
-      } else if (
-        payload.type === "system/disconnect-grace-expired" &&
-        state !== undefined
-      ) {
-        events = automaticGameEvents(state, payload.actorId);
-      }
-      if (events !== undefined && stored !== undefined && state !== undefined) {
-        let afterEvents = state;
-        for (const event of events) {
-          const next = reduceVersionedGameEvent(afterEvents, event);
-          if (next.schemaVersion !== 2) {
-            throw new Error("Automatic game work produced legacy state.");
-          }
-          afterEvents = next;
-        }
-        const automaticPasses = automaticReactionPassEvents(
-          afterEvents,
+      const decision =
+        payload.type === "system/reaction-expired" ||
+        payload.type === "system/turn-expired"
+          ? expireTableGame(state, deadline, now)
+          : payload.type === "system/disconnect-grace-expired"
+            ? tableGameEngine.automate(state, payload.actorId)
+            : undefined;
+      if (decision !== undefined && decision.kind !== "rejected") {
+        const transition = appendAutomaticReactionPasses(
+          decision,
           this.automatedActorIds(),
         );
-        if (automaticPasses !== undefined) {
-          events = [events[0], ...events.slice(1), ...automaticPasses];
-        }
-        batch = await prepareGameEventBatch(stored, events);
+        batchVisibility = transition.visibility;
+        batch = await prepareGameEventBatch(stored, transition.events);
       }
     }
 
@@ -1533,7 +1433,7 @@ export class TableRoom extends DurableObject<Env> {
         let publicTransition = false;
         if (batch !== undefined) {
           persistPreparedGameBatchInTransaction(sql, batch);
-          const gamePublic = this.gameBatchIsPublic(batch);
+          const gamePublic = batchVisibility === "public";
           publicTransition ||= gamePublic;
           if (gamePublic) {
             this.replaceGameDeadlines(
@@ -1603,7 +1503,7 @@ export class TableRoom extends DurableObject<Env> {
       const random = crypto.getRandomValues(new Uint32Array(1))[0];
       if (random === undefined) throw new Error("Bot randomness unavailable.");
       const command = chooseBotMove(
-        projectGameV2(state, work.actor_id),
+        projectTableGame(state, work.actor_id),
         random / 0x1_0000_0000,
       );
       if (!command) continue;
@@ -2368,12 +2268,11 @@ export class TableRoom extends DurableObject<Env> {
         now,
         observations: this.presenceObservations(),
       });
+      const gameTarget = game === undefined ? null : tableGameDeadline(game);
       if (
-        game?.reactionWindow === null &&
-        gamePlayerAt(game, game.turn).actorId === actorId &&
-        (game.phase === "awaiting-dealer-discard" ||
-          game.phase === "awaiting-discard" ||
-          game.phase === "awaiting-draw")
+        game !== undefined &&
+        gameTarget?.kind === "turn" &&
+        gameTarget.actorId === actorId
       ) {
         this.replaceGameDeadlines(this.ctx.storage.sql, game, now);
       }

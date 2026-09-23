@@ -1,10 +1,7 @@
-import type { Viewer } from "../table/viewer.js";
 import {
   assertJsonValue,
   type JsonValue,
 } from "../serialization/json-value.js";
-import type { Decision } from "./decision.js";
-import type { InvariantViolation } from "./violation.js";
 
 export interface RulesetReference {
   readonly id: string;
@@ -20,33 +17,6 @@ export interface GenesisSnapshot<
   readonly ruleset: RulesetReference;
   readonly configuration: Configuration;
   readonly state: State;
-}
-
-export interface RulesetEngine<
-  State extends JsonValue,
-  Command,
-  Event extends JsonValue,
-  View,
-  Configuration extends JsonValue,
-  CreateContext,
-  CommandContext,
-> {
-  createGenesis(
-    configuration: Readonly<Configuration>,
-    context: Readonly<CreateContext>,
-  ): GenesisSnapshot<State, Configuration>;
-
-  decide(
-    state: Readonly<State>,
-    command: Readonly<Command>,
-    context: Readonly<CommandContext>,
-  ): Decision<Event>;
-
-  evolve(state: Readonly<State>, event: Readonly<Event>): State;
-
-  project(state: Readonly<State>, viewer: Readonly<Viewer>): View;
-
-  assertInvariants(state: Readonly<State>): readonly InvariantViolation[];
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {

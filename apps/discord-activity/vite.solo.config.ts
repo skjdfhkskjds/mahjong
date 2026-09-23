@@ -16,6 +16,7 @@ export default defineConfig(({ command }) => {
   );
   return {
     define: {
+      "import.meta.env.VITE_SOLO_MODE": JSON.stringify("true"),
       "import.meta.env.VITE_ACTIVITY_MODE": JSON.stringify("mock"),
       "import.meta.env.VITE_API_BASE_URL": JSON.stringify(""),
     },

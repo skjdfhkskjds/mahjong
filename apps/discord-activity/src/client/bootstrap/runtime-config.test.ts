@@ -39,6 +39,18 @@ describe("runtime configuration", () => {
     ).toThrow(RuntimeConfigurationError);
   });
 
+  it("keeps isolated solo play in mock mode on the same origin", () => {
+    for (const search of ["?activity_mode=discord", "?activity_mode=invalid"]) {
+      expect(
+        readRuntimeConfig(search, {
+          VITE_SOLO_MODE: "true",
+          VITE_ACTIVITY_MODE: "discord",
+          VITE_API_BASE_URL: "https://example.invalid",
+        }),
+      ).toMatchObject({ mode: "mock", apiBaseUrl: "" });
+    }
+  });
+
   it("rejects unknown modes instead of silently changing trust context", () => {
     expect(() => readRuntimeConfig("?activity_mode=preview", {})).toThrow(
       'Expected "mock" or "discord"',

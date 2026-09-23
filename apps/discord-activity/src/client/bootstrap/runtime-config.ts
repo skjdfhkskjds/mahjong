@@ -11,6 +11,7 @@ export interface RuntimeConfig {
 }
 
 export interface RuntimeEnvironment {
+  readonly VITE_SOLO_MODE?: string | undefined;
   readonly VITE_ACTIVITY_MODE?: string | undefined;
   readonly VITE_API_BASE_URL?: string | undefined;
   readonly VITE_DISCORD_CLIENT_ID?: string | undefined;
@@ -57,8 +58,11 @@ export function readRuntimeConfig(
   environment: RuntimeEnvironment,
 ): RuntimeConfig {
   const query = new URLSearchParams(search);
+  const solo = environment.VITE_SOLO_MODE === "true";
   const mode = selectMode(
-    query.get("activity_mode") ?? environment.VITE_ACTIVITY_MODE,
+    solo
+      ? "mock"
+      : (query.get("activity_mode") ?? environment.VITE_ACTIVITY_MODE),
   );
   const discordClientId = environment.VITE_DISCORD_CLIENT_ID?.trim();
 
@@ -71,7 +75,7 @@ export function readRuntimeConfig(
   return {
     mode,
     ...(discordClientId ? { discordClientId } : {}),
-    apiBaseUrl: normalizeApiBaseUrl(environment.VITE_API_BASE_URL),
+    apiBaseUrl: solo ? "" : normalizeApiBaseUrl(environment.VITE_API_BASE_URL),
     mockActor: {
       id: nonEmptyOr(environment.VITE_MOCK_ACTOR_ID, "mock-player-1"),
       displayName: nonEmptyOr(
@@ -84,6 +88,7 @@ export function readRuntimeConfig(
 
 export function readBrowserRuntimeConfig(): RuntimeConfig {
   const environment: RuntimeEnvironment = {
+    VITE_SOLO_MODE: import.meta.env.VITE_SOLO_MODE,
     VITE_ACTIVITY_MODE: import.meta.env.VITE_ACTIVITY_MODE,
     VITE_API_BASE_URL: import.meta.env.VITE_API_BASE_URL,
     VITE_DISCORD_CLIENT_ID: import.meta.env.VITE_DISCORD_CLIENT_ID,

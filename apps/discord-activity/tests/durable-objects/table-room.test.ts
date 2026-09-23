@@ -1,6 +1,6 @@
 import { env } from "cloudflare:workers";
 import { evictDurableObject, runInDurableObject } from "cloudflare:test";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import {
   applyGameCommand,
   applyGameCommandV2,
@@ -1421,6 +1421,170 @@ describe("TableRoom authority", () => {
       },
     });
     fifth.socket.close(1000, "test complete");
+  });
+
+  it("serializes concurrent private reactions at one public version without losing intents", async () => {
+    const tableId = `private-race-${crypto.randomUUID()}`;
+    const stub = tableRoom(tableId);
+    const { binding } = await createTable(stub, tableId);
+    const actors = {
+      east: owner,
+      south: { id: "discord:private-south", displayName: "Private South" },
+      west: { id: "discord:private-west", displayName: "Private West" },
+      north: { id: "discord:private-north", displayName: "Private North" },
+    } as const;
+    const started = startHongKongV2Game(
+      {
+        east: actors.east.id,
+        south: actors.south.id,
+        west: actors.west.id,
+        north: actors.north.id,
+      },
+      Uint8Array.from({ length: 1_028 }, (_, index) => (index * 61 + 5) & 0xff),
+    );
+    const tileId = started.state.players.east.hand[0];
+    if (tileId === undefined) throw new Error("Reaction dealer has no tile.");
+    const discarded = applyGameCommandV2(
+      started.state,
+      started.state.players.east.actorId,
+      { type: "game/discard", tileId },
+    );
+    if (!discarded.accepted || discarded.state === undefined) {
+      throw new Error("Concurrent reaction fixture discard failed.");
+    }
+    const window = discarded.state.reactionWindow;
+    if (window === null) throw new Error("Reaction fixture has no window.");
+    const openingSequence = discarded.state.sequence;
+    const version = await installTableGameFixture(stub, binding, actors, [
+      started.event,
+      ...discarded.events,
+    ]);
+    const actorById = new Map<
+      string,
+      { readonly displayName: string; readonly id: string }
+    >(Object.values(actors).map((actor) => [actor.id, actor]));
+    const responders = [];
+    for (const seat of window.responderOrder) {
+      const actor = actorById.get(gamePlayerAt(discarded.state, seat).actorId);
+      if (actor === undefined) throw new Error("Reaction actor is missing.");
+      responders.push(await openSocket(stub, binding, 1, actor));
+    }
+    const [first, second, final] = responders;
+    if (first === undefined || second === undefined || final === undefined) {
+      throw new Error("Reaction fixture needs three responders.");
+    }
+    const observerActor = actorById.get(started.state.players.east.actorId);
+    if (observerActor === undefined) throw new Error("Observer is missing.");
+    const observer = await openSocket(stub, binding, 1, observerActor);
+    const observerSnapshots: SnapshotMessage[] = [];
+    observer.socket.addEventListener("message", (event) => {
+      const message = JSON.parse(String(event.data)) as
+        ReceiptMessage | SnapshotMessage;
+      if (message.type === "table/snapshot") {
+        observerSnapshots.push(message);
+      }
+    });
+    const command = {
+      type: "game/react",
+      windowId: window.id,
+      response: { type: "pass" },
+    };
+    const firstMessages = nextMessages<ReceiptMessage | SnapshotMessage>(
+      first.socket,
+      2,
+    );
+    const secondMessages = nextMessages<ReceiptMessage | SnapshotMessage>(
+      second.socket,
+      2,
+    );
+    first.socket.send(commandMessage("private-first", version, command));
+    second.socket.send(commandMessage("private-second", version, command));
+    const completed = await Promise.all([firstMessages, secondMessages]);
+    for (const [receipt, snapshot] of completed) {
+      expect(receipt).toMatchObject({
+        outcome: "applied",
+        stateVersion: version,
+      });
+      expect(snapshot).toMatchObject({
+        stateVersion: version,
+        view: {
+          game: { viewerActions: { reaction: { status: "submitted" } } },
+        },
+      });
+    }
+    const replay = nextMessages<ReceiptMessage | SnapshotMessage>(
+      first.socket,
+      2,
+    );
+    first.socket.send(commandMessage("private-first", version, command));
+    expect((await replay)[0]).toEqual(completed[0][0]);
+
+    // A rejected observer command orders socket delivery without causing a snapshot.
+    await expect(
+      sendCommand(observer.socket, "private-observer", version, {
+        type: "game/draw",
+      }),
+    ).resolves.toMatchObject({ outcome: "rejected", stateVersion: version });
+    expect(observerSnapshots).toEqual([]);
+    await runInDurableObject(stub, async (_instance, state) => {
+      const stored = await verifyStoredGame(state.storage.sql);
+      if (stored?.state.schemaVersion !== 2) {
+        throw new Error("Concurrent reactions did not persist a v2 game.");
+      }
+      expect(stored.state.sequence).toBe(openingSequence + 2);
+      expect(
+        Object.keys(stored.state.reactionWindow?.intents ?? {}).sort(),
+      ).toEqual(
+        [
+          first.initial.view.viewer.actor.id,
+          second.initial.view.viewer.actor.id,
+        ].sort(),
+      );
+      expect(stored.events.slice(-2).map(({ type }) => type)).toEqual([
+        "game/reaction-intent-submitted",
+        "game/reaction-intent-submitted",
+      ]);
+      expect(
+        state.storage.sql
+          .exec<{ count: number }>(
+            "SELECT count(*) AS count FROM lobby_command_receipts WHERE command_id IN ('private-first', 'private-second')",
+          )
+          .one().count,
+      ).toBe(2);
+    });
+
+    const published = nextMessage(observer.socket);
+    const resolved = nextMessages<ReceiptMessage | SnapshotMessage>(
+      final.socket,
+      2,
+    );
+    final.socket.send(commandMessage("private-final", version, command));
+    expect((await resolved)[0]).toMatchObject({
+      outcome: "applied",
+      stateVersion: version + 1,
+    });
+    expect(await published).toMatchObject({
+      stateVersion: version + 1,
+      view: { game: { phase: "awaiting-draw" } },
+    });
+    expect(observerSnapshots).toHaveLength(1);
+    await runInDurableObject(stub, async (_instance, state) => {
+      const stored = await verifyStoredGame(state.storage.sql);
+      if (stored?.state.schemaVersion !== 2) {
+        throw new Error("Reaction resolution did not persist a v2 game.");
+      }
+      expect(stored.state.sequence).toBe(openingSequence + 4);
+      expect(stored.state.reactionWindow).toBeNull();
+      expect(stored.events.slice(-4).map(({ type }) => type)).toEqual([
+        "game/reaction-intent-submitted",
+        "game/reaction-intent-submitted",
+        "game/reaction-intent-submitted",
+        "game/reaction-resolved",
+      ]);
+    });
+    for (const connection of [...responders, observer]) {
+      connection.socket.close(1000, "test complete");
+    }
   });
 
   it("persists a private draw/discard game and hash-linked events across eviction", async () => {
@@ -4456,8 +4620,131 @@ describe("persistent bot players", () => {
     }
   });
 
+  it("rolls back bot state, receipts, and queued work together before retrying", async () => {
+    const { stub, socket } = await setupBots();
+    try {
+      expect(
+        await currentCommand(stub, socket, {
+          type: "lobby/set-ready",
+          ready: true,
+        }),
+      ).toMatchObject({ outcome: "applied" });
+      expect(
+        await currentCommand(stub, socket, { type: "game/start" }),
+      ).toMatchObject({ outcome: "applied" });
+      const discard = await runInDurableObject(
+        stub,
+        async (_instance, state) => {
+          const game = await verifyStoredGame(state.storage.sql);
+          if (game?.state.schemaVersion !== 2) throw new Error("Missing game.");
+          expect(game.state.phase).toBe("awaiting-dealer-discard");
+          return projectGameV2(game.state, owner.id).viewerActions?.self.find(
+            (command) => command.type === "game/discard",
+          );
+        },
+      );
+      if (discard) {
+        expect(await currentCommand(stub, socket, discard)).toMatchObject({
+          outcome: "applied",
+        });
+      }
+      await runInDurableObject(stub, async (instance, state) => {
+        const sql = state.storage.sql;
+        await state.storage.deleteAlarm();
+        sql.exec("UPDATE bot_work SET due_at = ?", Date.now() + 60_000);
+        const job = readBotWork(sql)[0];
+        if (!job) throw new Error("Missing bot work.");
+        sql.exec(
+          "UPDATE bot_work SET due_at = 0 WHERE actor_id = ?",
+          job.actor_id,
+        );
+        const before = {
+          game: await verifyStoredGame(sql),
+          events: sql
+            .exec("SELECT * FROM game_events ORDER BY sequence")
+            .toArray(),
+          receipts: sql
+            .exec("SELECT * FROM lobby_command_receipts ORDER BY command_id")
+            .toArray(),
+          version: sql.exec("SELECT * FROM lobby_state").one(),
+          work: readBotWork(sql),
+        };
+        sql.exec(
+          "CREATE TRIGGER fail_bot_receipt BEFORE INSERT ON lobby_command_receipts WHEN NEW.actor_id LIKE 'bot:%' BEGIN SELECT RAISE(ABORT, 'injected bot receipt failure'); END",
+        );
+        // Bypass only the outer concurrency gate: an alarm exception resets the
+        // object, preventing inspection of the transaction that just rolled back.
+        const dispatcher = instance as unknown as {
+          drainDueDeadlines(now: number): Promise<boolean>;
+        };
+        try {
+          await expect(
+            dispatcher.drainDueDeadlines(Date.now()),
+          ).rejects.toThrow("injected bot receipt failure");
+          expect(await verifyStoredGame(sql)).toEqual(before.game);
+          expect(
+            sql.exec("SELECT * FROM game_events ORDER BY sequence").toArray(),
+          ).toEqual(before.events);
+          expect(
+            sql
+              .exec("SELECT * FROM lobby_command_receipts ORDER BY command_id")
+              .toArray(),
+          ).toEqual(before.receipts);
+          expect(sql.exec("SELECT * FROM lobby_state").one()).toEqual(
+            before.version,
+          );
+          expect(readBotWork(sql)).toEqual(before.work);
+        } finally {
+          sql.exec("DROP TRIGGER fail_bot_receipt");
+        }
+        await instance.alarm();
+        expect(
+          sql
+            .exec(
+              "SELECT command_id FROM lobby_command_receipts WHERE command_id = ?",
+              job.command_id,
+            )
+            .toArray(),
+        ).toEqual([{ command_id: job.command_id }]);
+        expect(
+          readBotWork(sql).some((work) => work.command_id === job.command_id),
+        ).toBe(false);
+        const recovered = await verifyStoredGame(sql);
+        expect(recovered?.state.sequence).toBeGreaterThan(
+          before.game?.state.sequence ?? 0,
+        );
+        await instance.alarm();
+        expect((await verifyStoredGame(sql))?.lastEventHash).toBe(
+          recovered?.lastEventHash,
+        );
+      });
+    } finally {
+      socket.close();
+    }
+  });
+
   it("plays a full hand through server alarms and recovers queued work after eviction", async () => {
     const { stub, binding, socket } = await setupBots();
+    let seed = 21;
+    const random = vi
+      .spyOn(crypto, "getRandomValues")
+      .mockImplementation((array) => {
+        // Bot choices must not depend on the UUID order used to drain jobs.
+        if (array instanceof Uint32Array && array.length === 1) {
+          array[0] = 0;
+          return array;
+        }
+        const bytes = new Uint8Array(
+          array.buffer,
+          array.byteOffset,
+          array.byteLength,
+        );
+        for (let index = 0; index < bytes.length; index += 1) {
+          seed = (Math.imul(seed, 1_664_525) + 1_013_904_223) >>> 0;
+          bytes[index] = seed >>> 24;
+        }
+        return array;
+      });
     try {
       expect(
         await currentCommand(stub, socket, {
@@ -4536,6 +4823,7 @@ describe("persistent bot players", () => {
       expect(terminal).toBeGreaterThan(0);
     } finally {
       socket.close();
+      random.mockRestore();
     }
   }, 30_000);
 });

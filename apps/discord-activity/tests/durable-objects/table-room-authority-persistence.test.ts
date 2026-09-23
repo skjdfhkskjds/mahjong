@@ -108,6 +108,38 @@ function installActiveV3Fixture(sql: SqlStorage): void {
 }
 
 describe("TableRoom authority persistence primitives", () => {
+  it.each(["bot_players", "bot_work"] as const)(
+    "rejects schema v5 when %s loses its cascading foreign key",
+    async (table) => {
+      const stub = tableRoom(`authority-v5-constraints-${crypto.randomUUID()}`);
+      await runInDurableObject(stub, (_instance, state) => {
+        const sql = state.storage.sql;
+        const original = sql
+          .exec<{ sql: string }>(
+            "SELECT sql FROM sqlite_master WHERE type = 'table' AND name = ?",
+            table,
+          )
+          .one().sql;
+        // Existing rows alone cannot prove that future deletes remain atomic.
+        for (const replacement of [
+          original.replace(/, FOREIGN KEY.*\)$/u, ")"),
+          original.replace("ON DELETE CASCADE", "ON DELETE RESTRICT"),
+        ]) {
+          sql.exec(`DROP TABLE ${table}`);
+          sql.exec(replacement);
+          expect(() => {
+            migrateTableRoomStorageToV5(state.storage);
+          }).toThrow("schema-v5 bot foreign keys are missing");
+        }
+        sql.exec(`DROP TABLE ${table}`);
+        sql.exec(original);
+        expect(() => {
+          migrateTableRoomStorageToV5(state.storage);
+        }).not.toThrow();
+      });
+    },
+  );
+
   it("migrates the permanent v4 schema, preserving human seats and lifecycle", async () => {
     const stub = tableRoom(`authority-v4-${crypto.randomUUID()}`);
     await runInDurableObject(stub, (_instance, state) => {
@@ -317,6 +349,52 @@ describe("TableRoom authority persistence primitives", () => {
       await expect(verifyStoredGame(state.storage.sql)).resolves.toMatchObject({
         state: { schemaVersion: 2, sequence: 4 },
       });
+    });
+  });
+
+  it("rejects reuse of a committed prepared batch through event sequence uniqueness", async () => {
+    const stub = tableRoom(`authority-stale-batch-${crypto.randomUUID()}`);
+    await runInDurableObject(stub, async (_instance, state) => {
+      const sql = state.storage.sql;
+      installActiveV3Fixture(sql);
+      migrateTableRoomStorageToV5(state.storage);
+      const legacy = await verifyStoredGame(sql);
+      if (legacy === undefined) throw new Error("Fixture game is absent.");
+      const upgrade = await prepareV1GameUpgrade(legacy);
+      persistPreparedGameBatch(state.storage, upgrade, (transaction) => {
+        transaction.exec(
+          "UPDATE lobby_state SET state_version = state_version + 1 WHERE singleton = 1",
+        );
+        transaction.exec(
+          "INSERT INTO lobby_command_receipts (command_id, actor_id, request_json, response_json, created_at) VALUES ('committed-upgrade', 'actor:east', '{}', '{}', 100)",
+        );
+      });
+      const readCommittedRows = () => ({
+        checkpoint: sql.exec("SELECT * FROM canonical_game_state").toArray(),
+        events: sql
+          .exec("SELECT * FROM game_events ORDER BY sequence")
+          .toArray(),
+        receipts: sql
+          .exec("SELECT * FROM lobby_command_receipts ORDER BY command_id")
+          .toArray(),
+        version: sql
+          .exec("SELECT state_version FROM lobby_state WHERE singleton = 1")
+          .one(),
+      });
+      const committed = readCommittedRows();
+      const verified = await verifyStoredGame(sql);
+
+      // Deliberate helper misuse: production serializes preparation through commit.
+      expect(() => {
+        persistPreparedGameBatch(state.storage, upgrade, (transaction) => {
+          transaction.exec("DELETE FROM lobby_command_receipts");
+          transaction.exec(
+            "UPDATE lobby_state SET state_version = state_version + 1 WHERE singleton = 1",
+          );
+        });
+      }).toThrow("UNIQUE constraint failed: game_events.sequence");
+      expect(readCommittedRows()).toEqual(committed);
+      await expect(verifyStoredGame(sql)).resolves.toEqual(verified);
     });
   });
 

@@ -9,7 +9,9 @@ export function soloWorkerConfig(configPath: string): {
   dispose: () => void;
 } {
   // Validate this third-party result before copying its configuration fields.
-  const value: unknown = readWranglerConfig({ config: configPath });
+  // An explicit empty environment selects the committed top-level mock config,
+  // even when the caller's shell normally selects the production environment.
+  const value: unknown = readWranglerConfig({ config: configPath, env: "" });
   if (typeof value !== "object" || value === null || Array.isArray(value)) {
     throw new Error("Invalid base Worker configuration.");
   }

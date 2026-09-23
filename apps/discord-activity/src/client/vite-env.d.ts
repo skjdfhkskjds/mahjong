@@ -1,4 +1,5 @@
 interface ImportMetaEnv {
+  readonly VITE_SOLO_MODE?: string;
   readonly VITE_ACTIVITY_MODE?: string;
   readonly VITE_API_BASE_URL?: string;
   readonly VITE_DISCORD_CLIENT_ID?: string;

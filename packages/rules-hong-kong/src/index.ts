@@ -82,10 +82,7 @@ export {
   legalReactionsForSeat,
   reactionKey,
 } from "./claims/legal-reactions.js";
-export {
-  allRespondersSubmitted,
-  normalizeReactionWindow,
-} from "./claims/reaction-resolution.js";
+export { normalizeReactionWindow } from "./claims/reaction-resolution.js";
 export type {
   NormalizedReaction,
   ReactionOutcome,
@@ -152,3 +149,14 @@ export {
   HONG_KONG_V1_SHUFFLE_ALGORITHM,
   selectInitialDealerPosition,
 } from "./wall/deterministic-shuffle.js";
+export { hongKongGameEngine } from "./engine/hong-kong-engine.js";
+export type { HongKongEngineResult } from "./engine/hong-kong-engine.js";
+export type {
+  HongKongMoveError,
+  HongKongMoveOutcome,
+  HongKongReactionOutcome,
+  HongKongResolution,
+  HongKongSubmission,
+  HongKongTurnStage,
+  KongReplacement,
+} from "./engine/hong-kong-policy-outcomes.js";

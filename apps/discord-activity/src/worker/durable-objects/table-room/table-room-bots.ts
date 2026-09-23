@@ -47,6 +47,35 @@ export function createBotTables(sql: SqlStorage): void {
   );
 }
 
+/** Recovery must retain the cascades that atomically retire a bot and its work. */
+export function verifyBotPersistence(sql: SqlStorage): void {
+  for (const [table, parent] of [
+    ["bot_players", "members"],
+    ["bot_work", "bot_players"],
+  ] as const) {
+    const keys = sql
+      .exec<{
+        from: string;
+        table: string;
+        to: string;
+        on_delete: string;
+      }>(`PRAGMA foreign_key_list(${table})`)
+      .toArray();
+    if (
+      !keys.some(
+        (key) =>
+          key.from === "actor_id" &&
+          key.table === parent &&
+          key.to === "actor_id" &&
+          key.on_delete === "CASCADE",
+      )
+    ) {
+      throw new Error("TableRoom schema-v5 bot foreign keys are missing.");
+    }
+  }
+  readBotWork(sql);
+}
+
 export function readBotIds(sql: SqlStorage): ReadonlySet<string> {
   const rows = sql
     .exec<{ actor_id: string; policy_version: string; seated: string | null }>(
