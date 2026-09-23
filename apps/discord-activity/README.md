@@ -149,13 +149,27 @@ Regenerate them whenever bindings, compatibility date, or flags change.
 
 ## Deployment
 
+Pre-launch production deploys intentionally erase every `ActivityInstance` and
+`TableRoom` SQLite database. The `deploy` command validates the Discord client
+configuration and production Worker build first. It then deploys a temporary 503 Worker
+whose Durable Object export tombstones permanently delete both namespaces and
+all their data. A second deploy restores the app and creates empty namespaces.
+Existing sessions, tables, seats, games, and connections are lost on every
+deploy; players must launch a new Activity instance. New objects initialize the
+current schema on first access, so pre-launch deploys do not migrate live data.
+The two deploys cause a brief maintenance window. If the second deploy fails,
+rerun the same command to restore service. Do not use this command once
+production data must survive a release; change the deployment policy before
+launch.
+
 Protocol v2 is an atomic client/Worker release. The Worker serves
 content-hashed client assets from the same deployment, so rollout replaces both
 wire endpoints together and rollback restores both together. Do not roll back
-only the Worker or reuse an older HTML shell with a newer Worker. Storage schema
-v5 remains forward-only across a code rollback; use the previous release only
-if it understands schema v5, otherwise restore the complete pre-migration
-deployment and storage backup rather than attempting to reinterpret v5 rows.
+only the Worker or reuse an older HTML shell with a newer Worker. Once deploys
+preserve data, storage schema v5 remains forward-only across a code rollback;
+use the previous release only if it understands schema v5, otherwise restore
+the complete pre-migration deployment and storage backup rather than attempting
+to reinterpret v5 rows.
 
 Bot management adds `lobby/add-bot` and `lobby/remove-bot` commands with a
 `seat` field to protocol v2; the snapshot and receipt shapes are unchanged.
@@ -166,7 +180,10 @@ without changing seats, game events, or hashes. Rollback to pre-bot code needs
 the complete pre-migration backup because that code rejects schema v5.
 See [ADR 0015](../../docs/decisions/0015-persistent-bot-players.md).
 
-The production command fails before building unless `VITE_ACTIVITY_MODE=discord` and a valid `VITE_DISCORD_CLIENT_ID` are present. The production Wrangler environment does not inherit the committed mock signing key.
+Set `VITE_ACTIVITY_MODE=discord` and a valid `VITE_DISCORD_CLIENT_ID` in
+`.env.local` or the shell environment. The production command validates these
+before building. It selects the production Cloudflare environment at build
+time; that environment does not inherit the committed mock signing key.
 
 Provision Worker secrets before the first deployment:
 
@@ -177,4 +194,4 @@ corepack pnpm --filter @mahjong/discord-activity exec wrangler secret put DISCOR
 corepack pnpm --filter @mahjong/discord-activity exec wrangler secret put SESSION_SIGNING_KEY --env production
 ```
 
-Only provision `SESSION_SIGNING_KEY_PREVIOUS` during an active signing-key rotation. Then run `corepack pnpm --filter @mahjong/discord-activity deploy`. Deployment is intentionally manual and credential-gated; local implementation and tests never invoke it.
+Only provision `SESSION_SIGNING_KEY_PREVIOUS` during an active signing-key rotation. Then run `corepack pnpm --filter @mahjong/discord-activity deploy`. Deployment is intentionally manual and credential-gated; local implementation and tests never invoke it. This command deletes production Durable Object data on every run, including a retry after a partial deploy.
