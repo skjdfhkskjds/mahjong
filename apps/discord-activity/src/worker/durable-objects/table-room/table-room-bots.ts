@@ -1,42 +1,13 @@
-import {
-  projectGameV2,
-  type CanonicalGameStateV2,
-  type GameViewV2,
-  type HongKongGameCommandV2,
-} from "@mahjong/rules-hong-kong";
-import type { TableSeat } from "./table-room-protocol.js";
+export {
+  botLegalMoves,
+  chooseBotMove,
+  botWorkTarget,
+} from "./table-bot-policy.js";
+import { isValidApplicationActor } from "../../auth/application-session.js";
+import type { PlayerControl } from "./table-player-control.js";
 
 const BOT_ID =
   /^bot:[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/u;
-const BOT_MOVE_DELAY_MS = 750;
-
-/** Policy input is a single player's projection, never canonical game state. */
-export function botLegalMoves(
-  view: GameViewV2,
-): readonly HongKongGameCommandV2[] {
-  if (view.phase === "complete" || view.phase === "exhausted") return [];
-  const reaction = view.viewerActions?.reaction;
-  if (reaction) {
-    return reaction.status === "open"
-      ? reaction.actions.map((response) => ({
-          type: "game/react",
-          windowId: reaction.windowId,
-          response,
-        }))
-      : [];
-  }
-  return view.viewerActions?.self ?? [];
-}
-
-export function chooseBotMove(
-  view: GameViewV2,
-  random: number,
-): HongKongGameCommandV2 | undefined {
-  if (!Number.isFinite(random) || random < 0 || random >= 1)
-    throw new Error("Invalid bot randomness.");
-  const actions = botLegalMoves(view);
-  return actions[Math.floor(random * actions.length)];
-}
 
 export function createBotTables(sql: SqlStorage): void {
   sql.exec(
@@ -47,11 +18,10 @@ export function createBotTables(sql: SqlStorage): void {
   );
 }
 
-/** Recovery must retain the cascades that atomically retire a bot and its work. */
-export function verifyBotPersistence(sql: SqlStorage): void {
+function verifyBotForeignKeys(sql: SqlStorage, version: 5 | 6): void {
   for (const [table, parent] of [
     ["bot_players", "members"],
-    ["bot_work", "bot_players"],
+    ["bot_work", version === 5 ? "bot_players" : "members"],
   ] as const) {
     const keys = sql
       .exec<{
@@ -70,8 +40,40 @@ export function verifyBotPersistence(sql: SqlStorage): void {
           key.on_delete === "CASCADE",
       )
     ) {
-      throw new Error("TableRoom schema-v5 bot foreign keys are missing.");
+      throw new Error(
+        `TableRoom schema-v${String(version)} bot foreign keys are missing.`,
+      );
     }
+  }
+}
+
+/** Runs inside the schema migration transaction; v5 jobs belonged only to dedicated bots. */
+export function migrateBotWorkToV6(sql: SqlStorage): void {
+  verifyBotForeignKeys(sql, 5);
+  readBotIds(sql);
+  if (sql.exec("PRAGMA foreign_key_check").toArray().length !== 0)
+    throw new Error("TableRoom schema-v5 foreign keys are violated.");
+  sql.exec("ALTER TABLE bot_work RENAME TO bot_work_v5");
+  sql.exec(
+    "CREATE TABLE bot_work (actor_id TEXT PRIMARY KEY, target TEXT NOT NULL, command_id TEXT NOT NULL UNIQUE, due_at INTEGER NOT NULL CHECK (due_at BETWEEN 0 AND 9007199254740991), controller_generation INTEGER NOT NULL CHECK (controller_generation BETWEEN 0 AND 9007199254740991), FOREIGN KEY (actor_id) REFERENCES members(actor_id) ON DELETE CASCADE)",
+  );
+  sql.exec(
+    "INSERT INTO bot_work (actor_id, target, command_id, due_at, controller_generation) SELECT actor_id, target, command_id, due_at, 0 FROM bot_work_v5",
+  );
+  sql.exec("DROP TABLE bot_work_v5");
+}
+
+/** Recovery must retain the cascades that atomically retire a player and its work. */
+export function verifyBotPersistence(sql: SqlStorage): void {
+  verifyBotForeignKeys(sql, 6);
+  const generation = sql
+    .exec<{ name: string; type: string; notnull: number }>(
+      "PRAGMA table_info(bot_work)",
+    )
+    .toArray()
+    .find((column) => column.name === "controller_generation");
+  if (generation?.type !== "INTEGER" || generation.notnull !== 1) {
+    throw new Error("TableRoom schema-v6 controller generation is missing.");
   }
   readBotWork(sql);
 }
@@ -101,24 +103,29 @@ export interface BotWork {
   readonly target: string;
   readonly command_id: string;
   readonly due_at: number;
+  readonly controller_generation: number;
   readonly [key: string]: SqlStorageValue;
 }
 
 export function readBotWork(sql: SqlStorage): readonly BotWork[] {
-  const bots = readBotIds(sql);
+  const players = new Set(
+    readPlayerControls(sql).map(({ actorId }) => actorId),
+  );
   const rows = sql
     .exec<BotWork>(
-      "SELECT actor_id, target, command_id, due_at FROM bot_work ORDER BY due_at, actor_id",
+      "SELECT actor_id, target, command_id, due_at, controller_generation FROM bot_work ORDER BY due_at, actor_id",
     )
     .toArray();
   if (
     rows.some(
       (row) =>
-        !bots.has(row.actor_id) ||
+        !players.has(row.actor_id) ||
         !/^(turn:[0-9]+|reaction:[^\p{Cc}\p{Cf}]{1,96})$/u.test(row.target) ||
         !/^[A-Za-z0-9_-]{1,64}$/u.test(row.command_id) ||
         !Number.isSafeInteger(row.due_at) ||
-        row.due_at < 0,
+        row.due_at < 0 ||
+        !Number.isSafeInteger(row.controller_generation) ||
+        row.controller_generation < 0,
     )
   ) {
     throw new Error("Persisted bot work is malformed.");
@@ -126,107 +133,40 @@ export function readBotWork(sql: SqlStorage): readonly BotWork[] {
   return rows;
 }
 
-export function botWorkTarget(
-  state: CanonicalGameStateV2,
-  actorId: string,
-): string | undefined {
-  const view = projectGameV2(state, actorId);
-  if (botLegalMoves(view).length === 0) return undefined;
-  return view.reaction
-    ? `reaction:${view.reaction.windowId}`
-    : `turn:${String(state.sequence)}`;
-}
-
-/** Called inside the same transaction as the transition that creates work. */
-export function reconcileBotWork(
-  sql: SqlStorage,
-  state: CanonicalGameStateV2 | undefined,
-  now: number,
-  abandoned: boolean,
-): void {
-  const existing = new Map(readBotWork(sql).map((row) => [row.actor_id, row]));
-  for (const actorId of readBotIds(sql)) {
-    const target =
-      state && !abandoned ? botWorkTarget(state, actorId) : undefined;
-    if (target === undefined) {
-      sql.exec("DELETE FROM bot_work WHERE actor_id = ?", actorId);
-    } else if (existing.get(actorId)?.target !== target) {
-      sql.exec(
-        "INSERT INTO bot_work (actor_id, target, command_id, due_at) VALUES (?, ?, ?, ?) ON CONFLICT(actor_id) DO UPDATE SET target = excluded.target, command_id = excluded.command_id, due_at = excluded.due_at",
-        actorId,
-        target,
-        crypto.randomUUID(),
-        now + BOT_MOVE_DELAY_MS,
-      );
-    }
-  }
-}
-
-export function changeBotSeat(
-  sql: SqlStorage,
-  input: {
-    readonly actorId: string;
-    readonly ownerId: string | undefined;
-    readonly seat: TableSeat;
-    readonly type: "lobby/add-bot" | "lobby/remove-bot";
-    readonly now: number;
-  },
-): { readonly code: string; readonly message: string } | undefined {
-  if (input.actorId !== input.ownerId)
-    return {
-      code: "owner-required",
-      message: "Only the table owner can manage bots.",
-    };
-  const seated = sql
-    .exec<{ actor_id: string }>(
-      "SELECT actor_id FROM lobby_seats WHERE actor_id = ?",
-      input.actorId,
-    )
-    .toArray()[0];
-  if (!seated)
-    return {
-      code: "owner-must-be-seated",
-      message: "Claim a seat before managing bots.",
-    };
-  const occupant = sql
-    .exec<{ actor_id: string }>(
-      "SELECT actor_id FROM lobby_seats WHERE seat = ?",
-      input.seat,
-    )
-    .toArray()[0];
+export function readPlayerControls(sql: SqlStorage): readonly PlayerControl[] {
   const bots = readBotIds(sql);
-  if (input.type === "lobby/add-bot") {
-    if (occupant || bots.size >= 3)
-      return {
-        code: "seat-unavailable",
-        message: "Choose an empty seat for the bot.",
-      };
-    const actorId = `bot:${crypto.randomUUID()}`;
-    const name = `Bot ${input.seat[0]?.toUpperCase() ?? ""}${input.seat.slice(1)}`;
-    sql.exec(
-      "INSERT INTO members (actor_id, display_name, role, joined_at) VALUES (?, ?, 'member', ?)",
-      actorId,
-      name,
-      input.now,
-    );
-    sql.exec(
-      "INSERT INTO lobby_seats (seat, actor_id, display_name, ready) VALUES (?, ?, ?, 1)",
-      input.seat,
-      actorId,
-      name,
-    );
-    sql.exec(
-      "INSERT INTO bot_players (actor_id, policy_version) VALUES (?, 'random/v1')",
-      actorId,
-    );
-  } else {
-    if (!occupant || !bots.has(occupant.actor_id))
-      return {
-        code: "bot-required",
-        message: "That seat does not contain a bot.",
-      };
-    sql.exec("DELETE FROM lobby_seats WHERE actor_id = ?", occupant.actor_id);
-    sql.exec("DELETE FROM members WHERE actor_id = ?", occupant.actor_id);
-  }
-  return undefined;
+  const rows = sql
+    .exec<{
+      actor_id: string;
+      member_id: string | null;
+      display_name: string | null;
+      connection_generation: number | null;
+      autopilot: number | null;
+    }>(
+      "SELECT s.actor_id, m.actor_id AS member_id, m.display_name, a.connection_generation, a.autopilot FROM lobby_seats s LEFT JOIN members m ON m.actor_id = s.actor_id LEFT JOIN player_automation a ON a.actor_id = s.actor_id ORDER BY s.actor_id",
+    )
+    .toArray();
+  return rows.map((row) => {
+    if (
+      row.member_id !== row.actor_id ||
+      !isValidApplicationActor({
+        id: row.actor_id,
+        displayName: row.display_name,
+      }) ||
+      (row.connection_generation !== null &&
+        (!Number.isSafeInteger(row.connection_generation) ||
+          row.connection_generation < 0)) ||
+      (row.autopilot !== null && row.autopilot !== 0 && row.autopilot !== 1) ||
+      (row.connection_generation === null) !== (row.autopilot === null)
+    ) {
+      throw new Error("Persisted player controllers are malformed.");
+    }
+    const bot = bots.has(row.actor_id);
+    return {
+      actorId: row.actor_id,
+      kind: bot ? "BOT" : "HUMAN",
+      controller: bot || row.autopilot === 1 ? "BOT" : "HUMAN",
+      generation: bot ? 0 : (row.connection_generation ?? 0),
+    };
+  });
 }

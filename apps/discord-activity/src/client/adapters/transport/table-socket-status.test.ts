@@ -13,6 +13,11 @@ import {
   ReconnectingSocketStatusMonitor,
   type TableCommand,
 } from "./table-socket-status.js";
+import {
+  TABLE_HEARTBEAT_READY,
+  TABLE_HEARTBEAT_REQUEST,
+  TABLE_HEARTBEAT_RESPONSE,
+} from "./table-socket-heartbeat.js";
 
 import { validateCommand } from "./table-socket-protocol-v2.js";
 
@@ -228,6 +233,7 @@ function projectedTile(id: number) {
 }
 
 class FakeSocket {
+  public readyState: number = WebSocket.CONNECTING;
   public closed = false;
   public closeCode: number | undefined;
   public readonly sent: string[] = [];
@@ -242,7 +248,20 @@ class FakeSocket {
     this.listeners.set(type, listeners);
   }
 
+  public removeEventListener(
+    type: string,
+    listener: (event: Event) => void,
+  ): void {
+    this.listeners.set(
+      type,
+      (this.listeners.get(type) ?? []).filter(
+        (candidate) => candidate !== listener,
+      ),
+    );
+  }
+
   public close(code?: number): void {
+    this.readyState = WebSocket.CLOSING;
     this.closed = true;
     this.closeCode = code;
   }
@@ -252,6 +271,8 @@ class FakeSocket {
   }
 
   public emit(type: string, event: Event): void {
+    if (type === "open") this.readyState = WebSocket.OPEN;
+    if (type === "close") this.readyState = WebSocket.CLOSED;
     for (const listener of this.listeners.get(type) ?? []) {
       listener(event);
     }
@@ -267,7 +288,9 @@ describe("viewer-safe table snapshots", () => {
   it("builds a server-resolved table socket URL without a table locator", () => {
     expect(
       createTableSocketUrl("", { origin: "https://activity.example" }),
-    ).toBe("wss://activity.example/api/table/socket?protocolVersion=2");
+    ).toBe(
+      "wss://activity.example/api/table/socket?protocolVersion=2&heartbeat=1",
+    );
   });
 
   it("parses the walking-skeleton lobby projection", () => {
@@ -1257,6 +1280,11 @@ describe("viewer-safe table snapshots", () => {
     );
     monitor.start(() => undefined);
     socket.emit("open", new Event("open"));
+    socket.emit(
+      "message",
+      new MessageEvent("message", { data: JSON.stringify(snapshot) }),
+    );
+    socket.sent.length = 0;
 
     monitor.sendCommand({
       type: "table/command",
@@ -1397,7 +1425,7 @@ describe("viewer-safe table snapshots", () => {
     ]);
   });
 
-  it("publishes receipts without treating them as protocol errors", () => {
+  it("delivers receipts without treating them as protocol errors", () => {
     vi.stubGlobal("window", globalThis);
     const socket = new FakeSocket();
     const statuses: Parameters<
@@ -1407,6 +1435,8 @@ describe("viewer-safe table snapshots", () => {
       "ws://activity.test/api/table/socket?protocolVersion=2",
       () => socket as unknown as WebSocket,
     );
+    const receipts: unknown[] = [];
+    monitor.subscribe("table/receipt", (receipt) => receipts.push(receipt));
     monitor.start((status) => statuses.push(status));
     socket.emit("open", new Event("open"));
     socket.emit(
@@ -1423,9 +1453,11 @@ describe("viewer-safe table snapshots", () => {
     );
 
     expect(statuses.at(-1)).toMatchObject({
-      state: "connected",
-      latestReceipt: { commandId: "command-1", outcome: "applied" },
+      state: "awaiting-snapshot",
     });
+    expect(receipts).toMatchObject([
+      { commandId: "command-1", outcome: "applied" },
+    ]);
     expect(socket.closed).toBe(false);
   });
 
@@ -1438,6 +1470,11 @@ describe("viewer-safe table snapshots", () => {
     );
     monitor.start(() => undefined);
     socket.emit("open", new Event("open"));
+    socket.emit(
+      "message",
+      new MessageEvent("message", { data: JSON.stringify(snapshot) }),
+    );
+    socket.sent.length = 0;
     const commands = [
       { type: "game/start" },
       { type: "game/draw" },
@@ -1515,7 +1552,7 @@ describe("viewer-safe table snapshots", () => {
         lastSeenStateVersion: 0,
       }),
     ]);
-    expect(states.at(-1)).toBe("reconnecting");
+    expect(states.at(-1)).toBe("awaiting-snapshot");
     expect(() => {
       monitor.sendCommand({
         type: "table/command",
@@ -1577,7 +1614,6 @@ describe("viewer-safe table snapshots", () => {
 
     expect(statuses.at(-1)).toMatchObject({
       state: "connected",
-      snapshot: { stateVersion: 7 },
     });
     expect(createSocket).toHaveBeenCalledTimes(2);
     monitor.sendCommand({
@@ -1698,6 +1734,212 @@ describe("viewer-safe table snapshots", () => {
     expect(states.at(-1)).toBe("authentication-required");
     expect(createSocket).toHaveBeenCalledTimes(1);
   });
+});
+
+describe("table heartbeat capability negotiation", () => {
+  const command = {
+    type: "table/command",
+    protocolVersion: 2,
+    commandId: "heartbeat-boundary-command",
+    expectedStateVersion: 0,
+    command: { type: "lobby/leave-seat" },
+  } as const;
+  const message = (socket: FakeSocket, data: unknown): void => {
+    socket.emit("message", new MessageEvent("message", { data }));
+  };
+  const setup = () => {
+    vi.useFakeTimers();
+    vi.stubGlobal("window", globalThis);
+    const first = new FakeSocket();
+    const second = new FakeSocket();
+    const sockets = [first, second];
+    const createSocket = vi.fn(() => sockets.shift() as unknown as WebSocket);
+    const monitor = new ReconnectingSocketStatusMonitor(
+      createTableSocketUrl("", { origin: "https://activity.test" }),
+      createSocket,
+    );
+    const states: string[] = [];
+    const stop = monitor.start(({ state }) => states.push(state));
+    first.emit("open", new Event("open"));
+    // Initialization resync is covered by the lifecycle suite.
+    first.sent.length = 0;
+    return { first, second, createSocket, monitor, states, stop };
+  };
+
+  it("keeps older Workers compatible by sending no heartbeat before ready", () => {
+    const { first, monitor, states, stop } = setup();
+    expect(() => {
+      monitor.sendCommand(command);
+    }).toThrow("not connected");
+    message(first, JSON.stringify(snapshot));
+    vi.advanceTimersByTime(30_000);
+    expect(first.sent).toEqual([]);
+    expect(states.at(-1)).toBe("connected");
+    monitor.sendCommand(command);
+    expect(first.sent).toEqual([JSON.stringify(command)]);
+    stop();
+  });
+
+  it("starts one heartbeat loop after ready without treating ready or ACK as a snapshot", () => {
+    const { first, monitor, states, stop } = setup();
+    message(first, TABLE_HEARTBEAT_RESPONSE);
+    message(first, TABLE_HEARTBEAT_READY);
+    message(first, TABLE_HEARTBEAT_READY);
+    vi.advanceTimersByTime(0);
+    expect(first.sent).toEqual([TABLE_HEARTBEAT_REQUEST]);
+    message(first, TABLE_HEARTBEAT_RESPONSE);
+    expect(states.at(-1)).toBe("awaiting-snapshot");
+    expect(() => {
+      monitor.sendCommand(command);
+    }).toThrow("not connected");
+    message(first, JSON.stringify(snapshot));
+    expect(states.at(-1)).toBe("connected");
+    vi.advanceTimersByTime(5_000);
+    expect(first.sent).toEqual([
+      TABLE_HEARTBEAT_REQUEST,
+      TABLE_HEARTBEAT_REQUEST,
+    ]);
+    stop();
+    expect(vi.getTimerCount()).toBe(0);
+  });
+
+  it("retires the heartbeat when a snapshot subscriber restarts the run", () => {
+    const { first, second, createSocket, monitor, states, stop } = setup();
+    let stopReplacement: (() => void) | undefined;
+    const unsubscribe = monitor.subscribe("table/snapshot", () => {
+      unsubscribe();
+      stopReplacement = monitor.start(({ state }) => states.push(state));
+    });
+    message(first, TABLE_HEARTBEAT_READY);
+    vi.advanceTimersByTime(0);
+    message(first, JSON.stringify(snapshot));
+    expect(first.closed).toBe(true);
+    expect(createSocket).toHaveBeenCalledTimes(2);
+    expect(vi.getTimerCount()).toBe(0);
+    stop();
+    expect(second.closed).toBe(false);
+
+    second.emit("open", new Event("open"));
+    second.sent.length = 0;
+    message(second, TABLE_HEARTBEAT_READY);
+    vi.advanceTimersByTime(0);
+    expect(() => {
+      monitor.sendCommand(command);
+    }).toThrow("not connected");
+    message(second, JSON.stringify(snapshot));
+    vi.advanceTimersByTime(14_999);
+    message(first, TABLE_HEARTBEAT_RESPONSE);
+    expect(second.closed).toBe(false);
+    vi.advanceTimersByTime(1);
+    expect(second.closeCode).toBe(4000);
+    expect(first.sent).toEqual([TABLE_HEARTBEAT_REQUEST]);
+    stopReplacement?.();
+    expect(vi.getTimerCount()).toBe(0);
+  });
+
+  it("stops after explicit departure without leaving heartbeat or reconnect work", () => {
+    const { first, createSocket, monitor, states } = setup();
+    message(first, TABLE_HEARTBEAT_READY);
+    message(first, JSON.stringify(snapshot));
+    vi.advanceTimersByTime(0);
+    first.emit("close", Object.assign(new Event("close"), { code: 4002 }));
+    message(first, TABLE_HEARTBEAT_RESPONSE);
+    message(first, TABLE_HEARTBEAT_READY);
+    vi.advanceTimersByTime(30_000);
+    expect(states.at(-1)).toBe("stopped");
+    expect(createSocket).toHaveBeenCalledTimes(1);
+    expect(first.sent).toEqual([TABLE_HEARTBEAT_REQUEST]);
+    expect(vi.getTimerCount()).toBe(0);
+    expect(() => {
+      monitor.sendCommand(command);
+    }).toThrow("not connected");
+  });
+
+  it.each(["closing", "error"] as const)(
+    "waits for terminal departure after %s without heartbeat reconnect",
+    (reason) => {
+      const { first, createSocket, monitor, states } = setup();
+      message(first, TABLE_HEARTBEAT_READY);
+      message(first, JSON.stringify(snapshot));
+      vi.advanceTimersByTime(0);
+      if (reason === "closing") first.readyState = 2;
+      else first.emit("error", new Event("error"));
+      vi.advanceTimersByTime(20_000);
+      expect(createSocket).toHaveBeenCalledTimes(1);
+      first.emit("close", Object.assign(new Event("close"), { code: 4002 }));
+      vi.advanceTimersByTime(30_000);
+      expect(states.at(-1)).toBe("stopped");
+      expect(createSocket).toHaveBeenCalledTimes(1);
+      expect(vi.getTimerCount()).toBe(0);
+      expect(() => {
+        monitor.sendCommand(command);
+      }).toThrow("not connected");
+    },
+  );
+
+  it("still reconnects after an ordinary normal close", () => {
+    const { first, createSocket, states, stop } = setup();
+    message(first, TABLE_HEARTBEAT_READY);
+    message(first, JSON.stringify(snapshot));
+    vi.advanceTimersByTime(0);
+    first.emit("close", Object.assign(new Event("close"), { code: 1000 }));
+    vi.advanceTimersByTime(1_000);
+    expect(states.at(-1)).toBe("connecting");
+    expect(createSocket).toHaveBeenCalledTimes(2);
+    expect(first.sent).toEqual([TABLE_HEARTBEAT_REQUEST]);
+    stop();
+    expect(vi.getTimerCount()).toBe(0);
+  });
+
+  it("reconnects on timeout without waiting for a close event and ignores retired socket ACKs", () => {
+    const { first, second, createSocket, monitor, states, stop } = setup();
+    message(first, TABLE_HEARTBEAT_READY);
+    message(first, JSON.stringify(snapshot));
+    vi.advanceTimersByTime(15_000);
+    expect(first.closeCode).toBe(4000);
+    expect(states.at(-1)).toBe("reconnecting");
+    message(first, TABLE_HEARTBEAT_RESPONSE);
+    message(first, TABLE_HEARTBEAT_READY);
+    vi.advanceTimersByTime(1_000);
+    expect(createSocket).toHaveBeenCalledTimes(2);
+    second.emit("open", new Event("open"));
+    message(second, TABLE_HEARTBEAT_READY);
+    vi.advanceTimersByTime(0);
+    message(second, TABLE_HEARTBEAT_RESPONSE);
+    expect(() => {
+      monitor.sendCommand(command);
+    }).toThrow("not connected");
+    message(second, JSON.stringify(snapshot));
+    vi.advanceTimersByTime(19_999);
+    message(first, TABLE_HEARTBEAT_RESPONSE);
+    expect(second.closed).toBe(false);
+    vi.advanceTimersByTime(1);
+    expect(second.closeCode).toBe(4000);
+    stop();
+    expect(vi.getTimerCount()).toBe(0);
+  });
+
+  it.each(["stop", "replacement", "protocol-error", "close"])(
+    "cleans up heartbeat timers after %s",
+    (ending) => {
+      const { first, stop } = setup();
+      message(first, TABLE_HEARTBEAT_READY);
+      vi.advanceTimersByTime(0);
+      if (ending === "stop") stop();
+      else if (ending === "replacement")
+        message(
+          first,
+          JSON.stringify({ type: "session/replaced", protocolVersion: 2 }),
+        );
+      else if (ending === "protocol-error") message(first, "malformed");
+      else
+        first.emit("close", Object.assign(new Event("close"), { code: 1008 }));
+      message(first, TABLE_HEARTBEAT_RESPONSE);
+      vi.advanceTimersByTime(30_000);
+      expect(first.sent).toEqual([TABLE_HEARTBEAT_REQUEST]);
+      expect(vi.getTimerCount()).toBe(0);
+    },
+  );
 });
 
 describe("bot protocol-v2 compatibility", () => {

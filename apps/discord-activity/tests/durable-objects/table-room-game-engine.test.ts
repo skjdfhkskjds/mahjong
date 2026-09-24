@@ -1,6 +1,5 @@
 import { describe, expect, it } from "vitest";
 
-import { appendAutomaticReactionPasses } from "../../src/worker/durable-objects/table-room/table-room-automation.js";
 import {
   expireTableGame,
   startTableGame,
@@ -100,9 +99,7 @@ describe("TableRoom engine composition", () => {
     const pending = tableGameEngine.automate(opened.state, firstActor);
     if (pending.kind === "rejected") throw new Error(pending.error.message);
     expect(pending.kind).toBe("pending");
-    expect(appendAutomaticReactionPasses(pending, new Set()).visibility).toBe(
-      "private",
-    );
+    expect(pending.visibility).toBe("private");
     if (deadline.payload.type !== "system/reaction-expired")
       throw new Error("Expected reaction deadline.");
     expect(tableGameDeadlineMatches(pending.state, deadline.payload)).toBe(
@@ -111,19 +108,29 @@ describe("TableRoom engine composition", () => {
     expect(tableGameDeadline(pending.state)).toEqual(
       tableGameDeadline(opened.state),
     );
-    const automatedActors = new Set(
-      opened.lifecycle.participants.map(({ actorId }) => actorId),
-    );
-    const resolved = appendAutomaticReactionPasses(pending, automatedActors);
+    let resolved = pending;
+    const events = [...pending.events];
+    for (const seat of phase.window.responders.slice(1)) {
+      const response = tableGameEngine.execute(
+        resolved.state,
+        tableGameActorAt(opened.state, seat),
+        {
+          type: "game/react",
+          windowId: phase.window.id,
+          response: { type: "pass" },
+        },
+      );
+      if (response.kind === "rejected") throw new Error(response.error.message);
+      resolved = response;
+      events.push(...response.events);
+    }
     expect(resolved.visibility).toBe("public");
     expect(tableGameEngine.lifecycle(resolved.state).phase).toMatchObject({
       kind: "turn",
       stage: "awaiting-draw",
     });
     expect(
-      resolved.events.filter(
-        ({ type }) => type === "game/reaction-intent-submitted",
-      ),
+      events.filter(({ type }) => type === "game/reaction-intent-submitted"),
     ).toHaveLength(3);
     expect(tableGameDeadlineMatches(resolved.state, deadline.payload)).toBe(
       false,

@@ -734,10 +734,11 @@ async function connectTable(
   headers.set("X-Mahjong-Table-Id", validated.binding.tableId);
   const stub = env.TABLE_ROOM.getByName(validated.binding.tableId);
   const tableRoomUrl = new URL("https://table-room.internal/connect");
-  for (const requestedVersion of new URL(request.url).searchParams.getAll(
-    "protocolVersion",
-  )) {
-    tableRoomUrl.searchParams.append("protocolVersion", requestedVersion);
+  const query = new URL(request.url).searchParams;
+  for (const name of ["protocolVersion", "heartbeat"]) {
+    for (const value of query.getAll(name)) {
+      tableRoomUrl.searchParams.append(name, value);
+    }
   }
   return stub.fetch(
     new Request(tableRoomUrl, {

@@ -12,12 +12,15 @@ import {
   earliestPendingDeadline,
   MAX_DUE_DEADLINE_BATCH,
   planAlarmRepair,
+  readDeadlineCompletion,
   readDueDeadlines,
   scheduleDeadline,
   type PendingDeadline,
   verifyDeadlinePersistence,
+  writeDeadlineCompletionInTransaction,
 } from "../../src/worker/durable-objects/table-room/deadline-queue.js";
-import { migrateTableRoomStorageToV5 } from "../../src/worker/durable-objects/table-room/table-room-game-store.js";
+import { prepareDeadlineCompletion } from "../../src/worker/durable-objects/table-room/table-deadline-application.js";
+import { migrateTableRoomStorageToV6 } from "../../src/worker/durable-objects/table-room/table-room-game-store.js";
 
 function tableRoom(name: string): DurableObjectStub<TableRoom> {
   return (
@@ -46,7 +49,7 @@ describe("TableRoom deadline queue", () => {
   it("orders bounded due work by (dueAt, deadlineId) at the half-open boundary", async () => {
     const stub = tableRoom(`deadline-order-${crypto.randomUUID()}`);
     await runInDurableObject(stub, (_instance, state) => {
-      migrateTableRoomStorageToV5(state.storage);
+      migrateTableRoomStorageToV6(state.storage);
       scheduleDeadline(
         state.storage.sql,
         reactionDeadline("reaction:z", 1_000),
@@ -69,7 +72,7 @@ describe("TableRoom deadline queue", () => {
   it("bounds alarm batches and rejects changed reuse of a stable deadline ID", async () => {
     const stub = tableRoom(`deadline-bound-${crypto.randomUUID()}`);
     await runInDurableObject(stub, (_instance, state) => {
-      migrateTableRoomStorageToV5(state.storage);
+      migrateTableRoomStorageToV6(state.storage);
       for (let index = 0; index < MAX_DUE_DEADLINE_BATCH + 3; index += 1) {
         scheduleDeadline(
           state.storage.sql,
@@ -186,7 +189,7 @@ describe("TableRoom deadline queue", () => {
   it("enforces payload-generation coherence on writes and recovery", async () => {
     const stub = tableRoom(`deadline-generation-${crypto.randomUUID()}`);
     await runInDurableObject(stub, (_instance, state) => {
-      migrateTableRoomStorageToV5(state.storage);
+      migrateTableRoomStorageToV6(state.storage);
       const coherent: readonly PendingDeadline[] = [
         reactionDeadline("reaction:coherent", 500, 12),
         {
@@ -248,7 +251,7 @@ describe("TableRoom deadline queue", () => {
   it("persists one idempotent system receipt and does not rerun duplicate delivery", async () => {
     const stub = tableRoom(`deadline-receipt-${crypto.randomUUID()}`);
     await runInDurableObject(stub, (_instance, state) => {
-      migrateTableRoomStorageToV5(state.storage);
+      migrateTableRoomStorageToV6(state.storage);
       const deadline = reactionDeadline("reaction:receipt", 1_000);
       scheduleDeadline(state.storage.sql, deadline);
       expect(() =>
@@ -301,7 +304,7 @@ describe("TableRoom deadline queue", () => {
   it("rolls back authority writes when deadline completion fails", async () => {
     const stub = tableRoom(`deadline-rollback-${crypto.randomUUID()}`);
     await runInDurableObject(stub, (_instance, state) => {
-      migrateTableRoomStorageToV5(state.storage);
+      migrateTableRoomStorageToV6(state.storage);
       const deadline = reactionDeadline("reaction:rollback", 1_000);
       scheduleDeadline(state.storage.sql, deadline);
       expect(() =>
@@ -335,10 +338,94 @@ describe("TableRoom deadline queue", () => {
     });
   });
 
+  it("rolls back a prepared completion with the enclosing authority operation", async () => {
+    const stub = tableRoom(`deadline-prepared-rollback-${crypto.randomUUID()}`);
+    await runInDurableObject(stub, (_instance, state) => {
+      migrateTableRoomStorageToV6(state.storage);
+      const deadline = reactionDeadline("reaction:prepared-rollback", 1_000);
+      scheduleDeadline(state.storage.sql, deadline);
+      const prepared = prepareDeadlineCompletion(deadline, 1_000, {
+        outcome: "processed",
+        publicTransition: true,
+      });
+      expect(() =>
+        state.storage.transactionSync(() => {
+          state.storage.sql.exec(
+            "UPDATE room_lifecycle SET abandoned = 1 WHERE singleton = 1",
+          );
+          writeDeadlineCompletionInTransaction(state.storage.sql, prepared);
+          throw new Error("injected post-completion failure");
+        }),
+      ).toThrow("injected post-completion failure");
+      expect(
+        readDeadlineCompletion(state.storage.sql, deadline.deadlineId),
+      ).toEqual({
+        deadline: { ...deadline, processedAt: null },
+        receipt: undefined,
+      });
+      expect(
+        state.storage.sql
+          .exec<{ abandoned: number }>(
+            "SELECT abandoned FROM room_lifecycle WHERE singleton = 1",
+          )
+          .one().abandoned,
+      ).toBe(0);
+      state.storage.transactionSync(() => {
+        writeDeadlineCompletionInTransaction(state.storage.sql, prepared);
+      });
+      expect(() => {
+        state.storage.transactionSync(() => {
+          state.storage.sql.exec(
+            "UPDATE room_lifecycle SET abandoned = 1 WHERE singleton = 1",
+          );
+          writeDeadlineCompletionInTransaction(state.storage.sql, prepared);
+        });
+      }).toThrow("precondition");
+      expect(
+        state.storage.sql
+          .exec<{ abandoned: number }>(
+            "SELECT abandoned FROM room_lifecycle WHERE singleton = 1",
+          )
+          .one().abandoned,
+      ).toBe(0);
+      expect(
+        readDeadlineCompletion(state.storage.sql, deadline.deadlineId).receipt,
+      ).toEqual(prepared.receipt);
+      verifyDeadlinePersistence(state.storage.sql);
+    });
+  });
+
+  it("rejects and rolls back callback cancellation of the deadline being completed", async () => {
+    const stub = tableRoom(`deadline-callback-cancel-${crypto.randomUUID()}`);
+    await runInDurableObject(stub, (_instance, state) => {
+      migrateTableRoomStorageToV6(state.storage);
+      const deadline = reactionDeadline("reaction:callback-cancel", 1_000);
+      scheduleDeadline(state.storage.sql, deadline);
+      expect(() =>
+        completeDeadlineWithReceipt(
+          state.storage,
+          deadline.deadlineId,
+          1_000,
+          (sql) => {
+            cancelDeadline(sql, deadline.deadlineId);
+            return { outcome: "processed", publicTransition: false };
+          },
+        ),
+      ).toThrow("precondition");
+      expect(
+        readDeadlineCompletion(state.storage.sql, deadline.deadlineId),
+      ).toEqual({
+        deadline: { ...deadline, processedAt: null },
+        receipt: undefined,
+      });
+      verifyDeadlinePersistence(state.storage.sql);
+    });
+  });
+
   it("records and replays a durable no-op for late delivery after cancellation", async () => {
     const stub = tableRoom(`deadline-cancelled-late-${crypto.randomUUID()}`);
     await runInDurableObject(stub, (_instance, state) => {
-      migrateTableRoomStorageToV5(state.storage);
+      migrateTableRoomStorageToV6(state.storage);
       const deadline = reactionDeadline("reaction:cancelled-late", 1_000);
       scheduleDeadline(state.storage.sql, deadline);
       expect(cancelDeadline(state.storage.sql, deadline.deadlineId)).toBe(true);
@@ -387,7 +474,7 @@ describe("TableRoom deadline queue", () => {
   it("enforces relational authority links", async () => {
     const stub = tableRoom(`deadline-foreign-key-${crypto.randomUUID()}`);
     await runInDurableObject(stub, (_instance, state) => {
-      migrateTableRoomStorageToV5(state.storage);
+      migrateTableRoomStorageToV6(state.storage);
       expect(() =>
         state.storage.sql.exec(
           "INSERT INTO system_command_receipts (command_id, request_json, result_json, processed_at) VALUES ('missing-deadline', '{}', '{}', 1)",
@@ -420,7 +507,7 @@ describe("TableRoom deadline queue", () => {
   it("fails closed on malformed payloads and invalid persisted receipts", async () => {
     const stub = tableRoom(`deadline-corruption-${crypto.randomUUID()}`);
     await runInDurableObject(stub, (_instance, state) => {
-      migrateTableRoomStorageToV5(state.storage);
+      migrateTableRoomStorageToV6(state.storage);
       const deadline = reactionDeadline("reaction:corrupt", 1_000);
       scheduleDeadline(state.storage.sql, deadline);
       const payloadJson = state.storage.sql
@@ -481,7 +568,7 @@ describe("TableRoom deadline queue", () => {
 
     const stub = tableRoom(`deadline-cancel-${crypto.randomUUID()}`);
     await runInDurableObject(stub, (_instance, state) => {
-      migrateTableRoomStorageToV5(state.storage);
+      migrateTableRoomStorageToV6(state.storage);
       scheduleDeadline(
         state.storage.sql,
         reactionDeadline("reaction:cancel", 1_000),

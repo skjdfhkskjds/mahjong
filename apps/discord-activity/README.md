@@ -12,6 +12,45 @@ This application is the single deployable React client and Cloudflare Worker. Th
   authority for game creation, ordering, private reactions, deadlines, and
   scored completion.
 
+### Client presentation and feature controllers
+
+`features/lobby/LobbyController` and `features/gameplay/GameController` adapt
+validated viewer snapshots into display props and semantic callbacks for
+`LobbyPanel` and `GamePanel`. The panels receive labels, structured tile kinds,
+public player information, result summaries, and available controls; they can
+render with display fixtures and callback spies without a socket. They do not
+consume receipts or construct protocol commands.
+
+The feature layer owns phase/status text, grouping the server's exact actions,
+seat/readiness hints, receipt feedback, and local reaction submission state.
+An accepted private reaction stays pending until the next projection; a rejected
+receipt, changed window, disconnect, or replacement snapshot releases the local
+hint. The server's submitted reaction status then takes precedence. A local
+deadline only disables controls and displays “waiting for the server outcome”;
+it never advances the game. Server snapshots remain the source of truth after
+reconnect or rejection.
+
+Application wiring owns authentication, command IDs, expected state versions,
+and command envelopes. Transport owns serialization, runtime wire/result
+validation, and socket lifecycle. The Worker and rules engine retain all move
+legality, start permissions, authoritative deadlines, and scoring decisions.
+Client readiness/ownership checks are usability hints and cannot grant authority.
+
+The player-identity feature mapper interprets the reserved dedicated-bot actor
+namespace and supplies `human`/`bot` display kinds to lobby and gameplay.
+Temporary autopilot never changes a human's identity. The lobby controller maps
+the session-owner hint to add/remove-bot callbacks; owner spectators and
+disconnected owners see those controls disabled. Bot occupancy and readiness
+remain snapshot-owned, including after rejection or reconnect.
+
+For example, a concealed-kong control starts with an exact action already offered
+by the server. The gameplay mapper creates a labeled choice with an opaque ID;
+the panel emits `onConcealedKong(choiceId)`. The feature callback looks up that
+offered action and passes its typed command to application wiring, which adds
+the current version and command ID before transport sends it. Add mapper tests
+for the choice and command, then a panel test using display props and a callback
+spy. Any new rules or wire behavior requires its own domain/protocol work.
+
 ## Standalone development
 
 From the repository root:
@@ -73,6 +112,12 @@ uses persistent local storage. Keep the same origin and browser profile while
 playing. Mock sessions retain the existing one-hour lifetime. Next-hand and
 match progression remain separate Milestone 7 work.
 
+## Game artwork
+
+See [the game artwork guide](../../docs/game-artwork.md) for the shared typed pack,
+SVG/raster sizing, fallbacks, and whole-pack or individual overrides. The local
+evidence page also provides default/sample/broken-art controls for browser QA.
+
 ## Discord-proxied development
 
 1. Create a Discord application and enable Activities.
@@ -120,17 +165,104 @@ Private reaction submissions append a canonical hash-linked event and
 actor-scoped receipt without changing public `stateVersion` or broadcasting.
 Resolution persists the final intent and normalized outcome atomically, then
 publishes one viewer-safe transition. Seats are actor reservations, not socket
-presence. They survive disconnect, hibernation, and Durable Object eviction
-until the player explicitly leaves. WebSocket attachments retain only bounded
+presence. They survive disconnect, hibernation, and Durable Object eviction.
+Leaving the lobby vacates the seat; explicit departure during an active hand
+preserves the actor, seat, and hand while a bot takes control. WebSocket attachments retain only bounded
 connection/session identity; room/game authority, deadlines, revisions, and
 receipts remain in SQLite.
 
-Schema v5 adds persisted bot identities and scheduled work. It retains the permanent migration roots
+### Client connection lifecycle
+
+The browser owns one native WebSocket at a time. Every authorized initial,
+retried, or explicitly restarted connection follows the same path:
+`connecting` → `awaiting-snapshot` → `connected`. Opening the socket alone
+never enables commands. Each open requests `table/resync` using the last
+received snapshot revision (zero for a new run), and the existing server also
+sends a fresh viewer-specific snapshot on authorization. Either fresh snapshot
+satisfies initialization; the client does not reconstruct state from history.
+Receipts alone cannot complete initialization, including private reaction
+receipts that share the current public revision.
+
+The client advertises `heartbeat=1` and starts one run-owned heartbeat only
+after the server's exact `table/heartbeat-ready/1` frame. The inherited heartbeat
+helper sends transport-only pings every five seconds and bounds the oldest
+unacknowledged ping to fifteen seconds. Ready and acknowledgement frames pass
+through the same ordered connection guard as table messages, but do not enter
+application subscriptions or satisfy snapshot synchronization. Older Workers
+that omit the ready frame retain the legacy connection behavior. Stop, retry,
+terminal control, departure, and transport error cancel heartbeat timers;
+native closing handshakes retain their actual terminal close semantics.
+
+`SocketStatus` contains only lifecycle data. Connecting, waiting, and
+interrupted states carry attempt data; `reconnecting` additionally carries the
+bounded retry delay. A transport error enters `disconnecting` while awaiting
+the close code, preserving authorization/replacement/upgrade close semantics.
+An ordinary close retires listeners and schedules a retry. Authentication,
+replacement, upgrade, malformed protocol, and explicit stop are terminal for
+that run. A deliberate active-hand departure closes with application code
+`4002` on negotiated connections, which enters `stopped` and never retries
+automatically. The legacy `1008` departure fallback is also terminal. A new
+explicit startup may reconnect and must receive a fresh snapshot; normal close
+`1000` retains transient retry behavior. The application clears its snapshot
+and receipt whenever connection usability is lost. Only `connected` permits a validated command send, and no
+command is queued or automatically replayed.
+
+`subscribe(type, listener)` derives each callback payload from the existing
+validated wire union. A single synchronous queue preserves message arrival
+order across all types, including reentrant callbacks. A fresh initialization
+snapshot is delivered to application subscribers before the `connected`
+lifecycle notification enables controls. Subsequent receipts and snapshots are
+delivered in wire order even when their public revisions are equal. Terminal
+control messages first change lifecycle state and retire the socket, then reach
+control subscribers. A callback that stops or replaces the run cancels the
+remaining delivery for that run. Subscriber exceptions are isolated, never
+classified as malformed wire data, and never logged with message contents.
+
+The `start` callback observes lifecycle changes only. Starting again retires
+the previous run; its old stop handle and socket callbacks cannot affect the
+new run. Message subscriptions survive stops/restarts until their returned
+unsubscribe function is called; application disposal removes them and stops
+the run. Unsubscribe takes effect during an in-progress delivery. The startup
+feature owns the current snapshot and receipt; feature controllers own command
+interpretation and pending UI state.
+
+This client refactor leaves protocol v2, server authorization/snapshot behavior,
+and persisted formats unchanged. Existing client and server v2 deployments
+remain wire compatible; no new deployment overlap or migration is required.
+
+Schema v6 adds persisted player/controller generations and generation-bound
+bot work for both dedicated bots and substituted humans. It retains the permanent migration roots
 `tests/fixtures/table-room-v1-schema.ts` and
 `tests/fixtures/table-room-v3-active-v1-game.ts`, plus the pre-bot
-`tests/fixtures/table-room-v4-schema.ts`. The active-game fixture verifies its
+`tests/fixtures/table-room-v4-schema.ts` and the pre-coordinator
+`tests/fixtures/table-room-v5-schema.ts`. The active-game fixture verifies its
 historical v1 hash chain, appends one explicit state-upgrade event, and
 continues play as canonical state v2.
+
+## Controller handoff and connection health
+
+The same `Player` communication contract connects `UserPlayer`, `BotPlayer`,
+and an in-process `PlayerCoordinator` to the authoritative table. Controller
+changes preserve the player identity, seat, hand, and accepted history. The
+coordinator rejects commands and asynchronous bot results from an obsolete
+controller generation. Reconnection delivers the player's fresh permitted
+snapshot before enabling human commands.
+
+New clients negotiate heartbeats with `heartbeat=1` on the WebSocket URL. After
+`table/heartbeat-ready/1`, they send `table/heartbeat/1` every five seconds;
+the Worker's hibernation auto-response returns `table/heartbeat-ack/1`. Connection
+acceptance or the latest heartbeat supplies 15 seconds of liveness evidence,
+bounded by authorization/session expiry. A five-second Durable Object alarm
+checks all authorized connections. After the final usable connection expires
+or closes, the existing 15-second grace precedes substitution. Lack of game
+input does not imply disconnection. Another usable connection prevents takeover.
+
+Explicit active-hand departure revokes the departing connection and substitutes
+immediately when no other usable connection remains. Logout does so only
+when no other usable session remains. Connected-turn timeouts retain their
+60-second deterministic policy; a substitute then uses ordinary random legal
+bot actions, including claims, wins, and kongs, at the 750 ms bot delay.
+No new readiness, automatic-start, or leave/logout UI is introduced.
 
 ## Verification
 
@@ -153,18 +285,33 @@ Protocol v2 is an atomic client/Worker release. The Worker serves
 content-hashed client assets from the same deployment, so rollout replaces both
 wire endpoints together and rollback restores both together. Do not roll back
 only the Worker or reuse an older HTML shell with a newer Worker. Storage schema
-v5 remains forward-only across a code rollback; use the previous release only
-if it understands schema v5, otherwise restore the complete pre-migration
-deployment and storage backup rather than attempting to reinterpret v5 rows.
+v6 remains forward-only across a code rollback; use the previous release only
+if it understands schema v6, otherwise restore the complete pre-migration
+deployment and storage backup rather than attempting to reinterpret v6 rows.
 
 Bot management adds `lobby/add-bot` and `lobby/remove-bot` commands with a
 `seat` field to protocol v2; the snapshot and receipt shapes are unchanged.
 Older v2 clients can observe and play at bot tables. A newer client cannot
 manage bots against an older Worker, which rejects the unknown commands, so
-ship bot controls and Worker support together. Existing tables migrate to v5
-without changing seats, game events, or hashes. Rollback to pre-bot code needs
-the complete pre-migration backup because that code rejects schema v5.
-See [ADR 0015](../../docs/decisions/0015-persistent-bot-players.md).
+ship bot controls and Worker support together. Existing tables migrate to v6
+without changing seats, game events, or hashes. Schema v6 changes `bot_work` to
+reference members and adds `controller_generation`; the retained v5 fixture
+covers existing bots and pending work. Rollback to pre-coordinator code needs
+the complete pre-migration backup because that code rejects schema v6.
+
+Heartbeat negotiation permits cached protocol-v2 clients during rollout.
+Clients without `heartbeat=1` use native-open plus authorization-expiry
+evidence. A new client does not send heartbeat frames until the Worker sends
+readiness, so an older Worker continues using that same fallback. Its silent
+half-open detection is weaker than negotiated heartbeat health. Successful
+active-hand departure closes negotiated connections with `4002`, which new
+clients treat as terminal `stopped`. Connections without heartbeat negotiation
+receive the existing terminal policy close `1008`, so cached clients also stop
+instead of reconnecting and undoing their departure. Ordinary `1000` closes
+remain recoverable. Existing snapshot and receipt shapes are unchanged. See
+[ADR 0016](../../docs/decisions/0016-player-controller-lifecycle.md) for controller
+policy, recovery, and operational examples, and
+[ADR 0015](../../docs/decisions/0015-persistent-bot-players.md) for dedicated bots.
 
 The production command fails before building unless `VITE_ACTIVITY_MODE=discord` and a valid `VITE_DISCORD_CLIENT_ID` are present. The production Wrangler environment does not inherit the committed mock signing key.
 
