@@ -1,10 +1,10 @@
 import { describe, expect, it } from "vitest";
 import {
-  decodeCanonicalVersionedGameEventJson,
+  decodeCanonicalGameEventJson,
   HONG_KONG_V1_RANDOM_BYTES,
-  projectGameV2,
-  startHongKongV2Game,
-  type CanonicalGameStateV2,
+  projectGameV1,
+  startHongKongV1Game,
+  type CanonicalGameStateV1,
 } from "@mahjong/rules-hong-kong";
 
 import {
@@ -62,17 +62,15 @@ class MemoryCommandStore implements TableCommandStore {
     const events: VerifiedStoredGame["events"] =
       this.game === undefined
         ? [
-            decodeCanonicalVersionedGameEventJson(batch.rows[0].eventJson),
+            decodeCanonicalGameEventJson(batch.rows[0].eventJson),
             ...batch.rows
               .slice(1)
-              .map((row) =>
-                decodeCanonicalVersionedGameEventJson(row.eventJson),
-              ),
+              .map((row) => decodeCanonicalGameEventJson(row.eventJson)),
           ]
         : [
             ...this.game.events,
             ...batch.rows.map((row) =>
-              decodeCanonicalVersionedGameEventJson(row.eventJson),
+              decodeCanonicalGameEventJson(row.eventJson),
             ),
           ];
     this.game = {
@@ -191,8 +189,8 @@ function execute(
   });
 }
 function playerAt(
-  state: CanonicalGameStateV2,
-  seat: CanonicalGameStateV2["turn"],
+  state: CanonicalGameStateV1,
+  seat: CanonicalGameStateV1["turn"],
 ) {
   const player = [
     state.players.east,
@@ -233,7 +231,7 @@ async function playingStore() {
       })),
     },
   };
-  const started = startHongKongV2Game(
+  const started = startHongKongV1Game(
     players,
     randomBytes(HONG_KONG_V1_RANDOM_BYTES),
   );
@@ -299,7 +297,7 @@ describe("table command application with a test store", () => {
     async (anotherConnection) => {
       const store = await playingStore();
       const original = store.game?.state;
-      if (original?.schemaVersion !== 2) throw new Error("Missing game.");
+      if (original?.schemaVersion !== 1) throw new Error("Missing game.");
       const actorId = playerAt(original, original.turn).actorId;
       const beforeSeats = store.state.seats;
       const outcome = await execute(
@@ -342,7 +340,7 @@ describe("table command application with a test store", () => {
   it("refuses stale controller authority before replay and after asynchronous game preparation", async () => {
     const store = await playingStore();
     const original = store.game?.state;
-    if (original?.schemaVersion !== 2) throw new Error("Missing game.");
+    if (original?.schemaVersion !== 1) throw new Error("Missing game.");
     const dealer = playerAt(original, original.turn);
     const tileId = dealer.hand[0];
     if (tileId === undefined) throw new Error("Missing tile.");
@@ -498,7 +496,7 @@ describe("table command application with a test store", () => {
   it("keeps private reactions at one public revision and publishes only resolution", async () => {
     const store = await playingStore();
     const initial = store.game?.state;
-    if (initial?.schemaVersion !== 2) throw new Error("Expected game");
+    if (initial?.schemaVersion !== 1) throw new Error("Expected game");
     const dealer = playerAt(initial, initial.turn);
     const tileId = dealer.hand[0];
     if (tileId === undefined) throw new Error("Expected dealer tile");
@@ -508,7 +506,7 @@ describe("table command application with a test store", () => {
       command("discard", 0, { type: "game/discard", tileId }),
     );
     const opened = store.game?.state;
-    if (opened?.schemaVersion !== 2 || opened.reactionWindow === null)
+    if (opened?.schemaVersion !== 1 || opened.reactionWindow === null)
       throw new Error("Expected reaction window");
     const responders = opened.reactionWindow.responderOrder.map(
       (seat) => playerAt(opened, seat).actorId,
@@ -539,7 +537,7 @@ describe("table command application with a test store", () => {
       ...store.state,
       controllers: { ...store.state.controllers, jobs: scheduled.upsert },
     };
-    const before = projectGameV2(opened, observer);
+    const before = projectGameV1(opened, observer);
     for (const [index, actorId] of responders.entries()) {
       const envelope = command(`pass-${String(index)}`, 1, {
         type: "game/react",
@@ -568,15 +566,15 @@ describe("table command application with a test store", () => {
       }
       expect(JSON.parse(result.response)).toEqual({
         type: "table/receipt",
-        protocolVersion: 2,
+        protocolVersion: 1,
         commandId: envelope.commandId,
         outcome: "applied",
         stateVersion: privateSubmission ? 1 : 2,
       });
       if (index === 0) {
         const after = store.game?.state;
-        if (after?.schemaVersion !== 2) throw new Error("Expected game");
-        expect(projectGameV2(after, observer)).toEqual(before);
+        if (after?.schemaVersion !== 1) throw new Error("Expected game");
+        expect(projectGameV1(after, observer)).toEqual(before);
         const sequence = after.sequence;
         const retried = await execute(store, actorId, envelope);
         expect(retried).toMatchObject({
@@ -589,7 +587,7 @@ describe("table command application with a test store", () => {
       }
     }
     const finished = store.game?.state;
-    if (finished?.schemaVersion !== 2) throw new Error("Expected game");
+    if (finished?.schemaVersion !== 1) throw new Error("Expected game");
     expect(finished.reactionWindow).toBeNull();
     expect(store.commits).toHaveLength(4);
   });

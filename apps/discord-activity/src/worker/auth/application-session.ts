@@ -1,7 +1,7 @@
 import type { AuthenticationMode } from "../env.js";
 
 const DEFAULT_COOKIE_NAME = "__Host-mahjong_session";
-const SESSION_VERSION = 2;
+const SESSION_VERSION = 1;
 const DEFAULT_SESSION_LIFETIME_SECONDS = 15 * 60;
 const encoder = new TextEncoder();
 const decoder = new TextDecoder(undefined, { fatal: true, ignoreBOM: false });
@@ -48,7 +48,7 @@ interface SessionPayload {
   readonly mode: AuthenticationMode;
   readonly sessionGeneration: number;
   readonly sessionId: string;
-  readonly version: 2;
+  readonly version: 1;
 }
 
 function bytesToBase64Url(bytes: Uint8Array): string {

@@ -2,7 +2,7 @@ import { nextSeat, type Seat, type TileId } from "@mahjong/game-core";
 
 import {
   playerAt,
-  type CanonicalGameStateV2,
+  type CanonicalGameStateV1,
   type ReactionResponse,
   type ReactionWindow,
 } from "../engine/game-state.js";
@@ -18,7 +18,7 @@ export interface LegalReactionOptions {
 }
 
 export function legalReactionsForSeat(
-  state: CanonicalGameStateV2,
+  state: CanonicalGameStateV1,
   responderSeat: Seat,
   options: LegalReactionOptions = {},
 ): readonly ReactionResponse[] {
@@ -61,7 +61,7 @@ export function legalReactionsForSeat(
 }
 
 export function isLegalReaction(
-  state: CanonicalGameStateV2,
+  state: CanonicalGameStateV1,
   responderSeat: Seat,
   response: ReactionResponse,
   options: LegalReactionOptions = {},
@@ -72,7 +72,7 @@ export function isLegalReaction(
 }
 
 export function isStructurallyWinningWith(
-  state: CanonicalGameStateV2,
+  state: CanonicalGameStateV1,
   seat: Seat,
   tileId: TileId,
 ): boolean {
@@ -237,7 +237,7 @@ function canPartitionMelds(
 }
 
 export function responderActorId(
-  state: CanonicalGameStateV2,
+  state: CanonicalGameStateV1,
   window: ReactionWindow,
   seat: Seat,
 ): string {

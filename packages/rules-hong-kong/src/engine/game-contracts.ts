@@ -8,7 +8,6 @@ import type { DeclaredMeld } from "../melds/meld.js";
 import type { HongKongTileKind } from "../tiles/hong-kong-tile-kind.js";
 import type {
   CanonicalGameStateV1,
-  CanonicalGameStateV2,
   GamePhase,
   PlayerReactionResponse,
   ReactionResponse,
@@ -20,19 +19,6 @@ export interface StartedEventV1 {
   readonly type: "game/started";
   readonly sequence: 1;
   readonly state: CanonicalGameStateV1;
-}
-
-export interface StartedEventV2 {
-  readonly type: "game/started";
-  readonly sequence: 1;
-  readonly state: CanonicalGameStateV2;
-}
-
-export interface LegacyDiscardedEvent {
-  readonly type: "game/tile-discarded";
-  readonly sequence: number;
-  readonly seat: Seat;
-  readonly tileId: TileId;
 }
 
 export interface DrawnEvent {
@@ -49,43 +35,6 @@ export interface ExhaustedEvent {
   readonly sequence: number;
   readonly seat: Seat;
   readonly requiredDraw: "ordinary";
-}
-
-export type LegacyUpgradeProvenance = {
-  readonly eastHasDiscarded: boolean;
-} & (
-  | {
-      readonly type: "initial-deal";
-      readonly sourceSequence: 1;
-    }
-  | {
-      readonly type: "discard";
-      readonly sourceSequence: number;
-      readonly seat: Seat;
-      readonly tileId: TileId;
-    }
-  | {
-      readonly type: "draw";
-      readonly sourceSequence: number;
-      readonly seat: Seat;
-      readonly ordinaryTileId: TileId;
-      readonly replacementTileIds: readonly TileId[];
-      readonly exhausted: boolean;
-    }
-  | {
-      readonly type: "wall-exhausted";
-      readonly sourceSequence: number;
-      readonly seat: Seat;
-      readonly requiredDraw: "ordinary";
-    }
-);
-
-export interface StateUpgradedEvent {
-  readonly type: "game/state-upgraded";
-  readonly sequence: number;
-  readonly fromSchemaVersion: 1;
-  readonly toSchemaVersion: 2;
-  readonly provenance: LegacyUpgradeProvenance;
 }
 
 export interface DiscardReactionOpenedEvent {
@@ -149,11 +98,7 @@ export interface HandCompletedEvent {
   readonly result: CompletedHandResult;
 }
 
-/** The deployed schema-v1 event contract. Keep strict for historical bytes. */
-export type HongKongGameEvent =
-  DrawnEvent | ExhaustedEvent | LegacyDiscardedEvent | StartedEventV1;
-
-export type HongKongGameEventV2 =
+export type HongKongGameEventV1 =
   | AddedKongProposedEvent
   | ConcealedKongDeclaredEvent
   | DiscardReactionOpenedEvent
@@ -164,17 +109,13 @@ export type HongKongGameEventV2 =
   | ReactionIntentSubmittedEvent
   | ReactionResolvedEvent
   | SelfWinDeclaredEvent
-  | StartedEventV2;
+  | StartedEventV1;
 
-export type VersionedHongKongGameEvent =
-  HongKongGameEvent | HongKongGameEventV2 | StateUpgradedEvent;
+export type HongKongGameEvent = HongKongGameEventV1;
 
-export type HongKongGameCommand =
+export type HongKongGameCommandV1 =
   | { readonly type: "game/draw" }
-  | { readonly type: "game/discard"; readonly tileId: TileId };
-
-export type HongKongGameCommandV2 =
-  | HongKongGameCommand
+  | { readonly type: "game/discard"; readonly tileId: TileId }
   | {
       readonly type: "game/react";
       readonly response: PlayerReactionResponse;
@@ -191,23 +132,23 @@ export type HongKongGameCommandV2 =
     }
   | { readonly type: "game/declare-win" };
 
+export type HongKongGameCommand = HongKongGameCommandV1;
+
 export interface RejectedGameDecision {
   readonly accepted: false;
   readonly error: { readonly code: string; readonly message: string };
 }
 
-export type GameDecision =
-  | { readonly accepted: true; readonly event: HongKongGameEvent }
-  | RejectedGameDecision;
-
 export type NonEmptyGameEventBatch = readonly [
-  VersionedHongKongGameEvent,
-  ...VersionedHongKongGameEvent[],
+  HongKongGameEventV1,
+  ...HongKongGameEventV1[],
 ];
 
-export type GameDecisionV2 =
+export type GameDecisionV1 =
   | { readonly accepted: true; readonly events: NonEmptyGameEventBatch }
   | RejectedGameDecision;
+
+export type GameDecision = GameDecisionV1;
 
 export interface PublicTile {
   readonly id: TileId;
@@ -226,24 +167,7 @@ export interface PublicMeld {
 
 export type PublicReactionAction = PlayerReactionResponse;
 
-export interface GameView {
-  readonly phase:
-    | "awaiting-dealer-discard"
-    | "awaiting-draw"
-    | "awaiting-discard"
-    | "exhausted";
-  readonly players: readonly {
-    readonly bonuses: readonly PublicTile[];
-    readonly concealedCount: number;
-    readonly discards: readonly PublicTile[];
-    readonly seat: Seat;
-  }[];
-  readonly turn: Seat;
-  readonly viewerHand?: readonly PublicTile[];
-  readonly wallRemaining: number;
-}
-
-export interface GameViewV2 {
+export interface GameViewV1 {
   readonly phase: Exclude<GamePhase, "pending-win-validation">;
   readonly players: readonly {
     readonly bonuses: readonly PublicTile[];
@@ -267,8 +191,10 @@ export interface GameViewV2 {
       readonly status: "open" | "submitted";
       readonly windowId: string;
     };
-    readonly self: readonly HongKongGameCommandV2[];
+    readonly self: readonly HongKongGameCommandV1[];
   };
   readonly viewerHand?: readonly PublicTile[];
   readonly wallRemaining: number;
 }
+
+export type GameView = GameViewV1;

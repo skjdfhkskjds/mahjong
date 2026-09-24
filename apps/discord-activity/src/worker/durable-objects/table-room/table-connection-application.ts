@@ -4,7 +4,7 @@ import {
   type ControllerSnapshot,
 } from "./table-controller-application.js";
 import type { BotWorkChanges } from "./table-bot-work.js";
-import type { CanonicalGameStateV2 } from "@mahjong/rules-hong-kong";
+import type { CanonicalGameStateV1 } from "@mahjong/rules-hong-kong";
 import {
   accessBindingAuthorized,
   type AccessBindingAuthorization,
@@ -75,7 +75,7 @@ export function activateTableConnection(
   connectionGeneration: string,
   input: {
     readonly now: number;
-    readonly game: CanonicalGameStateV2 | undefined;
+    readonly game: CanonicalGameStateV1 | undefined;
     readonly createCommandId: () => string;
   },
 ): boolean {
@@ -106,7 +106,7 @@ export function reconcileTableWork(
   input: {
     readonly now: number;
     readonly observations: readonly PresenceObservation[];
-    readonly game: CanonicalGameStateV2 | undefined;
+    readonly game: CanonicalGameStateV1 | undefined;
     readonly connectedActorId?: string;
     readonly refreshGameDeadlines?: boolean;
     readonly createCommandId: () => string;
@@ -157,7 +157,7 @@ export function closeTableConnection(
   input: {
     readonly now: number;
     readonly observations: readonly PresenceObservation[];
-    readonly game: CanonicalGameStateV2 | undefined;
+    readonly game: CanonicalGameStateV1 | undefined;
     readonly createCommandId: () => string;
   },
 ): void {

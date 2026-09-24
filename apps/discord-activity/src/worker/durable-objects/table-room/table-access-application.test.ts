@@ -1,5 +1,5 @@
 import {
-  startHongKongV2Game,
+  startHongKongV1Game,
   HONG_KONG_V1_RANDOM_BYTES,
 } from "@mahjong/rules-hong-kong";
 import {
@@ -522,7 +522,7 @@ describe("table access application without runtime storage", () => {
 describe("session departure controller coordination", () => {
   function fixture() {
     const store = createdStore();
-    const game = startHongKongV2Game(
+    const game = startHongKongV1Game(
       { east: "owner", south: "south", west: "west", north: "north" },
       new Uint8Array(HONG_KONG_V1_RANDOM_BYTES),
     ).state;

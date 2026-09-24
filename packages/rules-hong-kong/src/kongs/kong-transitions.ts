@@ -1,6 +1,6 @@
 import type { Seat, TileId } from "@mahjong/game-core";
 
-import { playerAt, type CanonicalGameStateV2 } from "../engine/game-state.js";
+import { playerAt, type CanonicalGameStateV1 } from "../engine/game-state.js";
 import type { DeclaredMeld } from "../melds/meld.js";
 import { canonicalTileIds } from "../melds/meld.js";
 import { isBonusTile, sameTileKind } from "../tiles/tile-kind-identity.js";
@@ -11,7 +11,7 @@ export interface ReplacementOutcome {
 }
 
 export function legalConcealedKongs(
-  state: CanonicalGameStateV2,
+  state: CanonicalGameStateV1,
   seat: Seat,
 ): readonly (readonly [TileId, TileId, TileId, TileId])[] {
   if (
@@ -44,7 +44,7 @@ export function legalConcealedKongs(
 }
 
 export function legalAddedKongs(
-  state: CanonicalGameStateV2,
+  state: CanonicalGameStateV1,
   seat: Seat,
 ): readonly { readonly meldId: string; readonly tileId: TileId }[] {
   if (
@@ -67,7 +67,7 @@ export function legalAddedKongs(
 }
 
 export function replacementFromTail(
-  state: CanonicalGameStateV2,
+  state: CanonicalGameStateV1,
 ): ReplacementOutcome {
   const tileIds: TileId[] = [];
   let tail = state.wall.tail;

@@ -1,7 +1,7 @@
 import type { Seat, TileId } from "@mahjong/game-core";
 import { isBonusTile } from "../tiles/tile-kind-identity.js";
 import type { DrawnEvent, ExhaustedEvent } from "./game-contracts.js";
-import type { VersionedCanonicalGameState } from "./game-state.js";
+import type { CanonicalGameStateV1 } from "./game-state.js";
 type DrawDecision =
   | {
       readonly accepted: true;
@@ -26,7 +26,7 @@ function rejected(
   return { accepted: false, error: { code, message } };
 }
 export function decideDraw(
-  state: VersionedCanonicalGameState,
+  state: CanonicalGameStateV1,
   currentSeat: Seat,
 ): DrawDecision {
   if (state.phase !== "awaiting-draw") {

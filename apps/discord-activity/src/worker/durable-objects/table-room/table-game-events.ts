@@ -1,14 +1,11 @@
 import {
-  canonicalVersionedEventHashPayload,
-  canonicalVersionedGameEventJson,
-  canonicalVersionedGameJson,
-  decodeCanonicalGameEventJson,
-  reduceVersionedGameEvent,
-  upgradeCanonicalGameState,
-  type HongKongGameEvent,
+  canonicalEventHashPayload,
+  canonicalGameEventJson,
+  canonicalGameJson,
+  reduceGameEvent,
   type NonEmptyGameEventBatch,
-  type VersionedCanonicalGameState,
-  type VersionedHongKongGameEvent,
+  type CanonicalGameStateV1,
+  type HongKongGameEventV1,
 } from "@mahjong/rules-hong-kong";
 
 const SHA256_HEX_PATTERN = /^[0-9a-f]{64}$/u;
@@ -21,19 +18,16 @@ export interface PreparedGameEventRow {
 }
 
 export interface PreparedGameEventBatch {
-  readonly finalState: VersionedCanonicalGameState;
+  readonly finalState: CanonicalGameStateV1;
   readonly finalStateJson: string;
   readonly lastEventHash: string;
   readonly rows: readonly [PreparedGameEventRow, ...PreparedGameEventRow[]];
 }
 
 export interface VerifiedStoredGame {
-  readonly events: readonly [
-    VersionedHongKongGameEvent,
-    ...VersionedHongKongGameEvent[],
-  ];
+  readonly events: readonly [HongKongGameEventV1, ...HongKongGameEventV1[]];
   readonly lastEventHash: string;
-  readonly state: VersionedCanonicalGameState;
+  readonly state: CanonicalGameStateV1;
 }
 
 export type EventDigest = (payload: string) => Promise<string>;
@@ -64,10 +58,10 @@ export async function prepareGameEventBatch(
   let previousHash = prior?.lastEventHash ?? null;
   const rows: PreparedGameEventRow[] = [];
   for (const event of events) {
-    const next = reduceVersionedGameEvent(state, event);
-    const eventJson = canonicalVersionedGameEventJson(event);
+    const next = reduceGameEvent(state, event);
+    const eventJson = canonicalGameEventJson(event);
     const eventHash = await digest(
-      canonicalVersionedEventHashPayload(previousHash, event),
+      canonicalEventHashPayload(previousHash, event),
     );
     assertGameEventDigest(eventHash);
     rows.push({
@@ -85,42 +79,8 @@ export async function prepareGameEventBatch(
   }
   return {
     finalState: state,
-    finalStateJson: canonicalVersionedGameJson(state),
+    finalStateJson: canonicalGameJson(state),
     lastEventHash: previousHash,
     rows: [first, ...rows.slice(1)],
   };
-}
-
-function legacyHistory(
-  game: VerifiedStoredGame,
-): readonly [HongKongGameEvent, ...HongKongGameEvent[]] {
-  if (game.state.schemaVersion !== 1) {
-    throw new Error("Only a verified canonical schema-v1 game can upgrade.");
-  }
-  const legacy: HongKongGameEvent[] = [];
-  for (const event of game.events) {
-    legacy.push(
-      decodeCanonicalGameEventJson(canonicalVersionedGameEventJson(event)),
-    );
-  }
-  const first = legacy[0];
-  if (first === undefined)
-    throw new Error("A legacy game has no genesis event.");
-  return [first, ...legacy.slice(1)];
-}
-
-/** Builds the sole deterministic hash-preserving v1-to-v2 upgrade batch. */
-export async function prepareV1GameUpgrade(
-  game: VerifiedStoredGame,
-  digest: EventDigest = digestGameEventPayload,
-): Promise<PreparedGameEventBatch> {
-  const upgraded = upgradeCanonicalGameState(legacyHistory(game));
-  const batch = await prepareGameEventBatch(game, [upgraded.event], digest);
-  if (
-    canonicalVersionedGameJson(batch.finalState) !==
-    canonicalVersionedGameJson(upgraded.state)
-  ) {
-    throw new Error("Prepared upgrade checkpoint diverges from rules replay.");
-  }
-  return batch;
 }

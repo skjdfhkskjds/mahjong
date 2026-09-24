@@ -1,5 +1,10 @@
 # Table mutation serialization audit
 
+This is a historical prelaunch audit. Its references to intermediate storage
+schemas and migration fixtures were superseded by the complete v1 baseline in
+[ADR 0017](../decisions/0017-prelaunch-v1-baseline.md). The serialization and
+privacy guarantees remain applicable.
+
 Issue: [#26](https://github.com/skjdfhkskjds/mahjong/issues/26). This audit defines
 the preparation/commit contract for [#25](https://github.com/skjdfhkskjds/mahjong/issues/25).
 

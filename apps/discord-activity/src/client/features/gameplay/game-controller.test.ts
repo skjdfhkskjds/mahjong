@@ -33,7 +33,7 @@ const baseGame: GameView = {
 function snapshot(game: GameView = baseGame): ViewerSafeTableSnapshot {
   return {
     type: "table/snapshot",
-    protocolVersion: 2,
+    protocolVersion: 1,
     stateVersion: 8,
     view: {
       tableId: "table",
@@ -79,7 +79,7 @@ const reactionGame: GameView = {
 };
 const rejected: TableReceipt = {
   type: "table/receipt",
-  protocolVersion: 2,
+  protocolVersion: 1,
   stateVersion: 8,
   commandId: "command",
   outcome: "rejected",

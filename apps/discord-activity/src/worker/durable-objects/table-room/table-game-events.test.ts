@@ -1,14 +1,14 @@
 import { describe, expect, it } from "vitest";
 import {
   HONG_KONG_V1_RANDOM_BYTES,
-  startHongKongV2Game,
+  startHongKongV1Game,
 } from "@mahjong/rules-hong-kong";
 
 import { prepareGameEventBatch } from "./table-game-events.js";
 
 describe("application canonical event preparation", () => {
   it("prepares genesis and its checkpoint without a storage runtime", async () => {
-    const started = startHongKongV2Game(
+    const started = startHongKongV1Game(
       { east: "east", south: "south", west: "west", north: "north" },
       new Uint8Array(HONG_KONG_V1_RANDOM_BYTES),
     );
@@ -30,7 +30,7 @@ describe("application canonical event preparation", () => {
   });
 
   it("rejects invalid digest output before preparing writes", async () => {
-    const started = startHongKongV2Game(
+    const started = startHongKongV1Game(
       { east: "east", south: "south", west: "west", north: "north" },
       new Uint8Array(HONG_KONG_V1_RANDOM_BYTES),
     );

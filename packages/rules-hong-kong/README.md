@@ -2,7 +2,7 @@
 
 ## Owns
 
-The project-defined, accepted Hong Kong rules profile and its pure implementation. The canonical schema-v2 surface includes physical tiles, deterministic shuffle from explicit random bytes, dealer selection, the initial deal, recursive bonus replacement, draw/discard decisions, private reaction intentions, chow/pung/kong claims, every kong form, winning-hand decomposition, Hong Kong scoring and payments, single-winner resolution, replay, viewer projections, and invariants.
+The project-defined, accepted Hong Kong rules profile and its pure implementation. The canonical schema-v1 surface includes physical tiles, deterministic shuffle from explicit random bytes, dealer selection, the initial deal, recursive bonus replacement, draw/discard decisions, private reaction intentions, chow/pung/kong claims, every kong form, winning-hand decomposition, Hong Kong scoring and payments, single-winner resolution, replay, viewer projections, and invariants.
 
 ## Does not own
 
@@ -26,10 +26,10 @@ the engine coordinates their execution with explicit logical deadlines. The
 application chooses when an actor is automated and schedules the actual alarm.
 See the [flow-to-policy mapping](../../docs/architecture/shared-game-engine.md).
 
-Historical `decideGameCommandV2`, `applyGameCommandV2`, and
-`decideReactionExpiration` entrypoints delegate to the same engine and retain
-their event/decision shape. Runtime integrations use the engine directly so
-they can act on typed visibility and targeted expiry without reading event names.
+The command and reaction-expiration entrypoints delegate to the same engine and
+retain their event/decision shape. Runtime integrations use the engine directly
+so they can act on typed visibility and targeted expiry without reading event
+names.
 
 ## Dependencies
 
@@ -47,7 +47,7 @@ Only `@mahjong/rules-hong-kong` is public. Consumers may not deep-import impleme
 - The initial deal assigns 14 raw tile slots to East and 13 to every other seat; bonus replacement then restores those structural counts.
 - Bonus tiles never enter the structural hand and replacements come from the wall tail.
 - Canonical events replay to byte-equivalent state and preserve all 144 physical tiles in exactly one location.
-- Historical schema-v1 state and event bytes retain strict decoding and replay. The existing unversioned starter and command surface remain schema v1 for deployed callers; new integrations opt into schema v2 explicitly and upgrade verified v1 histories only through a deterministic event.
+- The complete game state and event shape is the initial schema v1. Decoding and replay reject unknown versions and malformed persisted bytes.
 - Public melds preserve exact physical IDs and provenance; kongs count as three structural tiles despite containing four physical tiles.
 - Projections expose a player's own hand/actions, public bonuses, discards and melds, and concealed counts without exposing opponents' hands, intentions, eligibility, or the wall.
 - Win actions are exposed only after the integrated scorer proves the three-faan minimum. Accepted wins end in one replayable scored result, and projections never expose losing candidates or their scores.

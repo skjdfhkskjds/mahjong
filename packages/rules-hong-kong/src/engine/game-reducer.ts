@@ -2,7 +2,6 @@ import {
   nextSeat,
   reactionResponderOrder,
   seat,
-  seats,
   type Seat,
   type TileId,
 } from "@mahjong/game-core";
@@ -24,29 +23,18 @@ import type {
   DiscardReactionOpenedEvent,
   DrawnEvent,
   HandCompletedEvent,
-  HongKongGameEvent,
+  HongKongGameEventV1,
   KongReplacementDrawnEvent,
   ReactionIntentSubmittedEvent,
   ReactionResolvedEvent,
   SelfWinDeclaredEvent,
-  StateUpgradedEvent,
-  VersionedHongKongGameEvent,
 } from "./game-contracts.js";
-import {
-  assertGameInvariants,
-  assertUpgradeProvenance,
-  assertVersionedGameEvent,
-  provenanceAcquisition,
-  provenanceTileId,
-} from "./game-invariants-migration.js";
+import { assertGameInvariants, assertGameEvent } from "./game-invariants.js";
 import {
   playerAt,
   type AddedKongReactionWindow,
-  type VersionedCanonicalGameState,
   type CanonicalGameStateV1,
-  type CanonicalGameStateV2,
   type CanonicalPlayerStateV1,
-  type CanonicalPlayerStateV2,
   type SeatMap,
 } from "./game-state.js";
 import {
@@ -56,11 +44,11 @@ import {
   scoreSelfWinCandidate,
 } from "./win-resolution.js";
 
-export function reduceVersionedGameEvent(
-  state: VersionedCanonicalGameState | undefined,
-  event: VersionedHongKongGameEvent,
-): VersionedCanonicalGameState {
-  assertVersionedGameEvent(event);
+export function reduceGameEvent(
+  state: CanonicalGameStateV1 | undefined,
+  event: HongKongGameEventV1,
+): CanonicalGameStateV1 {
+  assertGameEvent(event);
   if (event.type === "game/started") {
     if (state !== undefined || event.state.sequence !== 1) {
       throw new Error("Invalid game genesis event.");
@@ -71,69 +59,15 @@ export function reduceVersionedGameEvent(
   if (state === undefined || event.sequence !== state.sequence + 1) {
     throw new Error("Non-contiguous game event sequence.");
   }
-  if (event.type === "game/state-upgraded") {
-    if (state.schemaVersion !== 1)
-      throw new Error("Only schema v1 can upgrade.");
-    const next = upgradeState(state, event);
-    assertGameInvariants(next);
-    return next;
-  }
-  const next =
-    state.schemaVersion === 1
-      ? reduceLegacyEvent(state, event)
-      : reduceV2Event(state, event);
+  const next = reduceV1Event(state, event);
   assertGameInvariants(next);
   return next;
 }
 
-function reduceLegacyEvent(
+function reduceV1Event(
   state: CanonicalGameStateV1,
-  event: VersionedHongKongGameEvent,
+  event: HongKongGameEventV1,
 ): CanonicalGameStateV1 {
-  if (event.type === "game/wall-exhausted") {
-    if (
-      state.phase !== "awaiting-draw" ||
-      event.seat !== state.turn ||
-      state.wall.head <= state.wall.tail
-    ) {
-      throw new Error(
-        "Exhaustion event is not required by the canonical wall.",
-      );
-    }
-    return { ...state, phase: "exhausted", sequence: event.sequence };
-  }
-  if (event.type === "game/tile-discarded") {
-    if (
-      (state.phase !== "awaiting-dealer-discard" &&
-        state.phase !== "awaiting-discard") ||
-      event.seat !== state.turn
-    ) {
-      throw new Error("Discard event has the wrong seat.");
-    }
-    const player = playerAt(state.players, event.seat);
-    const hand = removeExactTiles(player.hand, [event.tileId]);
-    return {
-      ...state,
-      phase: "awaiting-draw",
-      players: replacePlayerV1(state.players, event.seat, {
-        ...player,
-        discards: [...player.discards, event.tileId],
-        hand,
-      }),
-      sequence: event.sequence,
-      turn: nextSeat(event.seat),
-    };
-  }
-  if (event.type === "game/turn-drawn") {
-    return reduceDraw(state, event) as CanonicalGameStateV1;
-  }
-  throw new Error("A schema-v2 event cannot reduce schema-v1 state.");
-}
-
-function reduceV2Event(
-  state: CanonicalGameStateV2,
-  event: VersionedHongKongGameEvent,
-): CanonicalGameStateV2 {
   switch (event.type) {
     case "game/wall-exhausted": {
       if (
@@ -148,7 +82,7 @@ function reduceV2Event(
       return { ...state, phase: "exhausted", sequence: event.sequence };
     }
     case "game/turn-drawn":
-      return reduceDraw(state, event) as CanonicalGameStateV2;
+      return reduceDraw(state, event);
     case "game/discard-reaction-opened":
       return reduceDiscardReactionOpened(state, event);
     case "game/reaction-intent-submitted":
@@ -165,20 +99,15 @@ function reduceV2Event(
       return reduceSelfWinDeclared(state, event);
     case "game/hand-completed":
       return reduceHandCompleted(state, event);
-    case "game/tile-discarded":
-      throw new Error(
-        "Legacy discard events cannot reinterpret schema-v2 state.",
-      );
-    case "game/state-upgraded":
     case "game/started":
       throw new Error("Unexpected game lifecycle event.");
   }
 }
 
 function reduceSelfWinDeclared(
-  state: CanonicalGameStateV2,
+  state: CanonicalGameStateV1,
   event: SelfWinDeclaredEvent,
-): CanonicalGameStateV2 {
+): CanonicalGameStateV1 {
   if (
     event.seat !== state.turn ||
     scoreSelfWinCandidate(state, event.seat) === null
@@ -193,9 +122,9 @@ function reduceSelfWinDeclared(
 }
 
 function reduceHandCompleted(
-  state: CanonicalGameStateV2,
+  state: CanonicalGameStateV1,
   event: HandCompletedEvent,
-): CanonicalGameStateV2 {
+): CanonicalGameStateV1 {
   const expected = expectedPendingCompletion(state);
   if (canonicalJson(expected) !== canonicalJson(event.result)) {
     throw new Error("Hand completion does not match the authoritative score.");
@@ -216,11 +145,11 @@ function reduceHandCompleted(
   }
   const winner = playerAt(state.players, event.result.winnerSeat);
   const source = playerAt(state.players, window.sourceSeat);
-  let players = replacePlayerV2(state.players, event.result.winnerSeat, {
+  let players = replacePlayerV1(state.players, event.result.winnerSeat, {
     ...winner,
     hand: [...winner.hand, window.sourceTileId],
   });
-  players = replacePlayerV2(
+  players = replacePlayerV1(
     players,
     window.sourceSeat,
     window.kind === "discard"
@@ -251,9 +180,9 @@ function reduceHandCompleted(
 }
 
 function reduceDraw(
-  state: VersionedCanonicalGameState,
+  state: CanonicalGameStateV1,
   event: DrawnEvent,
-): VersionedCanonicalGameState {
+): CanonicalGameStateV1 {
   if (
     state.phase !== "awaiting-draw" ||
     event.seat !== state.turn ||
@@ -288,25 +217,11 @@ function reduceDraw(
   ) {
     throw new Error("Draw event has an invalid replacement outcome.");
   }
-  if (state.schemaVersion === 1) {
-    const player = playerAt(state.players, event.seat);
-    return {
-      ...state,
-      phase: event.exhausted ? "exhausted" : "awaiting-discard",
-      players: replacePlayerV1(state.players, event.seat, {
-        ...player,
-        bonuses: [...player.bonuses, ...bonuses],
-        hand: [...player.hand, ...structural],
-      }),
-      sequence: event.sequence,
-      wall: { ...state.wall, head: state.wall.head + 1, tail },
-    };
-  }
   const player = playerAt(state.players, event.seat);
   return {
     ...state,
     phase: event.exhausted ? "exhausted" : "awaiting-discard",
-    players: replacePlayerV2(state.players, event.seat, {
+    players: replacePlayerV1(state.players, event.seat, {
       ...player,
       bonuses: [...player.bonuses, ...bonuses],
       hand: [...player.hand, ...structural],
@@ -330,9 +245,9 @@ function reduceDraw(
 }
 
 function reduceDiscardReactionOpened(
-  state: CanonicalGameStateV2,
+  state: CanonicalGameStateV1,
   event: DiscardReactionOpenedEvent,
-): CanonicalGameStateV2 {
+): CanonicalGameStateV1 {
   if (
     (state.phase !== "awaiting-dealer-discard" &&
       state.phase !== "awaiting-discard") ||
@@ -349,7 +264,7 @@ function reduceDiscardReactionOpened(
   return {
     ...state,
     phase: "awaiting-discard-reactions",
-    players: replacePlayerV2(state.players, event.seat, {
+    players: replacePlayerV1(state.players, event.seat, {
       ...player,
       discards: [...player.discards, event.tileId],
       hand,
@@ -384,9 +299,9 @@ function reduceDiscardReactionOpened(
 }
 
 function reduceReactionIntent(
-  state: CanonicalGameStateV2,
+  state: CanonicalGameStateV1,
   event: ReactionIntentSubmittedEvent,
-): CanonicalGameStateV2 {
+): CanonicalGameStateV1 {
   const window = state.reactionWindow;
   if (
     (state.phase !== "awaiting-discard-reactions" &&
@@ -417,9 +332,9 @@ function reduceReactionIntent(
 }
 
 function reduceReactionResolved(
-  state: CanonicalGameStateV2,
+  state: CanonicalGameStateV1,
   event: ReactionResolvedEvent,
-): CanonicalGameStateV2 {
+): CanonicalGameStateV1 {
   const window = state.reactionWindow;
   if (
     (state.phase !== "awaiting-discard-reactions" &&
@@ -477,11 +392,11 @@ function reduceReactionResolved(
     sourceSeat: window.sourceSeat,
     tileIds: canonicalTileIds([...response.handTileIds, window.sourceTileId]),
   };
-  let players = replacePlayerV2(state.players, window.sourceSeat, {
+  let players = replacePlayerV1(state.players, window.sourceSeat, {
     ...source,
     discards: source.discards.slice(0, -1),
   });
-  players = replacePlayerV2(players, event.outcome.seat, {
+  players = replacePlayerV1(players, event.outcome.seat, {
     ...claimant,
     hand,
     melds: [...claimant.melds, meld],
@@ -508,9 +423,9 @@ function reduceReactionResolved(
 }
 
 function reduceConcealedKong(
-  state: CanonicalGameStateV2,
+  state: CanonicalGameStateV1,
   event: ConcealedKongDeclaredEvent,
-): CanonicalGameStateV2 {
+): CanonicalGameStateV1 {
   if (
     event.seat !== state.turn ||
     !legalConcealedKongs(state, event.seat).some(
@@ -533,7 +448,7 @@ function reduceConcealedKong(
     event.meld.tileIds.includes(state.turnProvenance.lastAcquiredTileId);
   return {
     ...state,
-    players: replacePlayerV2(state.players, event.seat, {
+    players: replacePlayerV1(state.players, event.seat, {
       ...player,
       hand: removeExactTiles(player.hand, event.meld.tileIds),
       melds: [...player.melds, event.meld],
@@ -552,9 +467,9 @@ function reduceConcealedKong(
 }
 
 function reduceAddedKongProposal(
-  state: CanonicalGameStateV2,
+  state: CanonicalGameStateV1,
   event: AddedKongProposedEvent,
-): CanonicalGameStateV2 {
+): CanonicalGameStateV1 {
   if (
     !legalAddedKongs(state, event.seat).some(
       (candidate) =>
@@ -586,10 +501,10 @@ function reduceAddedKongProposal(
 }
 
 function commitAddedKong(
-  state: CanonicalGameStateV2,
+  state: CanonicalGameStateV1,
   window: AddedKongReactionWindow,
   sequence: number,
-): CanonicalGameStateV2 {
+): CanonicalGameStateV1 {
   const player = playerAt(state.players, window.sourceSeat);
   const meldIndex = player.melds.findIndex(
     (meld) => meld.id === window.sourceMeldId,
@@ -610,7 +525,7 @@ function commitAddedKong(
   return {
     ...state,
     phase: "awaiting-discard",
-    players: replacePlayerV2(state.players, window.sourceSeat, {
+    players: replacePlayerV1(state.players, window.sourceSeat, {
       ...player,
       hand: removeExactTiles(player.hand, [window.sourceTileId]),
       melds: player.melds.map((candidate, index) =>
@@ -634,9 +549,9 @@ function commitAddedKong(
 }
 
 function reduceKongReplacement(
-  state: CanonicalGameStateV2,
+  state: CanonicalGameStateV1,
   event: KongReplacementDrawnEvent,
-): CanonicalGameStateV2 {
+): CanonicalGameStateV1 {
   if (
     (state.phase !== "awaiting-dealer-discard" &&
       state.phase !== "awaiting-discard") ||
@@ -658,7 +573,7 @@ function reduceKongReplacement(
   return {
     ...state,
     phase: event.exhausted ? "exhausted" : state.phase,
-    players: replacePlayerV2(state.players, event.seat, {
+    players: replacePlayerV1(state.players, event.seat, {
       ...player,
       bonuses: [...player.bonuses, ...bonuses],
       hand: [...player.hand, ...structural],
@@ -677,67 +592,11 @@ function reduceKongReplacement(
   };
 }
 
-function upgradeState(
-  state: CanonicalGameStateV1,
-  event: StateUpgradedEvent,
-): CanonicalGameStateV2 {
-  assertUpgradeProvenance(state, event.provenance);
-  const players = Object.fromEntries(
-    seats.map((currentSeat) => [
-      currentSeat,
-      { ...playerAt(state.players, currentSeat), melds: [] },
-    ]),
-  ) as unknown as SeatMap<CanonicalPlayerStateV2>;
-  return {
-    ...state,
-    completionProvenance: null,
-    players,
-    prevailingWind: "east",
-    reactionWindow: null,
-    result: null,
-    schemaVersion: 2,
-    sequence: event.sequence,
-    turnProvenance: {
-      eastHasDeclaredKong: false,
-      eastHasDiscarded: event.provenance.eastHasDiscarded,
-      lastAcquiredTileId: provenanceTileId(state, event.provenance),
-      lastAcquiredTileWasFinalWall:
-        event.provenance.type === "draw" &&
-        !event.provenance.exhausted &&
-        state.wall.head > state.wall.tail,
-      lastAcquisition: provenanceAcquisition(state, event.provenance),
-      replacementChainDepth: 0,
-      replacementPending: false,
-    },
-  };
-}
-
 export function replayGameEvents(
-  events: readonly HongKongGameEvent[],
+  events: readonly HongKongGameEventV1[],
 ): CanonicalGameStateV1 {
   let state: CanonicalGameStateV1 | undefined;
   for (const event of events) state = reduceGameEvent(state, event);
-  if (state === undefined)
-    throw new Error("A game event stream must contain genesis.");
-  return state;
-}
-
-export function reduceGameEvent(
-  state: CanonicalGameStateV1 | undefined,
-  event: HongKongGameEvent,
-): CanonicalGameStateV1 {
-  const next = reduceVersionedGameEvent(state, event);
-  if (next.schemaVersion !== 1) {
-    throw new Error("Legacy event reduction cannot produce schema v2.");
-  }
-  return next;
-}
-
-export function replayVersionedGameEvents(
-  events: readonly VersionedHongKongGameEvent[],
-): VersionedCanonicalGameState {
-  let state: VersionedCanonicalGameState | undefined;
-  for (const event of events) state = reduceVersionedGameEvent(state, event);
   if (state === undefined)
     throw new Error("A game event stream must contain genesis.");
   return state;
@@ -748,14 +607,6 @@ function replacePlayerV1(
   currentSeat: Seat,
   player: CanonicalPlayerStateV1,
 ): SeatMap<CanonicalPlayerStateV1> {
-  return { ...players, [currentSeat]: player };
-}
-
-function replacePlayerV2(
-  players: SeatMap<CanonicalPlayerStateV2>,
-  currentSeat: Seat,
-  player: CanonicalPlayerStateV2,
-): SeatMap<CanonicalPlayerStateV2> {
   return { ...players, [currentSeat]: player };
 }
 

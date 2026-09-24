@@ -76,30 +76,14 @@ function receiptRecord(json: unknown): Record<string, unknown> {
   return value as Record<string, unknown>;
 }
 
-/** Keep historical bytes for collisions/replay, but never replay unvalidated JSON. */
+/** Keep original bytes for collisions/replay, but never replay unvalidated JSON. */
 function decodeCommandReceipt(
   commandId: string,
   row: CommandReceiptRow,
 ): CommandReceipt {
   const request = receiptRecord(row.request_json);
   const response = receiptRecord(row.response_json);
-  const protocol = request["protocolVersion"];
-  // Protocol 1 used the same envelope for lobby and the draw/discard slice.
-  // Normalize only a validation copy; old requests must still collide with v2.
-  const parsed =
-    protocol === 1 || protocol === 2
-      ? parseTableCommand(JSON.stringify({ ...request, protocolVersion: 2 }))
-      : undefined;
-  const legacyCommand =
-    parsed !== undefined &&
-    [
-      "lobby/claim-seat",
-      "lobby/leave-seat",
-      "lobby/set-ready",
-      "game/start",
-      "game/draw",
-      "game/discard",
-    ].includes(parsed.command.type);
+  const parsed = parseTableCommand(row.request_json);
   const error = response["error"];
   const keys = [
     "type",
@@ -114,10 +98,9 @@ function decodeCommandReceipt(
     JSON.stringify(request) !== row.request_json ||
     JSON.stringify(response) !== row.response_json ||
     parsed?.commandId !== commandId ||
-    (protocol === 1 && !legacyCommand) ||
     !exactRecord(response, keys) ||
     response["type"] !== "table/receipt" ||
-    response["protocolVersion"] !== protocol ||
+    response["protocolVersion"] !== 1 ||
     response["commandId"] !== commandId ||
     (response["outcome"] !== "applied" && response["outcome"] !== "rejected") ||
     typeof response["stateVersion"] !== "number" ||

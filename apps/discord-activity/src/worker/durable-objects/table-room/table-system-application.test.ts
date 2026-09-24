@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { startHongKongV2Game } from "@mahjong/rules-hong-kong";
+import { startHongKongV1Game } from "@mahjong/rules-hong-kong";
 import type { ControllerSnapshot } from "./table-controller-application.js";
 import { prepareGameEventBatch } from "./table-game-events.js";
 import { tableGameDeadline } from "./table-room-game-engine.js";
@@ -266,7 +266,7 @@ describe("system operation application with a test store", () => {
 
   it("hands off grace at a new controller generation and queues work without changing game state", async () => {
     const store = new MemorySystemStore();
-    const started = startHongKongV2Game(
+    const started = startHongKongV1Game(
       { east: "east", south: "south", west: "west", north: "north" },
       Uint8Array.from(
         { length: 1_028 },

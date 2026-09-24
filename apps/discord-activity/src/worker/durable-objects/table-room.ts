@@ -19,9 +19,9 @@ import {
 } from "./table-room/table-access-application.js";
 import { SqliteTableAccessStore } from "./table-room/table-access-store.js";
 import {
-  decodeCanonicalVersionedGameJson,
-  type CanonicalGameStateV2,
-  type GameViewV2,
+  decodeCanonicalGameJson,
+  type CanonicalGameStateV1,
+  type GameViewV1,
 } from "@mahjong/rules-hong-kong";
 
 import {
@@ -68,11 +68,7 @@ import {
   verifyDeadlinePersistence,
   type PendingDeadline,
 } from "./table-room/deadline-queue.js";
-import {
-  persistPreparedGameBatchInTransaction,
-  prepareV1GameUpgrade,
-  verifyStoredGame,
-} from "./table-room/table-room-game-store.js";
+import { verifyStoredGame } from "./table-room/table-room-game-store.js";
 import {
   parseTableCommand,
   parseTableResync,
@@ -157,7 +153,7 @@ interface ConnectionAttachment {
   readonly connectionGeneration: string;
   readonly connectionId: string;
   readonly sessionExpiresAt: number;
-  readonly version: 2;
+  readonly version: 1;
   readonly heartbeatAcceptedAt?: number;
 }
 
@@ -187,12 +183,12 @@ interface ViewerSafeActor {
 
 interface ViewerSafeTableSnapshot {
   readonly type: "table/snapshot";
-  readonly protocolVersion: 2;
+  readonly protocolVersion: 1;
   readonly stateVersion: number;
   readonly view: {
     readonly phase:
       "abandoned" | "complete" | "exhausted" | "lobby" | "playing";
-    readonly game?: GameViewV2 & { readonly deadlineAt: number | null };
+    readonly game?: GameViewV1 & { readonly deadlineAt: number | null };
     readonly seats: readonly {
       readonly occupant: ViewerSafeActor | null;
       readonly autopilot: boolean;
@@ -213,7 +209,7 @@ interface ViewerSafeTableSnapshot {
 
 interface ViewerSafeTableReceipt {
   readonly type: "table/receipt";
-  readonly protocolVersion: 2;
+  readonly protocolVersion: 1;
   readonly commandId: string;
   readonly outcome: "applied" | "rejected";
   readonly stateVersion: number;
@@ -222,7 +218,7 @@ interface ViewerSafeTableReceipt {
 
 interface ViewerSafeSessionReplaced {
   readonly type: "session/replaced";
-  readonly protocolVersion: 2;
+  readonly protocolVersion: 1;
 }
 
 type ViewerSafeServerMessage =
@@ -505,7 +501,7 @@ function connectionAttachment(
         ? ["heartbeatAcceptedAt"]
         : []),
     ]) ||
-    value["version"] !== 2 ||
+    value["version"] !== 1 ||
     !validActorId(value["actorId"]) ||
     typeof value["connectionId"] !== "string" ||
     !SHORT_TOKEN_PATTERN.test(value["connectionId"]) ||
@@ -659,19 +655,12 @@ export class TableRoom extends DurableObject<Env> {
     const sql = this.ctx.storage.sql;
     void this.ctx.blockConcurrencyWhile(async () => {
       verifyDeadlinePersistence(sql);
-      let game = await verifyStoredGame(sql);
-      if (game?.state.schemaVersion === 1) {
-        const upgrade = await prepareV1GameUpgrade(game);
-        this.ctx.storage.transactionSync(() => {
-          persistPreparedGameBatchInTransaction(sql, upgrade);
-        });
-        game = await verifyStoredGame(sql);
-      }
+      const game = await verifyStoredGame(sql);
       const now = Date.now();
       reconcileTableWork(new SqliteTableConnectionStore(this.ctx.storage), {
         now,
         observations: this.presenceObservations(),
-        game: game?.state.schemaVersion === 2 ? game.state : undefined,
+        game: game?.state,
         createCommandId: () => crypto.randomUUID(),
       });
       await this.repairAlarm();
@@ -757,7 +746,7 @@ export class TableRoom extends DurableObject<Env> {
   }
 
   private gameState():
-    | { readonly state: CanonicalGameStateV2; readonly lastEventHash: string }
+    | { readonly state: CanonicalGameStateV1; readonly lastEventHash: string }
     | undefined {
     const row = this.ctx.storage.sql
       .exec<{ state_json: string; last_event_hash: string }>(
@@ -765,10 +754,7 @@ export class TableRoom extends DurableObject<Env> {
       )
       .toArray()[0];
     if (row === undefined) return undefined;
-    const state = decodeCanonicalVersionedGameJson(row.state_json);
-    if (state.schemaVersion !== 2) {
-      throw new Error("TableRoom did not upgrade its canonical game.");
-    }
+    const state = decodeCanonicalGameJson(row.state_json);
     return { state, lastEventHash: row.last_event_hash };
   }
 
@@ -1364,7 +1350,7 @@ export class TableRoom extends DurableObject<Env> {
       connectionGeneration,
       connectionId: crypto.randomUUID(),
       sessionExpiresAt,
-      version: 2,
+      version: 1,
       ...(new URL(request.url).searchParams.getAll("heartbeat").length === 1 &&
       new URL(request.url).searchParams.get("heartbeat") === "1"
         ? { heartbeatAcceptedAt: now }

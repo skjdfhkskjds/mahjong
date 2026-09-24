@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
-import type { GameViewV2 } from "@mahjong/rules-hong-kong";
+import type { GameViewV1 } from "@mahjong/rules-hong-kong";
 import type { PlayerControl } from "../../src/worker/durable-objects/table-room/table-player-control.js";
 import { BotPlayer } from "../../src/worker/players/bot-player.js";
 import type {
@@ -12,10 +12,10 @@ import {
 } from "../../src/worker/players/table-players.js";
 import type { UserConnection } from "../../src/worker/players/user-player.js";
 
-const game: GameViewV2 = {
+const game: GameViewV1 = {
   phase: "awaiting-draw",
   players: [],
-  turn: "east" as GameViewV2["turn"],
+  turn: "east" as GameViewV1["turn"],
   wallRemaining: 40,
   viewerActions: { self: [{ type: "game/draw" }] },
 };
@@ -57,7 +57,7 @@ function room() {
     }),
   );
   const choose = vi.fn(
-    (permitted: GameViewV2) => permitted.viewerActions?.self[0],
+    (permitted: GameViewV1) => permitted.viewerActions?.self[0],
   );
   const players = new TablePlayers({
     control: (actorId) => ({ ...control, actorId }),

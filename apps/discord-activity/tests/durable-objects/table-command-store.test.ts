@@ -2,8 +2,8 @@ import { env } from "cloudflare:workers";
 import { runInDurableObject } from "cloudflare:test";
 import { describe, expect, it } from "vitest";
 import {
-  applyGameCommandV2,
-  startHongKongV2Game,
+  applyGameCommandV1,
+  startHongKongV1Game,
 } from "@mahjong/rules-hong-kong";
 
 import type { TableRoom } from "../../src/worker/durable-objects/table-room.js";
@@ -88,7 +88,7 @@ function reactionDeadline(
 }
 
 async function prepareMove(storage: DurableObjectStorage) {
-  const started = startHongKongV2Game(
+  const started = startHongKongV1Game(
     {
       east: "actor:east",
       south: "actor:south",
@@ -102,8 +102,8 @@ async function prepareMove(storage: DurableObjectStorage) {
     await prepareGameEventBatch(undefined, [started.event]),
   );
   const stored = await verifyStoredGame(storage.sql);
-  if (stored?.state.schemaVersion !== 2)
-    throw new Error("Expected schema-v2 fixture.");
+  if (stored?.state.schemaVersion !== 1)
+    throw new Error("Expected schema-v1 fixture.");
   const dealer = [
     stored.state.players.east,
     stored.state.players.south,
@@ -113,7 +113,7 @@ async function prepareMove(storage: DurableObjectStorage) {
   const tileId = dealer?.hand[0];
   if (dealer === undefined || tileId === undefined)
     throw new Error("Expected dealer tile.");
-  const discarded = applyGameCommandV2(stored.state, dealer.actorId, {
+  const discarded = applyGameCommandV1(stored.state, dealer.actorId, {
     type: "game/discard",
     tileId,
   });
@@ -134,12 +134,12 @@ function commandChange(commandId: string): PreparedTableCommand {
         command: { type: "lobby/set-ready", ready: true },
         commandId,
         expectedStateVersion: 0,
-        protocolVersion: 2,
+        protocolVersion: 1,
         type: "table/command",
       }),
       response: JSON.stringify({
         type: "table/receipt",
-        protocolVersion: 2,
+        protocolVersion: 1,
         commandId,
         outcome: "applied",
         stateVersion: 1,

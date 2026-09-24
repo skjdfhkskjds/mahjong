@@ -1,7 +1,7 @@
 import type { Seat } from "@mahjong/game-core";
 
 import type {
-  CanonicalGameStateV2,
+  CanonicalGameStateV1,
   ReactionResponse,
   ReactionWindow,
 } from "../engine/game-state.js";
@@ -33,7 +33,7 @@ export interface ReactionResolution {
 }
 
 export function normalizeReactionWindow(
-  state: CanonicalGameStateV2,
+  state: CanonicalGameStateV1,
   window: ReactionWindow,
 ): ReactionResolution {
   const responses = window.responderOrder.map((seat) => {

@@ -48,7 +48,7 @@ Executable correspondence:
    5 tiles. North can legally win for 4 faan using the discard.
 3. South responds chow first and West responds pung second. Each valid response
    appends an authority-only `game/reaction-intent-submitted` event, advancing
-   canonical game sequence/hash/checkpoint and v2 reaction state. Its private
+   canonical game sequence/hash/checkpoint and v1 reaction state. Its private
    acknowledgement does not change public room `stateVersion`, broadcast, or
    disclose the choice.
 4. North responds win last, permitting resolution before the deadline. One

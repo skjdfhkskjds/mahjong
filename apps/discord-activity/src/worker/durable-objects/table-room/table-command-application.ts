@@ -11,8 +11,8 @@ import {
 import type { PlayerControl } from "./table-player-control.js";
 import {
   HONG_KONG_V1_RANDOM_BYTES,
-  type CanonicalGameStateV2,
-  type HongKongGameCommandV2,
+  type CanonicalGameStateV1,
+  type HongKongGameCommandV1,
 } from "@mahjong/rules-hong-kong";
 
 import { startTableGame, tableGameEngine } from "./table-room-game-engine.js";
@@ -104,7 +104,7 @@ function receipt(
 ): string {
   return JSON.stringify({
     type: "table/receipt",
-    protocolVersion: 2,
+    protocolVersion: 1,
     commandId,
     outcome: applied ? "applied" : "rejected",
     stateVersion,
@@ -143,7 +143,7 @@ function replay(
 }
 function isGameCommand(
   command: TableCommandEnvelope["command"],
-): command is HongKongGameCommandV2 {
+): command is HongKongGameCommandV1 {
   return command.type.startsWith("game/") && command.type !== "game/start";
 }
 
@@ -197,7 +197,7 @@ export async function executeTableCommand(
   let botSeatChange: BotSeatChange | undefined;
   let presence: PresenceChanges | undefined;
   let gameDeadlines: GameDeadlineChanges | undefined;
-  let currentGame: CanonicalGameStateV2 | undefined;
+  let currentGame: CanonicalGameStateV1 | undefined;
   let removeConnectionGeneration: string | undefined;
   const command = envelope.command;
   if (envelope.expectedStateVersion !== state.stateVersion) {
@@ -248,7 +248,7 @@ export async function executeTableCommand(
   } else if (isGameCommand(command)) {
     const stored = await store.verifiedGame();
     if (!currentAuthority(store.controllerSnapshot())) return inactive();
-    if (stored?.state.schemaVersion !== 2)
+    if (stored === undefined)
       rejection = {
         code: "game-not-started",
         message: "The game has not started.",
@@ -277,8 +277,7 @@ export async function executeTableCommand(
       };
     } else {
       const stored = await store.verifiedGame();
-      currentGame =
-        stored?.state.schemaVersion === 2 ? stored.state : undefined;
+      currentGame = stored?.state;
       removeConnectionGeneration = input.departingConnectionGeneration;
       applied = true;
       if (
@@ -450,8 +449,7 @@ export async function executeTableCommand(
     ? prepareControllerWork({
         controls,
         jobs: state.controllers.jobs,
-        game:
-          game?.finalState.schemaVersion === 2 ? game.finalState : currentGame,
+        game: game?.finalState ?? currentGame,
         now,
         abandoned:
           presence?.lifecycle?.abandoned ?? state.presence.lifecycle.abandoned,

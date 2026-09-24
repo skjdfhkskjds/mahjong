@@ -1,4 +1,4 @@
-import type { VersionedCanonicalGameState } from "@mahjong/rules-hong-kong";
+import type { CanonicalGameStateV1 } from "@mahjong/rules-hong-kong";
 
 import type {
   PendingDeadline,
@@ -14,15 +14,14 @@ export interface GameDeadlineChanges {
 
 /** Translate the engine's semantic target into application scheduling policy. */
 export function prepareGameDeadlines(input: {
-  readonly state: VersionedCanonicalGameState;
+  readonly state: CanonicalGameStateV1;
   readonly now: number;
   readonly deadlines: readonly PersistedDeadline[];
   readonly controls: readonly PlayerControl[];
   readonly connectedActorIds: ReadonlySet<string>;
   readonly processingDeadlineId?: string;
 }): GameDeadlineChanges {
-  const target =
-    input.state.schemaVersion === 2 ? tableGameDeadline(input.state) : null;
+  const target = tableGameDeadline(input.state);
   const control =
     target?.kind === "turn"
       ? input.controls.find(({ actorId }) => actorId === target.actorId)

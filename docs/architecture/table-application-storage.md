@@ -19,7 +19,7 @@ landed engine and mutation-check audits. The extraction preserves their policies
 | Activate session                   | Binding validity, monotonic actor session generation, member response                                                                       | Session upsert plus deliberate-departure controller/work/revision changes; nonmembers still receive the generation needed for invitation redemption                         | Close replaced actor sockets after persistence; return membership result |
 | Connect                            | Current grant authority, seated recovery and controller/presence policy                                                                     | Grant, human controller restoration, substitute-work cancellation, lifecycle state and visible revision together; presence/game deadlines reconcile after socket acceptance | Accept socket, snapshot/broadcast, alarm repair                          |
 | Close                              | Remove exact grant; retain actor seat; derive presence from other valid grants                                                              | Grant removal and presence deadline reconciliation together                                                                                                                 | Alarm repair                                                             |
-| Recovery                           | Verify event-chain/checkpoint coherence; reconstruct work from durable state and current grants                                             | Schema migration; optional legacy canonical upgrade; presence/game/bot work reconciliation                                                                                  | Restore alarm before delivery resumes                                    |
+| Recovery                           | Verify event-chain/checkpoint coherence; reconstruct work from durable state and current grants                                             | Strict v1 storage validation; presence/game/bot work reconciliation                                                                                                         | Restore alarm before delivery resumes                                    |
 | Resync                             | Current viewer authority                                                                                                                    | Read only                                                                                                                                                                   | Viewer-safe snapshot                                                     |
 
 ActivityInstance binding and session promotion are separate Durable Object
@@ -40,7 +40,7 @@ storage callback receiving raw SQL.
 
 Application operations depend on typed record reads and operation-level prepared
 commits. The SQLite adapter depends on those contracts and owns row mapping,
-persisted validation, constraints, migrations, and rollback. Rules remain below
+persisted validation, constraints, and rollback. Rules remain below
 application orchestration and never receive command receipts, session state,
 public room versions, or scheduling workflows. TableRoom consumes committed
 publication intent and executes socket and alarm effects.
@@ -64,11 +64,9 @@ Canonical events and hashes are never socket payloads.
 5. Only a committed result permits TableRoom to acknowledge and publish freshly
    projected viewer state, then repair the platform alarm.
 
-Extraction preserves wire and stored bytes. Existing schema-v1 and active
-canonical-v1 fixtures remain permanent migration roots; extraction itself does
-not add a schema migration or reinterpret historical hash input. The parent
-schema-v6 migration, strict v5 bot-work ownership validation, and retained v5
-fixture remain intact.
+The complete-v1 fixture verifies recovery and strict storage validation. The
+prelaunch version reset in ADR 0017 changes genesis bytes and their resulting
+hashes without changing the event-hash encoding or rules semantics.
 
 ## Modules and verification
 
@@ -90,7 +88,7 @@ fixture remain intact.
   focused runtime fixtures; production operations use prepared commits.
 - `table-game-events.ts` prepares canonical batches independently of SQL.
   `table-room-game-store.ts` retains event-chain verification, checkpoint reads,
-  migrations, and writes. `table-game-scheduling.ts` translates engine targets
+  v1 schema validation, and writes. `table-game-scheduling.ts` translates engine targets
   into the existing eight-second reaction and 60-second human-controller turn
   work, preserving generation-specific identities when a cancelled turn resumes.
 - `table-bot-seating.ts` and `table-controller-application.ts` prepare bot seating
@@ -112,6 +110,6 @@ deadlines, seats, automation, and lifecycle state. Reusing a committed prepared
 batch fails SQLite sequence uniqueness with every related row unchanged;
 this demonstrates integrity without introducing speculative optimistic CAS.
 
-The PR contains only the #25 extraction on its immediate #33 parent. The
-controller implementation, v6 migration and wire overlap decisions belong to
-that prerequisite; this change adds no new rules or controller policy.
+The controller implementation and policy are recorded in ADR 0016; the
+prelaunch format baseline is recorded in ADR 0017. The extraction adds no new
+rules or controller policy.

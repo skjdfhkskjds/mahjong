@@ -7,18 +7,12 @@ import {
 } from "../kongs/kong-transitions.js";
 import { tileKind } from "../tiles/tile-kind-identity.js";
 import type {
-  GameView,
-  GameViewV2,
-  HongKongGameCommandV2,
+  GameViewV1,
+  HongKongGameCommandV1,
   PublicReactionAction,
   PublicTile,
 } from "./game-contracts.js";
-import {
-  playerAt,
-  type VersionedCanonicalGameState,
-  type CanonicalGameStateV1,
-  type CanonicalGameStateV2,
-} from "./game-state.js";
+import { playerAt, type CanonicalGameStateV1 } from "./game-state.js";
 import {
   scoreReactionWinCandidate,
   scoreSelfWinCandidate,
@@ -26,22 +20,15 @@ import {
 
 export type {
   GameView,
-  GameViewV2,
+  GameViewV1,
   PublicMeld,
   PublicTile,
 } from "./game-contracts.js";
 
-export function projectGame(
+export function projectGameV1(
   state: CanonicalGameStateV1,
   viewerActorId: string,
-): GameView {
-  return legacyProjection(state, viewerActorId);
-}
-
-export function projectGameV2(
-  state: CanonicalGameStateV2,
-  viewerActorId: string,
-): GameViewV2 {
+): GameViewV1 {
   if (state.phase === "pending-win-validation") {
     throw new Error("Implementation-only win validation cannot be projected.");
   }
@@ -122,52 +109,12 @@ export function projectGameV2(
   };
 }
 
-export function projectLegacyCompatibleGameV2(
-  state: CanonicalGameStateV2,
-  viewerActorId: string,
-): GameView {
-  return legacyProjection(state, viewerActorId);
-}
-
-function legacyProjection(
-  state: VersionedCanonicalGameState,
-  viewerActorId: string,
-): GameView {
-  if (
-    state.phase === "awaiting-discard-reactions" ||
-    state.phase === "awaiting-added-kong-reactions" ||
-    state.phase === "pending-win-validation" ||
-    state.phase === "complete"
-  ) {
-    throw new Error("State has no legacy-compatible projection.");
-  }
-  const viewer = seats
-    .map((currentSeat) => playerAt(state.players, currentSeat))
-    .find(({ actorId }) => actorId === viewerActorId);
-  const publicTile = (id: TileId): PublicTile => ({ id, kind: tileKind(id) });
-  return {
-    phase: state.phase,
-    players: seats.map((currentSeat) => {
-      const player = playerAt(state.players, currentSeat);
-      return {
-        bonuses: player.bonuses.map(publicTile),
-        concealedCount: player.hand.length,
-        discards: player.discards.map(publicTile),
-        seat: currentSeat,
-      };
-    }),
-    turn: state.turn,
-    ...(viewer === undefined
-      ? {}
-      : { viewerHand: viewer.hand.map(publicTile) }),
-    wallRemaining: Math.max(0, state.wall.tail - state.wall.head + 1),
-  };
-}
+export const projectGame = projectGameV1;
 
 function legalSelfActions(
-  state: CanonicalGameStateV2,
+  state: CanonicalGameStateV1,
   viewerSeat: Seat,
-): readonly HongKongGameCommandV2[] {
+): readonly HongKongGameCommandV1[] {
   if (viewerSeat !== state.turn || state.reactionWindow !== null) return [];
   if (state.phase === "awaiting-draw") return [{ type: "game/draw" }];
   if (
@@ -176,7 +123,7 @@ function legalSelfActions(
   ) {
     return [];
   }
-  const actions: HongKongGameCommandV2[] = playerAt(
+  const actions: HongKongGameCommandV1[] = playerAt(
     state.players,
     viewerSeat,
   ).hand.map((tileId) => ({ type: "game/discard", tileId }));
@@ -198,7 +145,7 @@ function legalSelfActions(
 }
 
 function legalViewerReactions(
-  state: CanonicalGameStateV2,
+  state: CanonicalGameStateV1,
   viewerSeat: Seat,
 ): readonly PublicReactionAction[] {
   const actions: PublicReactionAction[] = [

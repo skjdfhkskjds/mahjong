@@ -14,14 +14,14 @@ export function createBotTables(sql: SqlStorage): void {
     "CREATE TABLE bot_players (actor_id TEXT PRIMARY KEY, policy_version TEXT NOT NULL CHECK (policy_version = 'random/v1'), FOREIGN KEY (actor_id) REFERENCES members(actor_id) ON DELETE CASCADE)",
   );
   sql.exec(
-    "CREATE TABLE bot_work (actor_id TEXT PRIMARY KEY, target TEXT NOT NULL, command_id TEXT NOT NULL UNIQUE, due_at INTEGER NOT NULL CHECK (due_at BETWEEN 0 AND 9007199254740991), FOREIGN KEY (actor_id) REFERENCES bot_players(actor_id) ON DELETE CASCADE)",
+    "CREATE TABLE bot_work (actor_id TEXT PRIMARY KEY, target TEXT NOT NULL, command_id TEXT NOT NULL UNIQUE, due_at INTEGER NOT NULL CHECK (due_at BETWEEN 0 AND 9007199254740991), controller_generation INTEGER NOT NULL CHECK (controller_generation BETWEEN 0 AND 9007199254740991), FOREIGN KEY (actor_id) REFERENCES members(actor_id) ON DELETE CASCADE)",
   );
 }
 
-function verifyBotForeignKeys(sql: SqlStorage, version: 5 | 6): void {
+function verifyBotForeignKeys(sql: SqlStorage): void {
   for (const [table, parent] of [
     ["bot_players", "members"],
-    ["bot_work", version === 5 ? "bot_players" : "members"],
+    ["bot_work", "members"],
   ] as const) {
     const keys = sql
       .exec<{
@@ -40,32 +40,14 @@ function verifyBotForeignKeys(sql: SqlStorage, version: 5 | 6): void {
           key.on_delete === "CASCADE",
       )
     ) {
-      throw new Error(
-        `TableRoom schema-v${String(version)} bot foreign keys are missing.`,
-      );
+      throw new Error("TableRoom schema-v1 bot foreign keys are missing.");
     }
   }
 }
 
-/** Runs inside the schema migration transaction; v5 jobs belonged only to dedicated bots. */
-export function migrateBotWorkToV6(sql: SqlStorage): void {
-  verifyBotForeignKeys(sql, 5);
-  readBotIds(sql);
-  if (sql.exec("PRAGMA foreign_key_check").toArray().length !== 0)
-    throw new Error("TableRoom schema-v5 foreign keys are violated.");
-  sql.exec("ALTER TABLE bot_work RENAME TO bot_work_v5");
-  sql.exec(
-    "CREATE TABLE bot_work (actor_id TEXT PRIMARY KEY, target TEXT NOT NULL, command_id TEXT NOT NULL UNIQUE, due_at INTEGER NOT NULL CHECK (due_at BETWEEN 0 AND 9007199254740991), controller_generation INTEGER NOT NULL CHECK (controller_generation BETWEEN 0 AND 9007199254740991), FOREIGN KEY (actor_id) REFERENCES members(actor_id) ON DELETE CASCADE)",
-  );
-  sql.exec(
-    "INSERT INTO bot_work (actor_id, target, command_id, due_at, controller_generation) SELECT actor_id, target, command_id, due_at, 0 FROM bot_work_v5",
-  );
-  sql.exec("DROP TABLE bot_work_v5");
-}
-
 /** Recovery must retain the cascades that atomically retire a player and its work. */
 export function verifyBotPersistence(sql: SqlStorage): void {
-  verifyBotForeignKeys(sql, 6);
+  verifyBotForeignKeys(sql);
   const generation = sql
     .exec<{ name: string; type: string; notnull: number }>(
       "PRAGMA table_info(bot_work)",
@@ -73,7 +55,7 @@ export function verifyBotPersistence(sql: SqlStorage): void {
     .toArray()
     .find((column) => column.name === "controller_generation");
   if (generation?.type !== "INTEGER" || generation.notnull !== 1) {
-    throw new Error("TableRoom schema-v6 controller generation is missing.");
+    throw new Error("TableRoom schema-v1 controller generation is missing.");
   }
   readBotWork(sql);
 }

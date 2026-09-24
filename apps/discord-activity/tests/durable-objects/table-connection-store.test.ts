@@ -1,6 +1,6 @@
 import {
   HONG_KONG_V1_RANDOM_BYTES,
-  startHongKongV2Game,
+  startHongKongV1Game,
 } from "@mahjong/rules-hong-kong";
 import { activateTableConnection } from "../../src/worker/durable-objects/table-room/table-connection-application.js";
 import { activateAccessSession } from "../../src/worker/durable-objects/table-room/table-access-application.js";
@@ -38,7 +38,7 @@ it("rejects malformed persisted grant authority before a socket can use it", asy
 });
 
 function controllerFixture(state: DurableObjectState, autopilot: boolean) {
-  const game = startHongKongV2Game(
+  const game = startHongKongV1Game(
     { east: "east", south: "south", west: "west", north: "north" },
     new Uint8Array(HONG_KONG_V1_RANDOM_BYTES),
   ).state;

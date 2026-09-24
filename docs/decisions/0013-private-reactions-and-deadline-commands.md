@@ -23,7 +23,7 @@ and an alarm retry must not apply an action twice.
 ## Decision
 
 Persist each reaction window and each actor's first valid intent in canonical
-game state schema v2. An intent targets the stable window ID and the room
+game state schema v1. An intent targets the stable window ID and the room
 version at which it opened. Its authority-only
 `game/reaction-intent-submitted` event, next canonical sequence/hash,
 checkpoint, and actor-scoped receipt are atomic. It does not advance public

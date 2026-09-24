@@ -1,4 +1,7 @@
-import { migrateTableRoomStorageToV6 } from "./table-room-game-store.js";
+import {
+  createTableRoomSchemaV1,
+  validateTableRoomStorageV1,
+} from "./table-room-game-store.js";
 
 export function initializeTableRoomStorage(
   storage: DurableObjectStorage,
@@ -42,7 +45,8 @@ export function initializeTableRoomStorage(
       sql.exec(
         "CREATE TABLE connection_grants (connection_generation TEXT PRIMARY KEY, actor_id TEXT NOT NULL, display_name TEXT NOT NULL, instance_id TEXT NOT NULL, table_id TEXT NOT NULL, binding_generation INTEGER NOT NULL, binding_proof TEXT NOT NULL, session_generation INTEGER NOT NULL, expires_at INTEGER NOT NULL)",
       );
+      createTableRoomSchemaV1(sql);
     });
   }
-  migrateTableRoomStorageToV6(storage);
+  validateTableRoomStorageV1(storage);
 }

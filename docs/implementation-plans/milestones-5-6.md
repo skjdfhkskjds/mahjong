@@ -2,6 +2,11 @@
 
 Status: frozen
 
+The version-numbered migration steps below record the prelaunch implementation
+plan. [ADR 0017](../decisions/0017-prelaunch-v1-baseline.md) supersedes them:
+the complete game, wire, and storage contracts now begin at v1. Rules decisions
+and behavior fixtures remain authoritative.
+
 Frozen: 2026-09-01
 
 Scope: claims, kongs, operational deadlines, winning-hand recognition, scoring,

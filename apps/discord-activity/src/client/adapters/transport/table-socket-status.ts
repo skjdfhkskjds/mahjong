@@ -4,7 +4,7 @@ import {
   validateCommand,
   type TableCommandEnvelope,
   type TableSocketMessage,
-} from "./table-socket-protocol-v2.js";
+} from "./table-socket-protocol-v1.js";
 import {
   startTableSocketHeartbeat,
   TABLE_HEARTBEAT_READY,
@@ -35,7 +35,7 @@ export {
   type TableSeat,
   type TableSeatView,
   type ViewerSafeTableSnapshot,
-} from "./table-socket-protocol-v2.js";
+} from "./table-socket-protocol-v1.js";
 
 export { type SocketStatus } from "./table-socket-lifecycle.js";
 
