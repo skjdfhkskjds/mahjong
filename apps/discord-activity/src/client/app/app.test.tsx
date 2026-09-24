@@ -1,17 +1,24 @@
-import { renderToStaticMarkup } from "react-dom/server";
+import { renderToStaticMarkup as renderMarkup } from "react-dom/server";
+import type { ReactElement } from "react";
+import { GameAssetsProvider } from "../presentation/game-assets-provider.js";
+import { defaultGameAssetSet } from "../presentation/assets/sample-asset-sets.js";
+
 import { describe, expect, it, vi } from "vitest";
 
 import type {
-  TableCommand,
   TableReceipt,
   ViewerSafeTableSnapshot,
 } from "../adapters/transport/table-socket-status.js";
-import {
-  GamePanel,
-  LobbyPanel,
-  reactionSubmissionPending,
-  TableCommandButton,
-} from "./app.js";
+import { LobbyController } from "../features/lobby/lobby-controller.js";
+import { GameController } from "../features/gameplay/game-controller.js";
+
+function renderToStaticMarkup(element: ReactElement) {
+  return renderMarkup(
+    <GameAssetsProvider assets={defaultGameAssetSet}>
+      {element}
+    </GameAssetsProvider>,
+  );
+}
 
 const actors = [
   { displayName: "east player", id: "actor:east" },
@@ -94,131 +101,10 @@ const rejectedReceipt: TableReceipt = {
   type: "table/receipt",
 };
 
-describe("GamePanel", () => {
-  it("dispatches exact start, draw, and reaction commands from command buttons", () => {
-    const onCommand = vi.fn((command: TableCommand) => {
-      void command;
-      return true;
-    });
-    const commands = [
-      { type: "lobby/add-bot", seat: "south" },
-      { type: "lobby/remove-bot", seat: "west" },
-      { type: "game/start" },
-      { type: "game/draw" },
-      {
-        type: "game/react",
-        windowId: "discard:12",
-        response: { type: "pass" },
-      },
-      {
-        type: "game/react",
-        windowId: "discard:12",
-        response: { type: "chow", handTileIds: [4, 8] },
-      },
-      {
-        type: "game/react",
-        windowId: "discard:12",
-        response: { type: "kong", handTileIds: [4, 5, 6] },
-      },
-      {
-        type: "game/react",
-        windowId: "discard:12",
-        response: { type: "win" },
-      },
-    ] as const;
-
-    for (const command of commands) {
-      const button = TableCommandButton({
-        children: command.type,
-        command,
-        disabled: false,
-        onCommand,
-      });
-      expect(button.props.disabled).toBe(false);
-      button.props.onClick?.({} as never);
-    }
-    expect(onCommand.mock.calls.map(([command]) => command)).toEqual(commands);
-
-    const disabled = TableCommandButton({
-      children: "disabled",
-      command: { type: "game/draw" },
-      disabled: true,
-      onCommand,
-    });
-    expect(disabled.props.disabled).toBe(true);
-  });
-
-  it("clears an unconfirmed local reaction across reconnect snapshots", () => {
-    let pending:
-      | {
-          readonly receiptAtSubmission: TableReceipt | undefined;
-          readonly snapshotAtSubmission: ViewerSafeTableSnapshot;
-          readonly windowId: string;
-        }
-      | undefined;
-    const button = TableCommandButton({
-      children: "Pass",
-      command: {
-        type: "game/react",
-        response: { type: "pass" },
-        windowId: "discard:12",
-      },
-      disabled: false,
-      onCommand: () => true,
-      onSent: () => {
-        pending = {
-          receiptAtSubmission: undefined,
-          snapshotAtSubmission: snapshot,
-          windowId: "discard:12",
-        };
-      },
-    });
-    button.props.onClick?.({} as never);
-    if (pending === undefined)
-      throw new Error("Reaction click did not submit.");
-    expect(
-      reactionSubmissionPending(pending, {
-        connected: true,
-        latestReceipt: undefined,
-        snapshot,
-        windowId: "discard:12",
-      }),
-    ).toBe(true);
-    expect(
-      reactionSubmissionPending(pending, {
-        connected: false,
-        latestReceipt: undefined,
-        snapshot,
-        windowId: "discard:12",
-      }),
-    ).toBe(false);
-    expect(
-      reactionSubmissionPending(pending, {
-        connected: true,
-        latestReceipt: undefined,
-        snapshot: { ...snapshot },
-        windowId: "discard:12",
-      }),
-    ).toBe(false);
-    expect(
-      reactionSubmissionPending(pending, {
-        connected: true,
-        latestReceipt: {
-          commandId: "reaction-command",
-          outcome: "applied",
-          protocolVersion: 1,
-          stateVersion: 12,
-          type: "table/receipt",
-        },
-        snapshot,
-        windowId: "discard:12",
-      }),
-    ).toBe(true);
-  });
-
+describe("GameController integration", () => {
   it("renders exact public tiles, the private hand, and gameplay errors", () => {
     const markup = renderToStaticMarkup(
-      <GamePanel
+      <GameController
         connected
         latestReceipt={rejectedReceipt}
         onCommand={vi.fn()}
@@ -332,7 +218,7 @@ describe("GamePanel", () => {
       },
     } as unknown as ViewerSafeTableSnapshot;
     const markup = renderToStaticMarkup(
-      <GamePanel
+      <GameController
         connected
         latestReceipt={undefined}
         onCommand={vi.fn()}
@@ -348,7 +234,7 @@ describe("GamePanel", () => {
     expect(markup).not.toContain("concealed concealed");
     expect(markup).not.toContain("exposed exposed");
     expect(markup).toContain("Concealed kong");
-    expect(markup).toContain("Add tile #4 to kong");
+    expect(markup).toContain("Add 2 characters to kong");
     expect(markup).toContain("Declare self-drawn win");
   });
 
@@ -394,7 +280,7 @@ describe("GamePanel", () => {
       }) as unknown as ViewerSafeTableSnapshot;
 
     const open = renderToStaticMarkup(
-      <GamePanel
+      <GameController
         connected
         latestReceipt={undefined}
         onCommand={vi.fn()}
@@ -402,11 +288,11 @@ describe("GamePanel", () => {
       />,
     );
     expect(open).toContain("Pass");
-    expect(open).toContain("Chow with tiles 4, 8");
+    expect(open).toContain("Chow with 2 characters, Unknown tile");
     expect(open).toContain("Declare win");
 
     const submitted = renderToStaticMarkup(
-      <GamePanel
+      <GameController
         connected
         latestReceipt={undefined}
         onCommand={vi.fn()}
@@ -417,7 +303,7 @@ describe("GamePanel", () => {
     expect(submitted).not.toContain(">Pass<");
 
     const expired = renderToStaticMarkup(
-      <GamePanel
+      <GameController
         connected
         latestReceipt={undefined}
         onCommand={vi.fn()}
@@ -500,7 +386,7 @@ describe("GamePanel", () => {
       },
     } as unknown as ViewerSafeTableSnapshot;
     const markup = renderToStaticMarkup(
-      <GamePanel
+      <GameController
         connected
         latestReceipt={undefined}
         onCommand={vi.fn()}
@@ -516,7 +402,7 @@ describe("GamePanel", () => {
   });
 });
 
-describe("LobbyPanel bot controls", () => {
+describe("LobbyController bot controls", () => {
   const lobby: ViewerSafeTableSnapshot = {
     ...snapshot,
     view: {
@@ -542,7 +428,7 @@ describe("LobbyPanel bot controls", () => {
   it("shows normal lobby bot controls only to the owner", () => {
     const render = (canManageBots: boolean, connected: boolean) =>
       renderToStaticMarkup(
-        <LobbyPanel
+        <LobbyController
           canManageBots={canManageBots}
           connected={connected}
           latestReceipt={undefined}
@@ -566,7 +452,7 @@ describe("LobbyPanel bot controls", () => {
     };
     expect(
       renderToStaticMarkup(
-        <LobbyPanel
+        <LobbyController
           canManageBots
           connected
           latestReceipt={undefined}

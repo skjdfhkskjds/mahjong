@@ -24,6 +24,18 @@ hand, eviction, private reaction retries, abandonment, access controls, strict
 commands, and a permanent complete-v1 recovery fixture. Next-hand progression is
 still Milestone 7.
 
+## Player controller coordination (issue #33)
+
+One typed player interface connects human communication, bot decisions, and
+per-player in-process coordination. Controller substitution preserves actor
+identity, seat, hand, and accepted game history; a fresh permitted snapshot
+precedes human restoration. Persisted controller generations reject late work
+and recover across eviction. Negotiated heartbeats add bounded liveness evidence
+while cached clients retain the documented fallback. The complete v1 schema
+includes controller authority and bot work. Readiness, start
+policy, leave/logout UI, and Mahjong rules semantics remain unchanged. See
+[ADR 0016](decisions/0016-player-controller-lifecycle.md) for policy and rollout.
+
 ## Goal and release boundary
 
 Build a private four-player Discord Activity for the project-defined `hong-kong/v1` profile. The authoritative table lives in one SQLite-backed `TableRoom` Durable Object; a separate `ActivityInstance` Durable Object binds a live Discord Activity instance to a persistent table. One Worker serves the React client, HTTP API, OAuth exchange, and WebSocket routing.
@@ -37,7 +49,7 @@ Japanese Mahjong is a future rules package. No Japanese package or universal cro
 3. Separate canonical domain events from viewer-safe protocol messages.
 4. Supply time, identifiers, and randomness to the pure engine explicitly.
 5. Persist accepted transitions before acknowledging or broadcasting them.
-6. Preserve permanent replay and migration fixtures from the first stored schema.
+6. Preserve permanent replay and recovery fixtures from the first stored schema.
 7. Add structure when ownership is real; do not generate the entire proposed tree up front.
 
 ## Status legend

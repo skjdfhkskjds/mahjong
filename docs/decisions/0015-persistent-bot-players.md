@@ -3,6 +3,10 @@
 - Status: accepted
 - Date: 2026-09-20
 
+[ADR 0016](0016-player-controller-lifecycle.md) extends this decision with
+human/bot controller substitution in the complete storage schema v1; dedicated bots retain
+the random policy and owner-managed lobby behavior described here.
+
 ## Context
 
 Issue #21 began as local solo testing. The product requirement now includes

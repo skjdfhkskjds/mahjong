@@ -12,11 +12,14 @@ import {
   earliestPendingDeadline,
   MAX_DUE_DEADLINE_BATCH,
   planAlarmRepair,
+  readDeadlineCompletion,
   readDueDeadlines,
   scheduleDeadline,
   type PendingDeadline,
   verifyDeadlinePersistence,
+  writeDeadlineCompletionInTransaction,
 } from "../../src/worker/durable-objects/table-room/deadline-queue.js";
+import { prepareDeadlineCompletion } from "../../src/worker/durable-objects/table-room/table-deadline-application.js";
 import { validateTableRoomStorageV1 } from "../../src/worker/durable-objects/table-room/table-room-game-store.js";
 
 function tableRoom(name: string): DurableObjectStub<TableRoom> {
@@ -332,6 +335,90 @@ describe("TableRoom deadline queue", () => {
           )
           .one().count,
       ).toBe(0);
+    });
+  });
+
+  it("rolls back a prepared completion with the enclosing authority operation", async () => {
+    const stub = tableRoom(`deadline-prepared-rollback-${crypto.randomUUID()}`);
+    await runInDurableObject(stub, (_instance, state) => {
+      validateTableRoomStorageV1(state.storage);
+      const deadline = reactionDeadline("reaction:prepared-rollback", 1_000);
+      scheduleDeadline(state.storage.sql, deadline);
+      const prepared = prepareDeadlineCompletion(deadline, 1_000, {
+        outcome: "processed",
+        publicTransition: true,
+      });
+      expect(() =>
+        state.storage.transactionSync(() => {
+          state.storage.sql.exec(
+            "UPDATE room_lifecycle SET abandoned = 1 WHERE singleton = 1",
+          );
+          writeDeadlineCompletionInTransaction(state.storage.sql, prepared);
+          throw new Error("injected post-completion failure");
+        }),
+      ).toThrow("injected post-completion failure");
+      expect(
+        readDeadlineCompletion(state.storage.sql, deadline.deadlineId),
+      ).toEqual({
+        deadline: { ...deadline, processedAt: null },
+        receipt: undefined,
+      });
+      expect(
+        state.storage.sql
+          .exec<{ abandoned: number }>(
+            "SELECT abandoned FROM room_lifecycle WHERE singleton = 1",
+          )
+          .one().abandoned,
+      ).toBe(0);
+      state.storage.transactionSync(() => {
+        writeDeadlineCompletionInTransaction(state.storage.sql, prepared);
+      });
+      expect(() => {
+        state.storage.transactionSync(() => {
+          state.storage.sql.exec(
+            "UPDATE room_lifecycle SET abandoned = 1 WHERE singleton = 1",
+          );
+          writeDeadlineCompletionInTransaction(state.storage.sql, prepared);
+        });
+      }).toThrow("precondition");
+      expect(
+        state.storage.sql
+          .exec<{ abandoned: number }>(
+            "SELECT abandoned FROM room_lifecycle WHERE singleton = 1",
+          )
+          .one().abandoned,
+      ).toBe(0);
+      expect(
+        readDeadlineCompletion(state.storage.sql, deadline.deadlineId).receipt,
+      ).toEqual(prepared.receipt);
+      verifyDeadlinePersistence(state.storage.sql);
+    });
+  });
+
+  it("rejects and rolls back callback cancellation of the deadline being completed", async () => {
+    const stub = tableRoom(`deadline-callback-cancel-${crypto.randomUUID()}`);
+    await runInDurableObject(stub, (_instance, state) => {
+      validateTableRoomStorageV1(state.storage);
+      const deadline = reactionDeadline("reaction:callback-cancel", 1_000);
+      scheduleDeadline(state.storage.sql, deadline);
+      expect(() =>
+        completeDeadlineWithReceipt(
+          state.storage,
+          deadline.deadlineId,
+          1_000,
+          (sql) => {
+            cancelDeadline(sql, deadline.deadlineId);
+            return { outcome: "processed", publicTransition: false };
+          },
+        ),
+      ).toThrow("precondition");
+      expect(
+        readDeadlineCompletion(state.storage.sql, deadline.deadlineId),
+      ).toEqual({
+        deadline: { ...deadline, processedAt: null },
+        receipt: undefined,
+      });
+      verifyDeadlinePersistence(state.storage.sql);
     });
   });
 

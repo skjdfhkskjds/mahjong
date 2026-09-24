@@ -179,3 +179,12 @@ SQLite-backed Durable Objects are available on the Workers Free plan, but Free-p
 - [Cloudflare Durable Object SQLite storage](https://developers.cloudflare.com/durable-objects/api/sqlite-storage-api/)
 - [Cloudflare Durable Object testing](https://developers.cloudflare.com/durable-objects/examples/testing-with-durable-objects/)
 - [Cloudflare Workers pricing and Free-plan limits](https://developers.cloudflare.com/workers/platform/pricing/)
+
+## Table application operations
+
+The [table application/storage boundary](table-application-storage.md) inventories
+commands, deadlines, access, connections, and recovery transactions. TableRoom
+owns the serialized runtime interval and publication; SQL-free application
+operations prepare typed atomic changes; SQLite adapters persist them without
+choosing legality, retries, readiness, deadlines, or presence policy. Canonical
+progress remains distinct from the public room version.

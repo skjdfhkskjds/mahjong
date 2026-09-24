@@ -4,6 +4,10 @@ Status: accepted
 
 Date: 2026-09-01
 
+The disconnected-human autopilot policy below is superseded by
+[ADR 0016](0016-player-controller-lifecycle.md). Connected-turn and reaction
+timeouts, private-intent persistence, and deadline ordering remain in force.
+
 ## Context
 
 Milestone 5 adds simultaneous reactions and four kinds of operational deadline

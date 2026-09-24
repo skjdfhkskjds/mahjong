@@ -17,8 +17,9 @@ Accepted baseline decisions:
 | [0011](0011-version-room-state-and-lobby-protocol.md)    | Version persistent room state and viewer-safe lobby messages         | accepted   |
 | [0012](0012-canonical-game-encoding-and-event-hashes.md) | Canonicalize game state and hash-link authoritative events           | accepted   |
 | [0013](0013-private-reactions-and-deadline-commands.md)  | Persist private reactions and execute deadlines as commands          | accepted   |
-| [0014](0014-canonical-game-v2-and-protocol-v2.md)        | Historical prelaunch v2 upgrade plan                                 | superseded |
+| [0014](0014-canonical-game-v2-and-protocol-v2.md)        | Upgrade canonical game state and gameplay protocol to v2             | superseded |
 | [0015](0015-persistent-bot-players.md)                   | Persist server-owned random bot players for solo and mixed tables    | accepted   |
-| [0017](0017-prelaunch-v1-baseline.md)                    | Coalesce prelaunch session, wire, game, and storage formats into v1  | accepted   |
+| [0016](0016-player-controller-lifecycle.md)              | Coordinate human and bot control under stable player identities      | accepted   |
+| [0017](0017-prelaunch-v1-baseline.md)                    | Coalesce prelaunch formats into v1                                   | accepted   |
 
 New ADRs use `NNNN-short-title.md` and contain context, decision, consequences, status, and date. Superseded ADRs remain in history and link to their replacement.

@@ -1,3 +1,4 @@
+import { assertNever } from "../../adapters/transport/table-socket-lifecycle.js";
 import type { RuntimeConfig } from "../../bootstrap/runtime-config.js";
 import type {
   ActivityActor,
@@ -74,15 +75,20 @@ function socketCheck(status: SocketStatus): StartupCheck {
         detail: "Table authorization expired or changed. Authenticate again.",
       };
     case "connected":
-      return status.snapshot
-        ? {
-            state: "ready",
-            detail: `Received a viewer-safe lobby snapshot for ${status.snapshot.view.tableId}.`,
-          }
-        : {
-            state: "working",
-            detail: "Connected; waiting for the initial table snapshot.",
-          };
+      return {
+        state: "ready",
+        detail: "Received a fresh viewer-safe table snapshot.",
+      };
+    case "awaiting-snapshot":
+      return {
+        state: "working",
+        detail: "Connected; waiting for a fresh table snapshot.",
+      };
+    case "disconnecting":
+      return {
+        state: "warning",
+        detail: "Table connection interrupted.",
+      };
     case "connecting":
       return {
         state: "working",
@@ -110,6 +116,8 @@ function socketCheck(status: SocketStatus): StartupCheck {
       };
     case "stopped":
       return { state: "warning", detail: "Table connection stopped." };
+    default:
+      return assertNever(status);
   }
 }
 
@@ -121,10 +129,15 @@ export function startClientStartup({
   onStatus,
 }: ClientStartupDependencies): () => void {
   const abortController = new AbortController();
+  const isAborted = (): boolean => abortController.signal.aborted;
   let stopSocket: (() => void) | undefined;
+  const unsubscribeMessages: (() => void)[] = [];
   let status = createInitialStartupStatus();
 
   const publish = (patch: Partial<ClientStartupStatus>): void => {
+    if (isAborted()) {
+      return;
+    }
     status = { ...status, ...patch };
     onStatus(status);
   };
@@ -137,6 +150,9 @@ export function startClientStartup({
 
     try {
       const context = await bridge.initialize();
+      if (isAborted()) {
+        return;
+      }
       publish({
         instanceId: context.instanceId,
         activity: {
@@ -148,7 +164,13 @@ export function startClientStartup({
         },
       });
 
+      if (isAborted()) {
+        return;
+      }
       const health = await api.getHealth(abortController.signal);
+      if (isAborted()) {
+        return;
+      }
       if (health.mode !== config.mode) {
         throw new Error(
           `Worker is in ${health.mode} mode while the client is in ${config.mode} mode.`,
@@ -163,15 +185,24 @@ export function startClientStartup({
         },
       });
 
+      if (isAborted()) {
+        return;
+      }
       let expectedActor: ActivityActor;
       if (config.mode === "mock") {
         const authenticated = await api.createMockSession(
           config.mockActor.displayName,
           abortController.signal,
         );
+        if (isAborted()) {
+          return;
+        }
         expectedActor = authenticated.actor;
       } else {
         const authorization = await bridge.authorize();
+        if (isAborted()) {
+          return;
+        }
         if (!authorization) {
           throw new Error(
             "Discord bridge did not provide an authorization code.",
@@ -183,7 +214,13 @@ export function startClientStartup({
           context,
           abortController.signal,
         );
+        if (isAborted()) {
+          return;
+        }
         const sdkActor = await bridge.authenticate(exchanged.accessToken);
+        if (isAborted()) {
+          return;
+        }
         if (sdkActor.id !== exchanged.actor.id) {
           throw new Error(
             "Discord SDK identity does not match the server session.",
@@ -193,6 +230,9 @@ export function startClientStartup({
       }
 
       const session = await api.getSession(abortController.signal);
+      if (isAborted()) {
+        return;
+      }
       if (!session.authenticated) {
         throw new Error("The application session was not established.");
       }
@@ -214,6 +254,9 @@ export function startClientStartup({
         },
       });
 
+      if (isAborted()) {
+        return;
+      }
       if (session.access === "join-required") {
         publish({
           complete: false,
@@ -226,6 +269,16 @@ export function startClientStartup({
         return;
       }
 
+      // Subscribe before starting: the transport may synchronously deliver its
+      // initial snapshot, then announce that commands are usable.
+      unsubscribeMessages.push(
+        socket.subscribe("table/snapshot", (snapshot) => {
+          publish({ tableSnapshot: snapshot });
+        }),
+        socket.subscribe("table/receipt", (receipt) => {
+          publish({ latestReceipt: receipt });
+        }),
+      );
       stopSocket = socket.start((socketStatus) => {
         const terminalSession =
           socketStatus.state === "session-replaced" ||
@@ -234,15 +287,10 @@ export function startClientStartup({
         publish({
           complete:
             socketStatus.state === "connected" &&
-            socketStatus.snapshot !== undefined,
-          ...(terminalSession
+            status.tableSnapshot !== undefined,
+          ...(socketStatus.state !== "connected"
             ? { tableSnapshot: undefined, latestReceipt: undefined }
-            : socketStatus.snapshot
-              ? {
-                  tableSnapshot: socketStatus.snapshot,
-                  latestReceipt: socketStatus.latestReceipt,
-                }
-              : {}),
+            : {}),
           ...(terminalSession
             ? {
                 session: {
@@ -259,8 +307,12 @@ export function startClientStartup({
           socket: socketCheck(socketStatus),
         });
       });
+      // A status subscriber may dispose startup during synchronous start.
+      if (isAborted()) {
+        stopSocket();
+      }
     } catch (error) {
-      if (abortController.signal.aborted) {
+      if (isAborted()) {
         return;
       }
 
@@ -292,6 +344,9 @@ export function startClientStartup({
 
   return () => {
     abortController.abort();
+    for (const unsubscribe of unsubscribeMessages) {
+      unsubscribe();
+    }
     stopSocket?.();
   };
 }

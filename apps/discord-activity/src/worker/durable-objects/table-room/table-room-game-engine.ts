@@ -7,7 +7,10 @@ import {
   type NonEmptyGameEventBatch,
 } from "@mahjong/rules-hong-kong";
 
-import type { DeadlinePayload, PendingDeadline } from "./deadline-queue.js";
+import type {
+  DeadlinePayload,
+  PendingDeadline,
+} from "./table-deadline-application.js";
 import type { TableSeat } from "./table-room-protocol.js";
 
 /** Ruleset selection and compatibility translation belong at composition. */

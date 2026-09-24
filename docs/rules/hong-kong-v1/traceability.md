@@ -14,7 +14,7 @@
 Milestone 4 replaces the foundational prose-only lifecycle evidence with
 permanent engine fixtures. Milestones 5–6 add the executable contracts below;
 their permanent positive, near-miss, interaction, payment, privacy, replay, and
-migration fixtures are required compatibility evidence.
+recovery fixtures are required compatibility evidence.
 
 ## Milestone 5 executable evidence
 
@@ -25,7 +25,8 @@ migration fixtures are required compatibility evidence.
 | HK-040             | meld model and concealed/exposed/added kong transitions          | `claims-kongs.test.ts` and strict protocol/client fixtures: every kong form, exact physical IDs, immutable public melds, exact action commands                                                                                                                                                    |
 | HK-041             | added-kong reaction resolver                                     | `claims-kongs.test.ts` and `win-resolution.test.ts`: legal suited-tile rob; pass commits kong; robbed provenance/payments; concealed/exposed kong cannot be robbed                                                                                                                                |
 | HK-042, HK-071     | kong/bonus tail replacement and exhaustion                       | `claims-kongs.test.ts` and `stage2-evidence.test.ts`: chained kong, recursive bonus replacement, final structural replacement, failed replacement after committed kong, 144-tile conservation, replay                                                                                             |
-| TP-001–TP-003      | persisted deadline queue and explicit idempotent system commands | `table-room-deadline-queue.test.ts` and `table-room.test.ts`: 60-second turn versus 15-second grace; before/at/after boundary; duplicate/late alarm; reconnect generation cancellation; constructor repair; immediate deterministic action or pass; never automatic win/kong                      |
+| TP-001–TP-002      | persisted deadline queue and explicit idempotent system commands | `table-room-deadline-queue.test.ts` and `table-room.test.ts`: connected 60-second turn timeout, eight-second reaction timeout; before/at/after boundary; duplicate/late alarm; constructor repair; deterministic connected-turn action and reaction timeout pass                                  |
+| TP-003–TP-004      | stable player identity and generation-bound controller routing   | `player-coordinator.test.ts` and `table-bot-work.test.ts`: fresh snapshot before commands; all usable connections; departure/reconnect; obsolete async result rejection; four substituted humans; same-target generation replacement; recovery and cancellation. Operational examples: ADR 0016   |
 | TP-007             | recoverable room abandonment command                             | `table-room.test.ts`: table-wide zero-valid-socket absence, stable generation, seated reconnect recovery, retained canonical history, no deletion or fake exhaustion                                                                                                                              |
 
 Worked Examples 2 and 3 are the narrative fixtures for claim priority, kong
@@ -64,3 +65,16 @@ private reactions, full hand, recovery, retries, and abandonment), and the
 permanent v1 recovery fixture in `table-room-authority-persistence.test.ts`.
 The client lobby and transport tests cover controls and v1 snapshot
 compatibility. No rules-semantic fixture changes are required.
+
+Issue #33 extends TP-003/TP-004/TP-009 with human controller substitution.
+`table-room-authority-persistence.test.ts` retains the complete-v1 recovery
+fixture while checking controller authority and bot work.
+The coordinator and bot-plan tests cover application policy without changing
+Hong Kong legality, scoring, canonical event encoding, or rules replay fixtures.
+The `player controller handoff` runtime suite in `table-room.test.ts` covers
+reserved active-hand seats, multiple usable connections, grace boundaries,
+duplicate alarms, eviction, obsolete queued jobs, atomic departure rollback,
+and committed moves reflected in the first reconnect snapshot. Negotiated
+silent-open expiry and platform auto-response timestamps are exercised there;
+`table-room-heartbeat.test.ts` and client `table-socket-heartbeat.test.ts` cover
+the deterministic evidence and negotiation boundaries.
