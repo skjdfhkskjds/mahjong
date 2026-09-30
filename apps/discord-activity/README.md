@@ -272,6 +272,19 @@ Regenerate them whenever bindings, compatibility date, or flags change.
 
 ## Deployment
 
+Pre-launch production deploys intentionally erase every `ActivityInstance` and
+`TableRoom` SQLite database. The `deploy` command validates the Discord client
+configuration and production Worker build first. It then deploys a temporary 503 Worker
+whose Durable Object export tombstones permanently delete both namespaces and
+all their data. A second deploy restores the app and creates empty namespaces.
+Existing sessions, tables, seats, games, and connections are lost on every
+deploy; players must launch a new Activity instance. New objects initialize the
+current schema on first access, so pre-launch deploys do not migrate live data.
+The two deploys cause a brief maintenance window. If the second deploy fails,
+rerun the same command to restore service. Do not use this command once
+production data must survive a release; change the deployment policy before
+launch.
+
 Protocol v1 is an atomic client/Worker release. The Worker serves
 content-hashed client assets from the same deployment, so rollout replaces both
 wire endpoints together and rollback restores both together. Do not roll back
@@ -298,7 +311,10 @@ remain recoverable. Existing snapshot and receipt shapes are unchanged. See
 policy, recovery, and operational examples, and
 [ADR 0015](../../docs/decisions/0015-persistent-bot-players.md) for dedicated bots.
 
-The production command fails before building unless `VITE_ACTIVITY_MODE=discord` and a valid `VITE_DISCORD_CLIENT_ID` are present. The production Wrangler environment does not inherit the committed mock signing key.
+Set `VITE_ACTIVITY_MODE=discord` and a valid `VITE_DISCORD_CLIENT_ID` in
+`.env.local` or the shell environment. The production command validates these
+before building. It selects the production Cloudflare environment at build
+time; that environment does not inherit the committed mock signing key.
 
 Provision Worker secrets before the first deployment:
 
@@ -309,4 +325,4 @@ corepack pnpm --filter @mahjong/discord-activity exec wrangler secret put DISCOR
 corepack pnpm --filter @mahjong/discord-activity exec wrangler secret put SESSION_SIGNING_KEY --env production
 ```
 
-Only provision `SESSION_SIGNING_KEY_PREVIOUS` during an active signing-key rotation. Then run `corepack pnpm --filter @mahjong/discord-activity deploy`. Deployment is intentionally manual and credential-gated; local implementation and tests never invoke it.
+Only provision `SESSION_SIGNING_KEY_PREVIOUS` during an active signing-key rotation. Then run `corepack pnpm --filter @mahjong/discord-activity deploy`. Deployment is intentionally manual and credential-gated; local implementation and tests never invoke it. This command deletes production Durable Object data on every run, including a retry after a partial deploy.

@@ -5,7 +5,7 @@
   "type": "module",
   "scripts": {
     "build": "vite build",
-    "deploy": "node tooling/validate-production-deploy.ts && vite build --mode production && wrangler deploy --env production",
+    "deploy": "node tooling/validate-production-deploy.ts && CLOUDFLARE_ENV=production vite build --mode production && node tooling/validate-production-build.ts && wrangler deploy --config wrangler.reset.jsonc --env production && wrangler deploy",
     "dev": "vite",
     "dev:solo": "vite --config vite.solo.config.ts --configLoader runner",
     "preview": "vite build && vite preview",

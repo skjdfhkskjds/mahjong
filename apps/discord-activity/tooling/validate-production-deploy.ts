@@ -1,3 +1,5 @@
+import { loadEnv } from "vite";
+
 const CLIENT_ID_PATTERN = /^\d{1,32}$/u;
 
 export function productionDeploymentFailures(
@@ -13,7 +15,9 @@ export function productionDeploymentFailures(
   return failures;
 }
 
-const failures = productionDeploymentFailures(process.env);
+const failures = productionDeploymentFailures(
+  loadEnv("production", process.cwd(), "VITE_"),
+);
 if (failures.length > 0) {
   console.error("Production deployment configuration is invalid:");
   for (const failure of failures) console.error(`- ${failure}`);
