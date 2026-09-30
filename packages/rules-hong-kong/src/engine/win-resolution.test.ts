@@ -18,25 +18,22 @@ import { scoringFixture } from "../scoring/scoring-test-fixtures.js";
 import { createHongKongV1TileSet } from "../wall/create-tile-set.js";
 import { HONG_KONG_V1_SHUFFLE_ALGORITHM } from "../wall/deterministic-shuffle.js";
 import {
-  applyGameCommandV2,
+  applyGameCommandV1,
   assertGameInvariants,
-  assertVersionedCheckpointMatchesReplay,
-  canonicalVersionedGameEventJson,
-  canonicalVersionedGameJson,
-  createStateUpgradeEvent,
-  decodeCanonicalVersionedGameEventJson,
-  decodeCanonicalVersionedGameJson,
+  assertCheckpointMatchesReplay,
+  canonicalGameEventJson,
+  canonicalGameJson,
+  decodeCanonicalGameEventJson,
+  decodeCanonicalGameJson,
   decideReactionExpiration,
-  projectGameV2,
-  reduceVersionedGameEvent,
-  replayVersionedGameEvents,
+  projectGameV1,
+  reduceGameEvent,
+  replayGameEvents,
   startHongKongV1Game,
-  startHongKongV2Game,
   type CanonicalGameStateV1,
-  type CanonicalGameStateV2,
   type CompletedHandResult,
   type SeatMap,
-  type VersionedHongKongGameEvent,
+  type HongKongGameEventV1,
 } from "./hong-kong-game.js";
 import { canonicalJson } from "./game-codec.js";
 import {
@@ -49,12 +46,12 @@ import {
 } from "./game-test-fixtures.js";
 
 function submit(
-  state: CanonicalGameStateV2,
+  state: CanonicalGameStateV1,
   responder: Seat,
   response: { readonly type: "pass" | "win" },
-): ReturnType<typeof applyGameCommandV2> {
+): ReturnType<typeof applyGameCommandV1> {
   if (state.reactionWindow === null) throw new Error("No reaction window.");
-  return applyGameCommandV2(state, actors[seatName(responder)], {
+  return applyGameCommandV1(state, actors[seatName(responder)], {
     type: "game/react",
     response,
     windowId: state.reactionWindow.id,
@@ -62,9 +59,9 @@ function submit(
 }
 
 function putWallTileAtTail(
-  state: CanonicalGameStateV2,
+  state: CanonicalGameStateV1,
   id: TileId,
-): CanonicalGameStateV2 {
+): CanonicalGameStateV1 {
   const index = state.wall.order.indexOf(id);
   if (index < state.wall.head || index > state.wall.tail) {
     throw new Error("Tail fixture tile is not in the live wall.");
@@ -79,12 +76,12 @@ function putWallTileAtTail(
   return next;
 }
 
-function expireReactions(state: CanonicalGameStateV2): CanonicalGameStateV2 {
+function expireReactions(state: CanonicalGameStateV1): CanonicalGameStateV1 {
   const decision = decideReactionExpiration(state);
   if (!decision.accepted) throw new Error("Reaction expiration failed.");
   let next = state;
   for (const event of decision.events) {
-    next = reduceVersionedGameEvent(next, event) as CanonicalGameStateV2;
+    next = reduceGameEvent(next, event);
   }
   return next;
 }
@@ -126,10 +123,7 @@ function completedResultForFixture(
   };
 }
 
-function initialBonusStates(fixture: ScoringHandFixture): {
-  readonly v1: CanonicalGameStateV1;
-  readonly v2: CanonicalGameStateV2;
-} {
+function initialBonusState(fixture: ScoringHandFixture): CanonicalGameStateV1 {
   const winningTileId = fixture.winningTileId;
   const eastRaw = [...withoutWinningTile(fixture), tileId(136)];
   if (eastRaw.length !== 14)
@@ -164,7 +158,7 @@ function initialBonusStates(fixture: ScoringHandFixture): {
     .filter((id) => !occupied.has(id));
   const order = [...prefix, ...live, winningTileId];
   if (order.length !== 144) throw new Error("Initial wall must be complete.");
-  const v1Players = Object.fromEntries(
+  const players = Object.fromEntries(
     seats.map((currentSeat) => [
       currentSeat,
       {
@@ -172,33 +166,23 @@ function initialBonusStates(fixture: ScoringHandFixture): {
         bonuses: currentSeat === seat("east") ? [tileId(136)] : [],
         discards: [],
         hand: hands[seatName(currentSeat)],
+        melds: [],
         seat: currentSeat,
       },
     ]),
   ) as unknown as CanonicalGameStateV1["players"];
-  const v1: CanonicalGameStateV1 = {
+  const state: CanonicalGameStateV1 = {
+    completionProvenance: null,
     phase: "awaiting-dealer-discard",
-    players: v1Players,
+    players,
+    prevailingWind: "east",
+    reactionWindow: null,
+    result: null,
     ruleset: "hong-kong/v1",
     schemaVersion: 1,
     sequence: 1,
     shuffleAlgorithm: HONG_KONG_V1_SHUFFLE_ALGORITHM,
     turn: seat("east"),
-    wall: { head: initialDealSeatOrder.length, order, tail: 142 },
-  };
-  const v2: CanonicalGameStateV2 = {
-    ...v1,
-    completionProvenance: null,
-    players: Object.fromEntries(
-      seats.map((currentSeat) => [
-        currentSeat,
-        { ...v1Players[seatName(currentSeat)], melds: [] },
-      ]),
-    ) as unknown as CanonicalGameStateV2["players"],
-    prevailingWind: "east",
-    reactionWindow: null,
-    result: null,
-    schemaVersion: 2,
     turnProvenance: {
       eastHasDeclaredKong: false,
       eastHasDiscarded: false,
@@ -208,10 +192,10 @@ function initialBonusStates(fixture: ScoringHandFixture): {
       replacementChainDepth: 0,
       replacementPending: false,
     },
+    wall: { head: initialDealSeatOrder.length, order, tail: 142 },
   };
-  assertGameInvariants(v1);
-  assertGameInvariants(v2);
-  return { v1, v2 };
+  assertGameInvariants(state);
+  return state;
 }
 
 describe("authoritative scored win integration", () => {
@@ -235,9 +219,9 @@ describe("authoritative scored win integration", () => {
       turn: seat("west"),
     });
     expect(
-      projectGameV2(state, actors.west).viewerActions?.self,
+      projectGameV1(state, actors.west).viewerActions?.self,
     ).toContainEqual({ type: "game/declare-win" });
-    const applied = applyGameCommandV2(state, actors.west, {
+    const applied = applyGameCommandV1(state, actors.west, {
       type: "game/declare-win",
     });
     if (!applied.accepted || applied.state === undefined) {
@@ -268,23 +252,16 @@ describe("authoritative scored win integration", () => {
       sequence: 1 as const,
       state,
     };
-    const events: readonly VersionedHongKongGameEvent[] = [
-      genesis,
-      ...applied.events,
-    ];
+    const events: readonly HongKongGameEventV1[] = [genesis, ...applied.events];
     for (const event of events) {
       expect(
-        decodeCanonicalVersionedGameEventJson(
-          canonicalVersionedGameEventJson(event),
-        ),
+        decodeCanonicalGameEventJson(canonicalGameEventJson(event)),
       ).toEqual(event);
     }
-    expect(replayVersionedGameEvents(events)).toEqual(applied.state);
-    expect(
-      decodeCanonicalVersionedGameJson(
-        canonicalVersionedGameJson(applied.state),
-      ),
-    ).toEqual(applied.state);
+    expect(replayGameEvents(events)).toEqual(applied.state);
+    expect(decodeCanonicalGameJson(canonicalGameJson(applied.state))).toEqual(
+      applied.state,
+    );
     assertGameInvariants(applied.state);
   });
 
@@ -343,7 +320,7 @@ describe("authoritative scored win integration", () => {
     });
     expect(final.state.players.south.discards).not.toContain(sourceTileId);
     expect(final.state.players.north.hand).toContain(sourceTileId);
-    const spectator = projectGameV2(final.state, "actor:spectator");
+    const spectator = projectGameV1(final.state, "actor:spectator");
     expect(spectator.result?.winnerSeat).toBe("north");
     const spectatorBytes = JSON.stringify(spectator);
     expect(spectatorBytes).not.toContain("actor:west");
@@ -366,7 +343,7 @@ describe("authoritative scored win integration", () => {
       winningToken: "R",
     });
     const north = withWinningCopy(northBase, 126 as TileId, sourceTileId);
-    const initial = (): CanonicalGameStateV2 =>
+    const initial = (): CanonicalGameStateV1 =>
       openDiscard(
         {
           [seat("south")]: [sourceTileId],
@@ -379,8 +356,8 @@ describe("authoritative scored win integration", () => {
     const resolveOrder = (
       order: readonly Seat[],
     ): {
-      readonly events: readonly VersionedHongKongGameEvent[];
-      readonly state: CanonicalGameStateV2;
+      readonly events: readonly HongKongGameEventV1[];
+      readonly state: CanonicalGameStateV1;
     } => {
       let state = initial();
       for (const responder of order) {
@@ -402,11 +379,11 @@ describe("authoritative scored win integration", () => {
       cappedFaan: 5,
       winnerSeat: "west",
     });
-    expect(canonicalVersionedGameJson(westFirst.state)).toBe(
-      canonicalVersionedGameJson(northFirst.state),
+    expect(canonicalGameJson(westFirst.state)).toBe(
+      canonicalGameJson(northFirst.state),
     );
-    expect(westFirst.events.map(canonicalVersionedGameEventJson)).toEqual(
-      northFirst.events.map(canonicalVersionedGameEventJson),
+    expect(westFirst.events.map(canonicalGameEventJson)).toEqual(
+      northFirst.events.map(canonicalGameEventJson),
     );
   });
 
@@ -427,7 +404,7 @@ describe("authoritative scored win integration", () => {
       sourceTileId,
     );
     expect(
-      projectGameV2(state, actors.west).viewerActions?.reaction?.actions,
+      projectGameV1(state, actors.west).viewerActions?.reaction?.actions,
     ).not.toContainEqual({ type: "win" });
     expect(submit(state, seat("west"), { type: "win" })).toMatchObject({
       accepted: false,
@@ -451,7 +428,7 @@ describe("authoritative scored win integration", () => {
       turn: seat("south"),
     });
     expect(
-      applyGameCommandV2(falseStructure, actors.south, {
+      applyGameCommandV1(falseStructure, actors.south, {
         type: "game/declare-win",
       }),
     ).toMatchObject({
@@ -472,7 +449,7 @@ describe("authoritative scored win integration", () => {
       placements: { [seat("west")]: { hand: fixture.concealedTileIds } },
       turn: seat("west"),
     });
-    const decision = applyGameCommandV2(state, actors.west, {
+    const decision = applyGameCommandV1(state, actors.west, {
       type: "game/declare-win",
     });
     if (!decision.accepted) throw new Error("Fixture win failed.");
@@ -484,23 +461,19 @@ describe("authoritative scored win integration", () => {
     ) {
       throw new Error("Fixture win batch is incomplete.");
     }
-    const pending = reduceVersionedGameEvent(state, declaration);
-    if (pending.schemaVersion !== 2)
-      throw new Error("Pending state is legacy.");
+    const pending = reduceGameEvent(state, declaration);
     expect(pending.phase).toBe("pending-win-validation");
-    expect(() => canonicalVersionedGameJson(pending)).toThrow(
-      /implementation-only/iu,
-    );
-    expect(() => projectGameV2(pending, actors.west)).toThrow(
+    expect(() => canonicalGameJson(pending)).toThrow(/implementation-only/iu);
+    expect(() => projectGameV1(pending, actors.west)).toThrow(
       /implementation-only/iu,
     );
     expect(() =>
-      reduceVersionedGameEvent(pending, {
+      reduceGameEvent(pending, {
         ...completion,
         result: { ...completion.result, tablePoints: 999 },
       }),
     ).toThrow();
-    const final = reduceVersionedGameEvent(pending, completion);
+    const final = reduceGameEvent(pending, completion);
     expect(final).toEqual(decision.state);
     assertGameInvariants(final);
   });
@@ -526,7 +499,7 @@ describe("authoritative scored win integration", () => {
       },
       turn: seat("south"),
     });
-    const proposal = applyGameCommandV2(state, actors.south, {
+    const proposal = applyGameCommandV1(state, actors.south, {
       type: "game/propose-added-kong",
       meldId: pung.id,
       tileId: sourceTileId,
@@ -543,7 +516,7 @@ describe("authoritative scored win integration", () => {
     if (!resolution.accepted) throw new Error("Rob resolution failed.");
     state = intent.state;
     for (const event of resolution.events) {
-      state = reduceVersionedGameEvent(state, event) as CanonicalGameStateV2;
+      state = reduceGameEvent(state, event);
     }
     expect(state.result).toMatchObject({
       source: { sourceSeat: "south", type: "robbing-kong" },
@@ -579,7 +552,7 @@ describe("authoritative scored win integration", () => {
       turn: seat("west"),
       wallFinalTileId: selfFixture.winningTileId,
     });
-    const drawn = applyGameCommandV2(selfState, actors.west, {
+    const drawn = applyGameCommandV1(selfState, actors.west, {
       type: "game/draw",
     });
     if (!drawn.accepted || drawn.state === undefined) {
@@ -590,7 +563,7 @@ describe("authoritative scored win integration", () => {
       lastAcquiredTileWasFinalWall: true,
       lastAcquisition: "draw",
     });
-    const selfWin = applyGameCommandV2(selfState, actors.west, {
+    const selfWin = applyGameCommandV1(selfState, actors.west, {
       type: "game/declare-win",
     });
     if (!selfWin.accepted || selfWin.state === undefined) {
@@ -617,13 +590,13 @@ describe("authoritative scored win integration", () => {
       turn: seat("south"),
       wallFinalTileId: sourceTileId,
     });
-    const sourceDraw = applyGameCommandV2(discardState, actors.south, {
+    const sourceDraw = applyGameCommandV1(discardState, actors.south, {
       type: "game/draw",
     });
     if (!sourceDraw.accepted || sourceDraw.state === undefined) {
       throw new Error("Source final draw failed.");
     }
-    const opened = applyGameCommandV2(sourceDraw.state, actors.south, {
+    const opened = applyGameCommandV1(sourceDraw.state, actors.south, {
       type: "game/discard",
       tileId: sourceTileId,
     });
@@ -663,19 +636,19 @@ describe("authoritative scored win integration", () => {
       turn: seat("south"),
       wallFinalTileId: finalTileId,
     });
-    const drawn = applyGameCommandV2(state, actors.south, {
+    const drawn = applyGameCommandV1(state, actors.south, {
       type: "game/draw",
     });
     if (!drawn.accepted || drawn.state === undefined)
       throw new Error("Draw failed.");
-    const opened = applyGameCommandV2(drawn.state, actors.south, {
+    const opened = applyGameCommandV1(drawn.state, actors.south, {
       type: "game/discard",
       tileId: finalTileId,
     });
     if (!opened.accepted || opened.state === undefined)
       throw new Error("Discard failed.");
     state = opened.state;
-    const pung = applyGameCommandV2(state, actors.west, {
+    const pung = applyGameCommandV1(state, actors.west, {
       type: "game/react",
       response: {
         type: "pung",
@@ -693,7 +666,7 @@ describe("authoritative scored win integration", () => {
       state = passed.state;
     }
     expect(state.phase).toBe("awaiting-discard");
-    const later = applyGameCommandV2(state, actors.west, {
+    const later = applyGameCommandV1(state, actors.west, {
       type: "game/discard",
       tileId: laterDiscardId,
     });
@@ -733,12 +706,12 @@ describe("authoritative scored win integration", () => {
       turn: seat("south"),
       wallFinalTileId: sourceTileId,
     });
-    const drawn = applyGameCommandV2(state, actors.south, {
+    const drawn = applyGameCommandV1(state, actors.south, {
       type: "game/draw",
     });
     if (!drawn.accepted || drawn.state === undefined)
       throw new Error("Final draw failed.");
-    const proposal = applyGameCommandV2(drawn.state, actors.south, {
+    const proposal = applyGameCommandV1(drawn.state, actors.south, {
       type: "game/propose-added-kong",
       meldId: pung.id,
       tileId: sourceTileId,
@@ -780,7 +753,7 @@ describe("authoritative scored win integration", () => {
       ...secondKongIds,
       ...[36, 40, 44, 48, 52, 56, 124].map(tileId),
     ];
-    const run = (linked: boolean): CanonicalGameStateV2 => {
+    const run = (linked: boolean): CanonicalGameStateV1 => {
       let state = buildPreDiscardState({
         lastAcquiredTileId: linked ? tileId(7) : tileId(36),
         lastAcquisition: "kong-replacement",
@@ -791,7 +764,7 @@ describe("authoritative scored win integration", () => {
         turn: seat("west"),
       });
       state = putWallTileAtTail(state, tileId(125));
-      const declared = applyGameCommandV2(state, actors.west, {
+      const declared = applyGameCommandV1(state, actors.west, {
         type: "game/declare-concealed-kong",
         tileIds: secondKongIds,
       });
@@ -801,7 +774,7 @@ describe("authoritative scored win integration", () => {
       expect(declared.state.turnProvenance.replacementChainDepth).toBe(
         linked ? 2 : 1,
       );
-      const won = applyGameCommandV2(declared.state, actors.west, {
+      const won = applyGameCommandV1(declared.state, actors.west, {
         type: "game/declare-win",
       });
       if (!won.accepted || won.state === undefined)
@@ -820,37 +793,25 @@ describe("authoritative scored win integration", () => {
     );
   });
 
-  it("records the actual East bonus replacement in fresh setup and initial v1 upgrade", () => {
+  it("records the actual East bonus replacement in fresh setup", () => {
     const offset = Array.from({ length: 256 }, (_, index) => index).find(
       (candidate) =>
-        startHongKongV2Game(actors, randomness(candidate)).state.players.east
+        startHongKongV1Game(actors, randomness(candidate)).state.players.east
           .bonuses.length > 0,
     );
     if (offset === undefined)
       throw new Error("No seeded East bonus deal found.");
-    const fresh = startHongKongV2Game(actors, randomness(offset));
+    const fresh = startHongKongV1Game(actors, randomness(offset));
     expect(fresh.state.turnProvenance).toMatchObject({
       lastAcquisition: "bonus-replacement",
     });
     expect(fresh.state.players.east.hand).toContain(
       fresh.state.turnProvenance.lastAcquiredTileId,
     );
-    expect(replayVersionedGameEvents([fresh.event])).toEqual(fresh.state);
-
-    const legacy = startHongKongV1Game(actors, randomness(offset));
-    const upgrade = createStateUpgradeEvent([legacy.event]);
-    const upgraded = reduceVersionedGameEvent(legacy.state, upgrade);
-    if (upgraded.schemaVersion !== 2) throw new Error("Upgrade stayed legacy.");
-    expect(upgraded.turnProvenance).toMatchObject({
-      lastAcquiredTileId: fresh.state.turnProvenance.lastAcquiredTileId,
-      lastAcquisition: "bonus-replacement",
-    });
-    expect(replayVersionedGameEvents([legacy.event, upgrade])).toEqual(
-      upgraded,
-    );
+    expect(replayGameEvents([fresh.event])).toEqual(fresh.state);
   });
 
-  it("scores and replays Heavenly Hand after fresh and upgraded initial bonus replacement", () => {
+  it("scores and replays Heavenly Hand after initial bonus replacement", () => {
     const fixture = scoringFixture({
       bonuses: [136],
       concealed: "c1 c1 c1 c2 c2 c2 c3 c3 c3 c4 c4 c4 c5 c5",
@@ -858,30 +819,21 @@ describe("authoritative scored win integration", () => {
       winner: seat("east"),
       winningToken: "c5",
     });
-    const initial = initialBonusStates(fixture);
-    const cases: readonly {
-      readonly events: readonly VersionedHongKongGameEvent[];
-      readonly state: CanonicalGameStateV2;
-    }[] = [
+    const initial = initialBonusState(fixture);
+    const cases = [
       {
-        events: [{ sequence: 1, state: initial.v2, type: "game/started" }],
-        state: initial.v2,
+        events: [
+          {
+            sequence: 1 as const,
+            state: initial,
+            type: "game/started" as const,
+          },
+        ],
+        state: initial,
       },
-      (() => {
-        const genesis = {
-          sequence: 1 as const,
-          state: initial.v1,
-          type: "game/started" as const,
-        };
-        const upgrade = createStateUpgradeEvent([genesis]);
-        const state = reduceVersionedGameEvent(initial.v1, upgrade);
-        if (state.schemaVersion !== 2)
-          throw new Error("Upgrade stayed legacy.");
-        return { events: [genesis, upgrade], state };
-      })(),
     ];
     for (const testCase of cases) {
-      const won = applyGameCommandV2(testCase.state, actors.east, {
+      const won = applyGameCommandV1(testCase.state, actors.east, {
         type: "game/declare-win",
       });
       if (!won.accepted || won.state === undefined) {
@@ -909,12 +861,10 @@ describe("authoritative scored win integration", () => {
       const allEvents = [...testCase.events, ...won.events];
       for (const event of allEvents) {
         expect(
-          decodeCanonicalVersionedGameEventJson(
-            canonicalVersionedGameEventJson(event),
-          ),
+          decodeCanonicalGameEventJson(canonicalGameEventJson(event)),
         ).toEqual(event);
       }
-      expect(replayVersionedGameEvents(allEvents)).toEqual(won.state);
+      expect(replayGameEvents(allEvents)).toEqual(won.state);
     }
   });
 
@@ -926,7 +876,7 @@ describe("authoritative scored win integration", () => {
       winner: seat("south"),
       winningToken: "R",
     });
-    const run = (eastHasDiscarded: boolean): CanonicalGameStateV2 => {
+    const run = (eastHasDiscarded: boolean): CanonicalGameStateV1 => {
       const state = buildPreDiscardState({
         eastHasDiscarded,
         lastAcquiredTileId: sourceTileId,
@@ -940,7 +890,7 @@ describe("authoritative scored win integration", () => {
         },
         turn: seat("east"),
       });
-      const opened = applyGameCommandV2(state, actors.east, {
+      const opened = applyGameCommandV1(state, actors.east, {
         tileId: sourceTileId,
         type: "game/discard",
       });
@@ -983,7 +933,7 @@ describe("authoritative scored win integration", () => {
       },
       turn: seat("west"),
     });
-    const won = applyGameCommandV2(state, actors.west, {
+    const won = applyGameCommandV1(state, actors.west, {
       type: "game/declare-win",
     });
     if (
@@ -1016,15 +966,15 @@ describe("authoritative scored win integration", () => {
       expect(() => {
         assertGameInvariants(forged);
       }).toThrow(/provenance/iu);
-      expect(() =>
-        decodeCanonicalVersionedGameJson(canonicalJson(forged)),
-      ).toThrow(/provenance/iu);
+      expect(() => decodeCanonicalGameJson(canonicalJson(forged))).toThrow(
+        /provenance/iu,
+      );
     }
     const provenance = won.state.completionProvenance;
     if (provenance?.kind !== "self-pick") {
       throw new Error("Forgery base lacks self-pick provenance.");
     }
-    const coherentForgeries: readonly CanonicalGameStateV2[] = [
+    const coherentForgeries: readonly CanonicalGameStateV1[] = [
       {
         ...won.state,
         completionProvenance: {
@@ -1054,9 +1004,7 @@ describe("authoritative scored win integration", () => {
       expect(() => {
         assertGameInvariants(forged);
       }).toThrow();
-      expect(() =>
-        decodeCanonicalVersionedGameJson(canonicalJson(forged)),
-      ).toThrow();
+      expect(() => decodeCanonicalGameJson(canonicalJson(forged))).toThrow();
     }
   });
 
@@ -1076,12 +1024,12 @@ describe("authoritative scored win integration", () => {
       },
       turn: seat("south"),
     });
-    const genesis: VersionedHongKongGameEvent = {
+    const genesis: HongKongGameEventV1 = {
       sequence: 1,
       state: initial,
       type: "game/started",
     };
-    const opened = applyGameCommandV2(initial, actors.south, {
+    const opened = applyGameCommandV1(initial, actors.south, {
       tileId: sourceTileId,
       type: "game/discard",
     });
@@ -1097,7 +1045,7 @@ describe("authoritative scored win integration", () => {
       throw new Error("Source checkpoint expiry failed.");
     let actual = intent.state;
     for (const event of resolution.events) {
-      actual = reduceVersionedGameEvent(actual, event) as CanonicalGameStateV2;
+      actual = reduceGameEvent(actual, event);
     }
     const events = [
       genesis,
@@ -1105,12 +1053,12 @@ describe("authoritative scored win integration", () => {
       ...intent.events,
       ...resolution.events,
     ];
-    assertVersionedCheckpointMatchesReplay(events, actual);
+    assertCheckpointMatchesReplay(events, actual);
     const alternateFixture = createScoringHandFixture({
       ...actualFixture,
       winningTileSource: { sourceSeat: seat("east"), type: "discard" },
     });
-    const alternate: CanonicalGameStateV2 = {
+    const alternate: CanonicalGameStateV1 = {
       ...actual,
       completionProvenance: {
         kind: "discard",
@@ -1123,10 +1071,10 @@ describe("authoritative scored win integration", () => {
       result: completedResultForFixture(alternateFixture),
     };
     const alternateBytes = canonicalJson(alternate);
-    expect(decodeCanonicalVersionedGameJson(alternateBytes)).toEqual(alternate);
-    expect(alternateBytes).not.toBe(canonicalVersionedGameJson(actual));
+    expect(decodeCanonicalGameJson(alternateBytes)).toEqual(alternate);
+    expect(alternateBytes).not.toBe(canonicalGameJson(actual));
     expect(() => {
-      assertVersionedCheckpointMatchesReplay(events, alternate);
+      assertCheckpointMatchesReplay(events, alternate);
     }).toThrow(/diverges from event replay/iu);
   });
 
@@ -1140,12 +1088,12 @@ describe("authoritative scored win integration", () => {
       placements: { east: { hand: [sourceTileId] } },
       turn: seat("east"),
     });
-    const genesis: VersionedHongKongGameEvent = {
+    const genesis: HongKongGameEventV1 = {
       sequence: 1,
       state: initial,
       type: "game/started",
     };
-    const opened = applyGameCommandV2(initial, actors.east, {
+    const opened = applyGameCommandV1(initial, actors.east, {
       tileId: sourceTileId,
       type: "game/discard",
     });
@@ -1156,20 +1104,18 @@ describe("authoritative scored win integration", () => {
       throw new Error("Opening-window fixture lacks its reaction window.");
     }
     expect(opened.state.reactionWindow.sourceIsOpeningEastDiscard).toBe(true);
-    const forged: CanonicalGameStateV2 = {
+    const forged: CanonicalGameStateV1 = {
       ...opened.state,
       reactionWindow: {
         ...opened.state.reactionWindow,
         sourceIsOpeningEastDiscard: false,
       },
     };
-    expect(decodeCanonicalVersionedGameJson(canonicalJson(forged))).toEqual(
-      forged,
-    );
+    expect(decodeCanonicalGameJson(canonicalJson(forged))).toEqual(forged);
     const events = [genesis, ...opened.events];
-    assertVersionedCheckpointMatchesReplay(events, opened.state);
+    assertCheckpointMatchesReplay(events, opened.state);
     expect(() => {
-      assertVersionedCheckpointMatchesReplay(events, forged);
+      assertCheckpointMatchesReplay(events, forged);
     }).toThrow(/diverges from event replay/iu);
   });
 
@@ -1198,12 +1144,12 @@ describe("authoritative scored win integration", () => {
         },
         turn: seat("east"),
       });
-      const genesis: VersionedHongKongGameEvent = {
+      const genesis: HongKongGameEventV1 = {
         sequence: 1,
         state: initial,
         type: "game/started",
       };
-      const opened = applyGameCommandV2(initial, actors.east, {
+      const opened = applyGameCommandV1(initial, actors.east, {
         tileId: sourceTileId,
         type: "game/discard",
       });
@@ -1227,13 +1173,11 @@ describe("authoritative scored win integration", () => {
       expect(state.phase).toBe("complete");
       for (const event of events) {
         expect(
-          decodeCanonicalVersionedGameEventJson(
-            canonicalVersionedGameEventJson(event),
-          ),
+          decodeCanonicalGameEventJson(canonicalGameEventJson(event)),
         ).toEqual(event);
       }
-      expect(replayVersionedGameEvents(events)).toEqual(state);
-      return canonicalVersionedGameJson(state);
+      expect(replayGameEvents(events)).toEqual(state);
+      return canonicalGameJson(state);
     });
     expect(new Set(terminals).size).toBe(1);
   });

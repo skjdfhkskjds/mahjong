@@ -19,14 +19,14 @@ import { canonicalTileIds } from "../melds/meld.js";
 import { decideDraw } from "./draw-decision.js";
 import type {
   ConcealedKongDeclaredEvent,
-  HongKongGameCommandV2,
+  HongKongGameCommandV1,
   KongReplacementDrawnEvent,
   ReactionIntentSubmittedEvent,
   ReactionResolvedEvent,
-  VersionedHongKongGameEvent,
+  HongKongGameEventV1,
 } from "./game-contracts.js";
-import { reduceVersionedGameEvent } from "./game-reducer.js";
-import { playerAt, type CanonicalGameStateV2 } from "./game-state.js";
+import { reduceGameEvent } from "./game-reducer.js";
+import { playerAt, type CanonicalGameStateV1 } from "./game-state.js";
 import type {
   HongKongMoveError,
   HongKongMoveOutcome,
@@ -42,9 +42,9 @@ import {
 } from "./win-resolution.js";
 
 export type HongKongPolicy = GamePolicy<
-  CanonicalGameStateV2,
-  HongKongGameCommandV2,
-  VersionedHongKongGameEvent,
+  CanonicalGameStateV1,
+  HongKongGameCommandV1,
+  HongKongGameEventV1,
   HongKongTurnStage,
   HongKongMoveOutcome,
   HongKongSubmission,
@@ -68,17 +68,14 @@ export const hongKongPolicy: HongKongPolicy = {
 };
 
 function reduce(
-  state: CanonicalGameStateV2,
-  event: VersionedHongKongGameEvent,
-): CanonicalGameStateV2 {
-  const next = reduceVersionedGameEvent(state, event);
-  if (next.schemaVersion !== 2)
-    throw new Error("A live game reduced to historical state.");
-  return next;
+  state: CanonicalGameStateV1,
+  event: HongKongGameEventV1,
+): CanonicalGameStateV1 {
+  return reduceGameEvent(state, event);
 }
 
 function readLifecycle(
-  state: CanonicalGameStateV2,
+  state: CanonicalGameStateV1,
 ): GameLifecycle<HongKongTurnStage> {
   const base = {
     participants: seats.map((seat) => ({
@@ -127,9 +124,9 @@ function rejected(code: HongKongMoveError, message: string): MoveDecision {
 }
 
 function evaluate(
-  state: CanonicalGameStateV2,
+  state: CanonicalGameStateV1,
   participant: GameParticipant,
-  command: HongKongGameCommandV2,
+  command: HongKongGameCommandV1,
 ): MoveDecision {
   const player = playerAt(state.players, participant.seat);
   switch (command.type) {
@@ -340,7 +337,7 @@ function evaluate(
   }
 }
 
-function resolve(state: CanonicalGameStateV2): ResolutionDecision {
+function resolve(state: CanonicalGameStateV1): ResolutionDecision {
   const window = state.reactionWindow;
   if (window === null)
     throw new Error("Policy resolution requires an open window.");
@@ -461,7 +458,7 @@ function turn(
   return { kind: "turn", generation, next, stage };
 }
 
-function kongReplacement(state: CanonicalGameStateV2): {
+function kongReplacement(state: CanonicalGameStateV1): {
   readonly event: KongReplacementDrawnEvent;
   readonly outcome: KongReplacement;
 } {
@@ -481,9 +478,9 @@ function kongReplacement(state: CanonicalGameStateV2): {
 }
 
 function automaticMove(
-  state: CanonicalGameStateV2,
+  state: CanonicalGameStateV1,
   participant: GameParticipant,
-): HongKongGameCommandV2 | null {
+): HongKongGameCommandV1 | null {
   if (state.reactionWindow !== null) {
     return {
       type: "game/react",

@@ -564,6 +564,7 @@ export class ActivityInstance extends DurableObject<Env> {
     binding: BoundActivityTable,
     actorId: string,
     sessionGeneration: number,
+    departure = false,
   ): Promise<Response> {
     try {
       return await this.env.TABLE_ROOM.getByName(binding.tableId).fetch(
@@ -575,6 +576,7 @@ export class ActivityInstance extends DurableObject<Env> {
             instanceId,
             sessionGeneration,
             version: 1,
+            ...(departure ? { departure: true } : {}),
           }),
           headers: { "Content-Type": "application/json" },
           method: "POST",
@@ -816,6 +818,7 @@ export class ActivityInstance extends DurableObject<Env> {
       binding,
       validated.credential.actorId,
       validated.session.generation + 1,
+      true,
     );
     if (!activation.ok && activation.status !== 403) return activation;
     const revocation = await this.allocateRevocation(

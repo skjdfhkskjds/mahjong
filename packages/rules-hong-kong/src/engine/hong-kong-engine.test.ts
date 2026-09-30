@@ -13,11 +13,11 @@ import {
 import { hongKongGameEngine } from "./hong-kong-engine.js";
 import {
   assertGameInvariants,
-  canonicalVersionedGameJson,
-  decodeCanonicalVersionedGameJson,
-  projectGameV2,
-  reduceVersionedGameEvent,
-  type CanonicalGameStateV2,
+  canonicalGameJson,
+  decodeCanonicalGameJson,
+  projectGameV1,
+  reduceGameEvent,
+  type CanonicalGameStateV1,
   type PlayerReactionResponse,
 } from "./hong-kong-game.js";
 
@@ -25,21 +25,20 @@ type EngineResult = ReturnType<typeof hongKongGameEngine.automate>;
 type AcceptedResult = Exclude<EngineResult, { readonly kind: "rejected" }>;
 
 function accepted(
-  initial: CanonicalGameStateV2,
+  initial: CanonicalGameStateV1,
   result: EngineResult,
 ): AcceptedResult {
   if (result.kind === "rejected")
     throw new Error(`Fixture rejected: ${result.error.code}`);
   let replayed = initial;
   for (const event of result.events) {
-    const next = reduceVersionedGameEvent(replayed, event);
-    if (next.schemaVersion !== 2) throw new Error("Replay lost schema v2.");
+    const next = reduceGameEvent(replayed, event);
     replayed = next;
   }
   expect(replayed).toEqual(result.state);
-  expect(
-    decodeCanonicalVersionedGameJson(canonicalVersionedGameJson(result.state)),
-  ).toEqual(result.state);
+  expect(decodeCanonicalGameJson(canonicalGameJson(result.state))).toEqual(
+    result.state,
+  );
   const restored = hongKongGameEngine.lifecycle(result.state);
   const live = result.lifecycle;
   if (restored.phase.kind === "reaction" && live.phase.kind === "reaction") {
@@ -70,7 +69,7 @@ function accepted(
 }
 
 function respond(
-  state: CanonicalGameStateV2,
+  state: CanonicalGameStateV1,
   actorId: string,
   response: PlayerReactionResponse,
 ): AcceptedResult {
@@ -86,7 +85,7 @@ function respond(
   );
 }
 
-function expire(state: CanonicalGameStateV2): AcceptedResult {
+function expire(state: CanonicalGameStateV1): AcceptedResult {
   const target = hongKongGameEngine.deadlineTarget(state);
   if (target === null) throw new Error("Fixture requires a deadline target.");
   return accepted(
@@ -95,7 +94,7 @@ function expire(state: CanonicalGameStateV2): AcceptedResult {
   );
 }
 
-function competingWins(): CanonicalGameStateV2 {
+function competingWins(): CanonicalGameStateV1 {
   const sourceTileId = tileId(125);
   const west = scoringFixture({
     concealed: "c1 c1 c1 c1 c2 c3 c4 c5 c6 c7 c8 c9 R R",
@@ -157,11 +156,11 @@ describe("Hong Kong shared engine policy outcomes", () => {
         },
         turn: seat("west"),
       });
-      const before = canonicalVersionedGameJson(state);
+      const before = canonicalGameJson(state);
       const result = hongKongGameEngine.execute(state, actors.west, {
         type: "game/declare-win",
       });
-      expect(canonicalVersionedGameJson(state)).toBe(before);
+      expect(canonicalGameJson(state)).toBe(before);
       if (!legal) {
         expect(result).toMatchObject({
           kind: "rejected",
@@ -202,8 +201,8 @@ describe("Hong Kong shared engine policy outcomes", () => {
       actors.west,
       "spectator",
     ]) {
-      expect(projectGameV2(north.state, viewer)).toEqual(
-        projectGameV2(initial, viewer),
+      expect(projectGameV1(north.state, viewer)).toEqual(
+        projectGameV1(initial, viewer),
       );
     }
     const passed = respond(north.state, actors.east, { type: "pass" });
@@ -237,7 +236,7 @@ describe("Hong Kong shared engine policy outcomes", () => {
       "game/hand-completed",
     ]);
     const publicResult = JSON.stringify(
-      projectGameV2(final.state, "spectator"),
+      projectGameV1(final.state, "spectator"),
     );
     expect(publicResult).not.toContain("claimants");
     expect(publicResult).not.toContain("not-awarded");

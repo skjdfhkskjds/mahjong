@@ -17,16 +17,10 @@ import {
 } from "../tiles/tile-kind-identity.js";
 import { HONG_KONG_V1_SHUFFLE_ALGORITHM } from "../wall/deterministic-shuffle.js";
 import { canonicalJson, hasExactKeys, isRecord } from "./game-codec.js";
-import type {
-  HongKongGameEvent,
-  LegacyUpgradeProvenance,
-  VersionedHongKongGameEvent,
-} from "./game-contracts.js";
+import type { HongKongGameEventV1 } from "./game-contracts.js";
 import {
   playerAt,
-  type VersionedCanonicalGameState,
   type CanonicalGameStateV1,
-  type CanonicalGameStateV2,
   type CompletionProvenance,
   type ReactionResponse,
   type SubmittedReactionIntent,
@@ -38,108 +32,7 @@ import {
   scoreSelfWinCandidate,
 } from "./win-resolution.js";
 
-export function assertUpgradeProvenance(
-  state: CanonicalGameStateV1,
-  provenance: LegacyUpgradeProvenance,
-): void {
-  if (
-    provenance.sourceSequence !== state.sequence ||
-    (provenance.type === "initial-deal"
-      ? provenance.eastHasDiscarded
-      : !provenance.eastHasDiscarded)
-  ) {
-    throw new Error("State upgrade provenance does not match legacy state.");
-  }
-  if (provenance.type === "initial-deal") {
-    if (state.sequence !== 1) {
-      throw new Error("Initial-deal provenance requires legacy genesis.");
-    }
-    return;
-  }
-  if (provenance.type === "discard") {
-    const source = playerAt(state.players, provenance.seat);
-    if (
-      state.phase !== "awaiting-draw" ||
-      state.turn !== nextSeat(provenance.seat) ||
-      source.discards.at(-1) !== provenance.tileId
-    ) {
-      throw new Error("Discard provenance is incoherent with legacy state.");
-    }
-    return;
-  }
-  if (provenance.type === "wall-exhausted") {
-    if (
-      state.phase !== "exhausted" ||
-      state.turn !== provenance.seat ||
-      state.wall.head <= state.wall.tail
-    ) {
-      throw new Error("Exhaustion provenance is incoherent with legacy state.");
-    }
-    return;
-  }
-  if (
-    state.phase !== (provenance.exhausted ? "exhausted" : "awaiting-discard") ||
-    state.turn !== provenance.seat ||
-    state.wall.order[state.wall.head - 1] !== provenance.ordinaryTileId
-  ) {
-    throw new Error("Draw provenance is incoherent with legacy state.");
-  }
-  provenance.replacementTileIds.forEach((tileId, index) => {
-    if (
-      state.wall.order[
-        state.wall.tail + provenance.replacementTileIds.length - index
-      ] !== tileId
-    ) {
-      throw new Error("Replacement provenance is incoherent with legacy wall.");
-    }
-  });
-  const structural = [
-    provenance.ordinaryTileId,
-    ...provenance.replacementTileIds,
-  ].filter((tileId) => !isBonusTile(tileId));
-  const acquired = structural.at(-1);
-  if (
-    !provenance.exhausted &&
-    (acquired === undefined ||
-      !playerAt(state.players, provenance.seat).hand.includes(acquired))
-  ) {
-    throw new Error("Draw provenance does not identify the acquired tile.");
-  }
-}
-
-export function provenanceTileId(
-  state: CanonicalGameStateV1,
-  provenance: LegacyUpgradeProvenance,
-): TileId | null {
-  if (state.phase === "exhausted") return null;
-  if (provenance.type === "initial-deal") {
-    return initialEastAcquisition(state).tileId;
-  }
-  if (provenance.type !== "draw") return null;
-  return (
-    [provenance.ordinaryTileId, ...provenance.replacementTileIds]
-      .filter((tileId) => !isBonusTile(tileId))
-      .at(-1) ?? null
-  );
-}
-
-export function provenanceAcquisition(
-  state: CanonicalGameStateV1,
-  provenance: LegacyUpgradeProvenance,
-): "bonus-replacement" | "deal" | "draw" | "kong-replacement" | null {
-  if (state.phase === "exhausted") return null;
-  if (provenance.type === "initial-deal") {
-    return initialEastAcquisition(state).acquisition;
-  }
-  if (provenance.type !== "draw") return null;
-  return provenance.replacementTileIds.length > 0
-    ? "bonus-replacement"
-    : "draw";
-}
-
-function initialEastAcquisition(
-  state: CanonicalGameStateV1 | CanonicalGameStateV2,
-): {
+function initialEastAcquisition(state: CanonicalGameStateV1): {
   readonly acquisition: "bonus-replacement" | "deal";
   readonly tileId: TileId | null;
 } {
@@ -166,13 +59,10 @@ function initialEastAcquisition(
 
 export function assertGameInvariants(
   value: unknown,
-): asserts value is VersionedCanonicalGameState {
-  if (!isRecord(value) || value["schemaVersion"] === 1) {
-    assertV1State(value);
-    return;
-  }
+): asserts value is CanonicalGameStateV1 {
   if (
-    value["schemaVersion"] !== 2 ||
+    !isRecord(value) ||
+    value["schemaVersion"] !== 1 ||
     !hasExactKeys(value, [
       "completionProvenance",
       "phase",
@@ -206,7 +96,7 @@ export function assertGameInvariants(
   ) {
     throw new Error("Unsupported canonical game encoding.");
   }
-  const state = value as unknown as CanonicalGameStateV2;
+  const state = value as unknown as CanonicalGameStateV1;
   if (state.phase === "complete") {
     assertCompletedHandResult(state.result);
     const completionProvenance = assertCompletionProvenance(state);
@@ -234,7 +124,7 @@ export function assertGameInvariants(
       ]) ||
       !Array.isArray(player.melds)
     ) {
-      throw new Error("Schema-v2 players require exact meld collections.");
+      throw new Error("Canonical players require exact meld collections.");
     }
     for (const meld of player.melds) {
       assertMeld(meld);
@@ -266,62 +156,7 @@ export function assertGameInvariants(
   }
 }
 
-function assertV1State(value: unknown): asserts value is CanonicalGameStateV1 {
-  if (
-    !isRecord(value) ||
-    !hasExactKeys(value, [
-      "phase",
-      "players",
-      "ruleset",
-      "schemaVersion",
-      "sequence",
-      "shuffleAlgorithm",
-      "turn",
-      "wall",
-    ]) ||
-    value["schemaVersion"] !== 1 ||
-    value["ruleset"] !== "hong-kong/v1" ||
-    value["shuffleAlgorithm"] !== HONG_KONG_V1_SHUFFLE_ALGORITHM ||
-    !(
-      [
-        "awaiting-dealer-discard",
-        "awaiting-draw",
-        "awaiting-discard",
-        "exhausted",
-      ] as readonly string[]
-    ).includes(value["phase"] as string)
-  ) {
-    throw new Error("Unsupported canonical game encoding.");
-  }
-  const state = value as unknown as CanonicalGameStateV1;
-  assertCommonState(state);
-  assertConservation(state);
-  if (state.phase !== "exhausted") {
-    const expected = state.phase === "awaiting-draw" ? 13 : 14;
-    if (playerAt(state.players, state.turn).hand.length !== expected) {
-      throw new Error("Turn hand size does not match the phase.");
-    }
-    for (const currentSeat of seats) {
-      if (
-        currentSeat !== state.turn &&
-        playerAt(state.players, currentSeat).hand.length !== 13
-      ) {
-        throw new Error("Inactive player must hold 13 structural tiles.");
-      }
-    }
-  } else if (
-    state.wall.head !== state.wall.tail + 1 ||
-    seats.some(
-      (currentSeat) => playerAt(state.players, currentSeat).hand.length !== 13,
-    )
-  ) {
-    throw new Error(
-      "An exhausted legacy game must have an empty wall and 13-tile hands.",
-    );
-  }
-}
-
-function assertCommonState(state: VersionedCanonicalGameState): void {
+function assertCommonState(state: CanonicalGameStateV1): void {
   if (
     !seats.includes(state.turn) ||
     !Number.isSafeInteger(state.sequence) ||
@@ -344,10 +179,14 @@ function assertCommonState(state: VersionedCanonicalGameState): void {
   }
   for (const currentSeat of seats) {
     const player = playerAt(state.players, currentSeat);
-    const expectedKeys =
-      state.schemaVersion === 1
-        ? ["actorId", "bonuses", "discards", "hand", "seat"]
-        : ["actorId", "bonuses", "discards", "hand", "melds", "seat"];
+    const expectedKeys = [
+      "actorId",
+      "bonuses",
+      "discards",
+      "hand",
+      "melds",
+      "seat",
+    ];
     if (
       !isRecord(player) ||
       !hasExactKeys(player, expectedKeys) ||
@@ -376,7 +215,7 @@ function assertCommonState(state: VersionedCanonicalGameState): void {
 }
 
 function assertCompletionProvenance(
-  state: CanonicalGameStateV2,
+  state: CanonicalGameStateV1,
 ): CompletionProvenance {
   const value: unknown = state.completionProvenance;
   if (!isRecord(value) || typeof value["kind"] !== "string") {
@@ -473,7 +312,7 @@ function assertCompletionProvenance(
   return provenance;
 }
 
-function assertTurnProvenance(state: CanonicalGameStateV2): void {
+function assertTurnProvenance(state: CanonicalGameStateV1): void {
   const value: unknown = state.turnProvenance;
   if (
     !isRecord(value) ||
@@ -609,7 +448,7 @@ function assertTurnProvenance(state: CanonicalGameStateV2): void {
   }
 }
 
-function assertReactionWindow(state: CanonicalGameStateV2): void {
+function assertReactionWindow(state: CanonicalGameStateV1): void {
   const window = state.reactionWindow;
   if (window === null) {
     if (
@@ -782,7 +621,7 @@ function assertMeld(value: unknown): asserts value is DeclaredMeld {
   }
 }
 
-function assertConservation(state: VersionedCanonicalGameState): void {
+function assertConservation(state: CanonicalGameStateV1): void {
   const locations = [
     ...state.wall.order.slice(state.wall.head, state.wall.tail + 1),
     ...seats.flatMap((currentSeat) => {
@@ -791,11 +630,7 @@ function assertConservation(state: VersionedCanonicalGameState): void {
         ...player.hand,
         ...player.bonuses,
         ...player.discards,
-        ...(state.schemaVersion === 2
-          ? playerAt(state.players, currentSeat).melds.flatMap(
-              (meld) => meld.tileIds,
-            )
-          : []),
+        ...player.melds.flatMap((meld) => meld.tileIds),
       ];
     }),
   ];
@@ -804,7 +639,7 @@ function assertConservation(state: VersionedCanonicalGameState): void {
   }
 }
 
-function assertStructuralCounts(state: CanonicalGameStateV2): void {
+function assertStructuralCounts(state: CanonicalGameStateV1): void {
   for (const currentSeat of seats) {
     const player = playerAt(state.players, currentSeat);
     const structuralCount = player.hand.length + 3 * player.melds.length;
@@ -834,9 +669,9 @@ function assertStructuralCounts(state: CanonicalGameStateV2): void {
   }
 }
 
-export function assertVersionedGameEvent(
+export function assertGameEvent(
   value: unknown,
-): asserts value is VersionedHongKongGameEvent {
+): asserts value is HongKongGameEventV1 {
   if (!isRecord(value) || typeof value["type"] !== "string") {
     throw new Error("Canonical game event must be an object.");
   }
@@ -855,14 +690,9 @@ export function assertVersionedGameEvent(
       assertGameInvariants(value["state"]);
       if (
         value["state"].sequence !== 1 ||
-        (value["state"].schemaVersion === 2 &&
-          value["state"].phase === "pending-win-validation")
+        value["state"].phase === "pending-win-validation"
       )
         throw new Error("Genesis state is not deployable.");
-      return;
-    case "game/tile-discarded":
-      assertExactEvent(value, ["seat", "sequence", "tileId", "type"]);
-      assertSeatAndTile(value);
       return;
     case "game/turn-drawn":
       assertExactEvent(value, [
@@ -890,19 +720,6 @@ export function assertVersionedGameEvent(
       ) {
         throw new Error("Canonical exhaustion event is invalid.");
       }
-      return;
-    case "game/state-upgraded":
-      assertExactEvent(value, [
-        "fromSchemaVersion",
-        "provenance",
-        "sequence",
-        "toSchemaVersion",
-        "type",
-      ]);
-      if (value["fromSchemaVersion"] !== 1 || value["toSchemaVersion"] !== 2) {
-        throw new Error("Invalid state upgrade.");
-      }
-      assertLegacyUpgradeProvenance(value["provenance"]);
       return;
     case "game/discard-reaction-opened":
       assertExactEvent(value, [
@@ -1007,95 +824,6 @@ export function assertVersionedGameEvent(
     default:
       throw new Error("Unknown canonical game event type.");
   }
-}
-
-export function assertLegacyGameEvent(
-  value: unknown,
-): asserts value is HongKongGameEvent {
-  assertVersionedGameEvent(value);
-  if (
-    value.type === "game/started"
-      ? value.state.schemaVersion !== 1
-      : ![
-          "game/tile-discarded",
-          "game/turn-drawn",
-          "game/wall-exhausted",
-        ].includes(value.type)
-  ) {
-    throw new Error("Event is outside the schema-v1 contract.");
-  }
-}
-
-function assertLegacyUpgradeProvenance(
-  value: unknown,
-): asserts value is LegacyUpgradeProvenance {
-  if (
-    !isRecord(value) ||
-    typeof value["eastHasDiscarded"] !== "boolean" ||
-    !Number.isSafeInteger(value["sourceSequence"]) ||
-    (value["sourceSequence"] as number) < 1 ||
-    typeof value["type"] !== "string"
-  ) {
-    throw new Error("Invalid legacy upgrade provenance.");
-  }
-  if (value["type"] === "initial-deal") {
-    if (
-      !hasExactKeys(value, ["eastHasDiscarded", "sourceSequence", "type"]) ||
-      value["sourceSequence"] !== 1
-    ) {
-      throw new Error("Invalid initial-deal upgrade provenance.");
-    }
-    return;
-  }
-  if (value["type"] === "discard") {
-    assertExactEvent(value, [
-      "eastHasDiscarded",
-      "seat",
-      "sourceSequence",
-      "tileId",
-      "type",
-    ]);
-    assertSeatAndTile(value);
-    return;
-  }
-  if (value["type"] === "wall-exhausted") {
-    assertExactEvent(value, [
-      "eastHasDiscarded",
-      "requiredDraw",
-      "seat",
-      "sourceSequence",
-      "type",
-    ]);
-    if (
-      value["requiredDraw"] !== "ordinary" ||
-      !seats.includes(value["seat"] as Seat)
-    ) {
-      throw new Error("Invalid exhausted upgrade provenance.");
-    }
-    return;
-  }
-  if (value["type"] === "draw") {
-    assertExactEvent(value, [
-      "eastHasDiscarded",
-      "exhausted",
-      "ordinaryTileId",
-      "replacementTileIds",
-      "seat",
-      "sourceSequence",
-      "type",
-    ]);
-    if (
-      typeof value["exhausted"] !== "boolean" ||
-      !validTileId(value["ordinaryTileId"]) ||
-      !Array.isArray(value["replacementTileIds"]) ||
-      value["replacementTileIds"].some((tileId) => !validTileId(tileId)) ||
-      !seats.includes(value["seat"] as Seat)
-    ) {
-      throw new Error("Invalid draw upgrade provenance.");
-    }
-    return;
-  }
-  throw new Error("Unknown legacy upgrade provenance type.");
 }
 
 function validReactionResponse(value: unknown): value is ReactionResponse {

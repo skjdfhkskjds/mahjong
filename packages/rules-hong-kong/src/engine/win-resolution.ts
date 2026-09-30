@@ -24,7 +24,7 @@ import type { SuppressedPattern } from "../scoring/award-patterns.js";
 import { canonicalJson, hasExactKeys, isRecord } from "./game-codec.js";
 import {
   playerAt,
-  type CanonicalGameStateV2,
+  type CanonicalGameStateV1,
   type CompletionProvenance,
   type ReactionWindow,
 } from "./game-state.js";
@@ -90,7 +90,7 @@ function scoreFixture(fixture: ScoringHandFixture): CompletedHandResult | null {
 }
 
 function selfWinningConditions(
-  state: CanonicalGameStateV2,
+  state: CanonicalGameStateV1,
   winnerSeat: Seat,
 ): WinningConditions {
   const opening =
@@ -135,7 +135,7 @@ function reactionWinningConditions(
 }
 
 export function scoreSelfWinCandidate(
-  state: CanonicalGameStateV2,
+  state: CanonicalGameStateV1,
   winnerSeat: Seat,
 ): CompletedHandResult | null {
   const winningTileId = state.turnProvenance.lastAcquiredTileId;
@@ -166,7 +166,7 @@ export function scoreSelfWinCandidate(
 }
 
 export function scoreReactionWinCandidate(
-  state: CanonicalGameStateV2,
+  state: CanonicalGameStateV1,
   winnerSeat: Seat,
 ): CompletedHandResult | null {
   const window = state.reactionWindow;
@@ -192,7 +192,7 @@ export function scoreReactionWinCandidate(
 }
 
 export function resolveScoredReactionWinner(
-  state: CanonicalGameStateV2,
+  state: CanonicalGameStateV1,
   candidateSeats: readonly Seat[],
 ): CompletedHandResult | null {
   const window = state.reactionWindow;
@@ -212,7 +212,7 @@ export function resolveScoredReactionWinner(
 }
 
 export function expectedPendingCompletion(
-  state: CanonicalGameStateV2,
+  state: CanonicalGameStateV1,
 ): CompletedHandResult {
   if (state.phase !== "pending-win-validation") {
     throw new Error("Hand completion requires pending win validation.");
@@ -235,7 +235,7 @@ export function expectedPendingCompletion(
 }
 
 export function completionProvenanceFor(
-  state: CanonicalGameStateV2,
+  state: CanonicalGameStateV1,
   result: CompletedHandResult,
 ): CompletionProvenance {
   if (state.phase !== "pending-win-validation") {

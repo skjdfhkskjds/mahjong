@@ -7,8 +7,6 @@ import {
   ReconnectingSocketStatusMonitor,
   TABLE_PROTOCOL_VERSION,
   type TableCommandEnvelope,
-  type TableReceipt,
-  type ViewerSafeTableSnapshot,
 } from "../adapters/transport/table-socket-status.js";
 import type { RuntimeConfig } from "../bootstrap/runtime-config.js";
 import {
@@ -17,16 +15,8 @@ import {
   type ClientStartupStatus,
   type StartupCheck,
 } from "../features/startup/client-startup.js";
-import {
-  GamePanel,
-  TableCommandButton,
-} from "../features/gameplay/game-panel.js";
-
-export {
-  GamePanel,
-  reactionSubmissionPending,
-  TableCommandButton,
-} from "../features/gameplay/game-panel.js";
+import { GameController } from "../features/gameplay/game-controller.js";
+import { LobbyController } from "../features/lobby/lobby-controller.js";
 
 interface AppProps {
   readonly config: RuntimeConfig;
@@ -72,170 +62,6 @@ function formatExpiry(value: string | undefined): string {
       }).format(date);
 }
 
-export function LobbyPanel({
-  canManageBots = false,
-  connected,
-  latestReceipt,
-  onCommand,
-  snapshot,
-}: {
-  readonly canManageBots?: boolean;
-  readonly connected: boolean;
-  readonly latestReceipt: TableReceipt | undefined;
-  readonly onCommand: (command: TableCommandEnvelope["command"]) => boolean;
-  readonly snapshot: ViewerSafeTableSnapshot | undefined;
-}) {
-  const viewer = snapshot?.view.viewer;
-  const rejected = latestReceipt?.outcome === "rejected" ? latestReceipt : null;
-
-  return (
-    <section aria-labelledby="lobby-title" className="panel lobby-panel">
-      <div className="panel__heading lobby-heading">
-        <div>
-          <p className="section-kicker">Persistent lobby</p>
-          <h2 id="lobby-title">Choose a seat and get ready</h2>
-        </div>
-        <p className="lobby-connection" role="status">
-          {connected && snapshot
-            ? `Connected · state ${String(snapshot.stateVersion)}`
-            : "Controls unavailable while reconnecting"}
-        </p>
-      </div>
-
-      {canManageBots ? (
-        <p>
-          Claim a seat, then add bots to empty seats to play solo or with
-          friends. Bots make random legal moves and are ready automatically.
-        </p>
-      ) : null}
-      {snapshot ? (
-        <>
-          {rejected ? (
-            <p className="command-error" role="alert">
-              {rejected.error?.message ?? "The table rejected that action."}
-            </p>
-          ) : null}
-
-          <ul className="seat-grid" aria-label="Table seats">
-            {snapshot.view.seats.map((seat) => {
-              const isViewerSeat =
-                viewer?.role === "player" && viewer.seat === seat.seat;
-              return (
-                <li className="seat-card" key={seat.seat}>
-                  <div className="seat-card__heading">
-                    <h3>{seat.seat}</h3>
-                    <span
-                      className={`ready-chip ${seat.ready ? "ready-chip--ready" : ""}`}
-                    >
-                      {seat.occupant
-                        ? seat.ready
-                          ? "Ready"
-                          : "Not ready"
-                        : "Vacant"}
-                    </span>
-                  </div>
-                  <p>{seat.occupant?.displayName ?? "Open seat"}</p>
-                  {viewer && !seat.occupant ? (
-                    <button
-                      className="lobby-button"
-                      disabled={!connected}
-                      onClick={() => {
-                        onCommand({
-                          type: "lobby/claim-seat",
-                          seat: seat.seat,
-                        });
-                      }}
-                    >
-                      {viewer.role === "player" ? "Move to" : "Claim"}{" "}
-                      {seat.seat} seat
-                    </button>
-                  ) : null}
-                  {canManageBots && !seat.occupant ? (
-                    <TableCommandButton
-                      className="lobby-button"
-                      disabled={!connected || viewer?.role !== "player"}
-                      command={{ type: "lobby/add-bot", seat: seat.seat }}
-                      onCommand={onCommand}
-                    >
-                      Add bot
-                    </TableCommandButton>
-                  ) : null}
-                  {canManageBots && seat.occupant?.id.startsWith("bot:") ? (
-                    <TableCommandButton
-                      className="lobby-button lobby-button--quiet"
-                      disabled={!connected || viewer?.role !== "player"}
-                      command={{ type: "lobby/remove-bot", seat: seat.seat }}
-                      onCommand={onCommand}
-                    >
-                      Remove bot
-                    </TableCommandButton>
-                  ) : null}
-                  {isViewerSeat ? (
-                    <div className="seat-actions">
-                      <button
-                        className="lobby-button"
-                        disabled={!connected}
-                        onClick={() => {
-                          onCommand({
-                            type: "lobby/set-ready",
-                            ready: !seat.ready,
-                          });
-                        }}
-                      >
-                        {seat.ready ? "Mark not ready" : "Mark ready"}
-                      </button>
-                      <button
-                        className="lobby-button lobby-button--quiet"
-                        disabled={!connected}
-                        onClick={() => {
-                          onCommand({ type: "lobby/leave-seat" });
-                        }}
-                      >
-                        Leave {seat.seat} seat
-                      </button>
-                    </div>
-                  ) : null}
-                </li>
-              );
-            })}
-          </ul>
-
-          {viewer?.role === "player" &&
-          snapshot.view.seats.every(
-            ({ occupant, ready }) => occupant !== null && ready,
-          ) ? (
-            <TableCommandButton
-              className="lobby-button game-start-button"
-              command={{ type: "game/start" }}
-              disabled={!connected}
-              onCommand={onCommand}
-            >
-              Start hand
-            </TableCommandButton>
-          ) : null}
-
-          <div className="spectator-list">
-            <h3>Spectators ({snapshot.view.spectators.length})</h3>
-            {snapshot.view.spectators.length > 0 ? (
-              <ul>
-                {snapshot.view.spectators.map((spectator) => (
-                  <li key={spectator.id}>{spectator.displayName}</li>
-                ))}
-              </ul>
-            ) : (
-              <p>No spectators</p>
-            )}
-          </div>
-        </>
-      ) : (
-        <p className="lobby-placeholder" role="status">
-          The lobby will appear after the table sends a viewer-safe snapshot.
-        </p>
-      )}
-    </section>
-  );
-}
-
 export function App({ config }: AppProps) {
   const [attempt, setAttempt] = useState(0);
   const [commandFailure, setCommandFailure] = useState<string>();
@@ -268,7 +94,7 @@ export function App({ config }: AppProps) {
   const snapshot = status.tableSnapshot;
   const lobbyConnected = status.complete && snapshot !== undefined;
 
-  const sendLobbyCommand = (
+  const sendTableCommand = (
     command: TableCommandEnvelope["command"],
   ): boolean => {
     if (!lobbyConnected) {
@@ -322,32 +148,32 @@ export function App({ config }: AppProps) {
             </h2>
           </section>
         ) : snapshot?.view.phase === "lobby" ? (
-          <LobbyPanel
+          <LobbyController
             canManageBots={
               status.sessionResponse?.access === "member" &&
               status.sessionResponse.role === "owner"
             }
             connected={lobbyConnected}
             latestReceipt={status.latestReceipt}
-            onCommand={sendLobbyCommand}
+            onCommand={sendTableCommand}
             snapshot={snapshot}
           />
         ) : snapshot ? (
-          <GamePanel
+          <GameController
             connected={lobbyConnected}
             latestReceipt={status.latestReceipt}
-            onCommand={sendLobbyCommand}
+            onCommand={sendTableCommand}
             snapshot={snapshot}
           />
         ) : (
-          <LobbyPanel
+          <LobbyController
             canManageBots={
               status.sessionResponse?.access === "member" &&
               status.sessionResponse.role === "owner"
             }
             connected={lobbyConnected}
             latestReceipt={status.latestReceipt}
-            onCommand={sendLobbyCommand}
+            onCommand={sendTableCommand}
             snapshot={snapshot}
           />
         )}

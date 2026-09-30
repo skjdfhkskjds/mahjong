@@ -11,13 +11,13 @@ function command(commandValue: object, extra: object = {}): string {
     command: commandValue,
     commandId: "strict-command",
     expectedStateVersion: 7,
-    protocolVersion: 2,
+    protocolVersion: 1,
     type: "table/command",
     ...extra,
   });
 }
 
-describe("TableRoom protocol v2", () => {
+describe("TableRoom protocol v1", () => {
   it.each([
     { type: "lobby/claim-seat", seat: "east" },
     { type: "lobby/add-bot", seat: "south" },
@@ -106,7 +106,7 @@ describe("TableRoom protocol v2", () => {
       command: { type: "game/start" },
       commandId: "legacy",
       expectedStateVersion: 0,
-      protocolVersion: 1,
+      protocolVersion: 2,
       type: "table/command",
     }),
   ])(
@@ -121,7 +121,7 @@ describe("TableRoom protocol v2", () => {
       parseTableResync(
         JSON.stringify({
           lastSeenStateVersion: 4,
-          protocolVersion: 2,
+          protocolVersion: 1,
           type: "table/resync",
         }),
       ),
@@ -130,7 +130,7 @@ describe("TableRoom protocol v2", () => {
       parseTableResync(
         JSON.stringify({
           lastSeenStateVersion: 4,
-          protocolVersion: 2,
+          protocolVersion: 1,
           type: "table/resync",
           unknown: true,
         }),
@@ -138,13 +138,13 @@ describe("TableRoom protocol v2", () => {
     ).toBeUndefined();
     expect(
       requestedTableProtocol(
-        "https://table.internal/connect?protocolVersion=2",
+        "https://table.internal/connect?protocolVersion=1",
       ),
-    ).toBe(2);
+    ).toBe(1);
     for (const url of [
       "https://table.internal/connect",
-      "https://table.internal/connect?protocolVersion=1",
-      "https://table.internal/connect?protocolVersion=2&protocolVersion=2",
+      "https://table.internal/connect?protocolVersion=2",
+      "https://table.internal/connect?protocolVersion=1&protocolVersion=1",
       "https://table.internal/connect?protocolVersion=99",
     ]) {
       expect(requestedTableProtocol(url)).toBeUndefined();

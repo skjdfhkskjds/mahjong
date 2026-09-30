@@ -162,7 +162,7 @@ Within `rules-hong-kong`, the engine composes wall, hand, turns, claims, scoring
 
 ## Deployment compatibility and operating tier
 
-Discord may cache non-HTML assets, so hashed asset names and explicit protocol negotiation are mandatory. During a rolling deployment, the Worker should support the current and immediately previous protocol version long enough for cached/connected clients to recover or reject with a clear upgrade response. Storage and engine rollout/rollback behavior must be documented before production data exists.
+Discord may cache non-HTML assets, so hashed asset names and explicit protocol negotiation are mandatory. The first live deployment uses protocol v1 and has no earlier deployed major to support. Client and Worker ship atomically; unsupported versions receive a clear upgrade response. Any future incompatible protocol must define its overlap and rollback behavior before release. Storage and engine rollout/rollback behavior must be documented before production data exists.
 
 SQLite-backed Durable Objects are available on the Workers Free plan, but Free-plan request and storage budgets can interrupt service rather than transparently bill overage. Use Free for development/private alpha; define paid-plan promotion thresholds and budget alerts before availability is promised.
 
@@ -179,3 +179,12 @@ SQLite-backed Durable Objects are available on the Workers Free plan, but Free-p
 - [Cloudflare Durable Object SQLite storage](https://developers.cloudflare.com/durable-objects/api/sqlite-storage-api/)
 - [Cloudflare Durable Object testing](https://developers.cloudflare.com/durable-objects/examples/testing-with-durable-objects/)
 - [Cloudflare Workers pricing and Free-plan limits](https://developers.cloudflare.com/workers/platform/pricing/)
+
+## Table application operations
+
+The [table application/storage boundary](table-application-storage.md) inventories
+commands, deadlines, access, connections, and recovery transactions. TableRoom
+owns the serialized runtime interval and publication; SQL-free application
+operations prepare typed atomic changes; SQLite adapters persist them without
+choosing legality, retries, readiness, deadlines, or presence policy. Canonical
+progress remains distinct from the public room version.

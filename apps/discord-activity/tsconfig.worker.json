@@ -3,5 +3,6 @@
   "compilerOptions": {
     "moduleDetection": "auto"
   },
+  "exclude": ["src/worker/**/*.test.ts"],
   "include": ["src/worker/**/*.ts", "src/worker/worker-configuration.d.ts"]
 }

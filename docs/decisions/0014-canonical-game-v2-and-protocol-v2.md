@@ -1,6 +1,6 @@
 # ADR 0014: Upgrade canonical game state and gameplay protocol to v2
 
-Status: accepted
+Status: superseded by [ADR 0017](0017-prelaunch-v1-baseline.md)
 
 Date: 2026-09-01
 

@@ -2,7 +2,10 @@ import { StrictMode } from "react";
 import { createRoot } from "react-dom/client";
 
 import { App } from "../app/app.js";
+import { selectedGameAssets } from "../app/game-asset-selection.js";
+import { GameAssetsProvider } from "../presentation/game-assets-provider.js";
 import "../styles/global.css";
+import "../presentation/game-artwork.css";
 import {
   readBrowserRuntimeConfig,
   RuntimeConfigurationError,
@@ -41,7 +44,9 @@ try {
       ({ LocalGameplayEvidence }) => {
         root.render(
           <StrictMode>
-            <LocalGameplayEvidence />
+            <GameAssetsProvider assets={selectedGameAssets}>
+              <LocalGameplayEvidence />
+            </GameAssetsProvider>
           </StrictMode>,
         );
       },
@@ -52,7 +57,9 @@ try {
   } else {
     root.render(
       <StrictMode>
-        <App config={config} />
+        <GameAssetsProvider assets={selectedGameAssets}>
+          <App config={config} />
+        </GameAssetsProvider>
       </StrictMode>,
     );
   }

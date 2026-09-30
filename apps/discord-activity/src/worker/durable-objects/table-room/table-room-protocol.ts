@@ -1,11 +1,11 @@
-import type { HongKongGameCommandV2 } from "@mahjong/rules-hong-kong";
+import type { HongKongGameCommandV1 } from "@mahjong/rules-hong-kong";
 
 type TileId = Extract<
-  HongKongGameCommandV2,
+  HongKongGameCommandV1,
   { readonly type: "game/discard" }
 >["tileId"];
 
-export const TABLE_PROTOCOL_VERSION = 2;
+export const TABLE_PROTOCOL_VERSION = 1;
 export const TABLE_PROTOCOL_UPGRADE_CLOSE_CODE = 4406;
 
 const COMMAND_ID_PATTERN = /^[A-Za-z0-9_-]{1,64}$/u;
@@ -22,7 +22,7 @@ export type TableCommand =
   | { readonly type: "lobby/leave-seat" }
   | { readonly type: "lobby/set-ready"; readonly ready: boolean }
   | { readonly type: "game/start" }
-  | HongKongGameCommandV2;
+  | HongKongGameCommandV1;
 
 export interface TableCommandEnvelope {
   readonly commandId: string;
@@ -133,7 +133,7 @@ function tileTuple(
 function parseReactionResponse(
   value: unknown,
 ):
-  | Extract<HongKongGameCommandV2, { readonly type: "game/react" }>["response"]
+  | Extract<HongKongGameCommandV1, { readonly type: "game/react" }>["response"]
   | undefined {
   if (!isRecord(value) || typeof value["type"] !== "string") return undefined;
   if (

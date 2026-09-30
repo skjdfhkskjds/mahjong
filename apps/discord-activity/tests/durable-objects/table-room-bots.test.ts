@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import type { GameViewV2 } from "@mahjong/rules-hong-kong";
+import type { GameViewV1 } from "@mahjong/rules-hong-kong";
 import {
   botLegalMoves,
   chooseBotMove,
@@ -21,7 +21,7 @@ describe("random bot policy", () => {
     turn: "east",
     wallRemaining: 40,
     viewerActions: { self },
-  } as unknown as GameViewV2;
+  } as unknown as GameViewV1;
 
   it("selects every offered self action using only the supplied viewer actions", () => {
     self.forEach((action, index) => {
@@ -44,7 +44,7 @@ describe("random bot policy", () => {
         self: [],
         reaction: { status: "open", windowId: "window", actions },
       },
-    } as unknown as GameViewV2;
+    } as unknown as GameViewV1;
     actions.forEach((response, index) => {
       expect(chooseBotMove(reacting, (index + 0.5) / actions.length)).toEqual({
         type: "game/react",
@@ -58,7 +58,7 @@ describe("random bot policy", () => {
         self: [],
         reaction: { status: "submitted", windowId: "window", actions: [] },
       },
-    } as unknown as GameViewV2;
+    } as unknown as GameViewV1;
     expect(chooseBotMove(submitted, 0)).toBeUndefined();
   });
 

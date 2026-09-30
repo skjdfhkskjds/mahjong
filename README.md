@@ -2,6 +2,8 @@
 
 A four-player Hong Kong Mahjong Discord Activity, built as a TypeScript monorepo and deployed as a React client plus Cloudflare Worker and Durable Objects.
 
+This repository is a work in progress and the Activity is not live yet.
+
 ## Status
 
 Milestones 5 and 6 are complete locally. Four authenticated table members can

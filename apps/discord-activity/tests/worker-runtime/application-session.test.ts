@@ -168,7 +168,7 @@ describe("application session boundary", () => {
   });
 
   it.each([
-    ["version", 1],
+    ["version", 2],
     ["instanceId", "instance\nwith-control"],
     ["sessionId", "not-an-opaque-session-id"],
     ["sessionGeneration", 0],
