@@ -112,7 +112,7 @@ function socketCheck(status: SocketStatus): StartupCheck {
     case "upgrade-required":
       return {
         state: "failed",
-        detail: "This client must be refreshed to use gameplay protocol v2.",
+        detail: "This client must be refreshed to use gameplay protocol v1.",
       };
     case "stopped":
       return { state: "warning", detail: "Table connection stopped." };
@@ -299,7 +299,7 @@ export function startClientStartup({
                     socketStatus.state === "session-replaced"
                       ? "This session was replaced. Authenticate again."
                       : socketStatus.state === "upgrade-required"
-                        ? "This client must be refreshed for gameplay protocol v2."
+                        ? "This client must be refreshed for gameplay protocol v1."
                         : "Table authorization expired or changed. Authenticate again.",
                 },
               }

@@ -1,7 +1,7 @@
 import { env } from "cloudflare:workers";
 import { runInDurableObject } from "cloudflare:test";
 import { describe, expect, it } from "vitest";
-import { startHongKongV2Game } from "@mahjong/rules-hong-kong";
+import { startHongKongV1Game } from "@mahjong/rules-hong-kong";
 import type { TableRoom } from "../../src/worker/durable-objects/table-room.js";
 import { scheduleDeadline } from "../../src/worker/durable-objects/table-room/deadline-queue.js";
 import type { PreparedTableCommand } from "../../src/worker/durable-objects/table-room/table-command-application.js";
@@ -27,7 +27,7 @@ function tableRoom(): DurableObjectStub<TableRoom> {
 
 function initialize(sql: SqlStorage): void {
   // Operation adapter fixture, independent of the constructor's migration root.
-  // These are the v6 tables, including work for a substituted human member.
+  // These are the v1 tables, including work for a substituted human member.
   sql.exec("DROP TABLE IF EXISTS bot_work");
   sql.exec("DROP TABLE IF EXISTS bot_players");
   sql.exec(
@@ -87,12 +87,12 @@ describe("controller work operation commits", () => {
             command: { type: "lobby/add-bot", seat: "south" },
             commandId: "add-bot",
             expectedStateVersion: 0,
-            protocolVersion: 2,
+            protocolVersion: 1,
             type: "table/command",
           }),
           response: JSON.stringify({
             type: "table/receipt",
-            protocolVersion: 2,
+            protocolVersion: 1,
             commandId: "add-bot",
             outcome: "applied",
             stateVersion: 1,
@@ -155,7 +155,7 @@ describe("controller work operation commits", () => {
     await runInDurableObject(tableRoom(), async (_instance, state) => {
       const sql = state.storage.sql;
       initialize(sql);
-      const started = startHongKongV2Game(
+      const started = startHongKongV1Game(
         {
           east: "actor:east",
           south: "actor:south",
@@ -172,7 +172,7 @@ describe("controller work operation commits", () => {
         await prepareGameEventBatch(undefined, [started.event]),
       );
       const stored = await verifyStoredGame(sql);
-      if (stored?.state.schemaVersion !== 2)
+      if (stored?.state.schemaVersion !== 1)
         throw new Error("Missing game fixture.");
       const target = tableGameDeadline(stored.state);
       if (target?.kind !== "turn") throw new Error("Expected turn target.");

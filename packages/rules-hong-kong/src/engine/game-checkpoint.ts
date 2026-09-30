@@ -1,7 +1,7 @@
-import type { VersionedHongKongGameEvent } from "./game-contracts.js";
-import { replayVersionedGameEvents } from "./game-reducer.js";
-import { canonicalVersionedGameJson } from "./game-serialization.js";
-import type { VersionedCanonicalGameState } from "./game-state.js";
+import type { HongKongGameEventV1 } from "./game-contracts.js";
+import { replayGameEvents } from "./game-reducer.js";
+import { canonicalGameJson } from "./game-serialization.js";
+import type { CanonicalGameStateV1 } from "./game-state.js";
 
 /**
  * Proves that a decoded checkpoint is the deterministic result of the supplied
@@ -9,15 +9,12 @@ import type { VersionedCanonicalGameState } from "./game-state.js";
  * separately authenticate the event chain before treating this comparison as
  * a persisted-history authenticity check.
  */
-export function assertVersionedCheckpointMatchesReplay(
-  events: readonly VersionedHongKongGameEvent[],
-  checkpoint: VersionedCanonicalGameState,
+export function assertCheckpointMatchesReplay(
+  events: readonly HongKongGameEventV1[],
+  checkpoint: CanonicalGameStateV1,
 ): void {
-  const replayed = replayVersionedGameEvents(events);
-  if (
-    canonicalVersionedGameJson(replayed) !==
-    canonicalVersionedGameJson(checkpoint)
-  ) {
+  const replayed = replayGameEvents(events);
+  if (canonicalGameJson(replayed) !== canonicalGameJson(checkpoint)) {
     throw new Error("Canonical game checkpoint diverges from event replay.");
   }
 }

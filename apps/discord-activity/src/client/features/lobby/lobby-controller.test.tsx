@@ -21,7 +21,7 @@ function renderToStaticMarkup(element: ReactElement) {
 
 const actor = { id: "actor:east", displayName: "East player" };
 const snapshot: ViewerSafeTableSnapshot = {
-  protocolVersion: 2,
+  protocolVersion: 1,
   stateVersion: 4,
   type: "table/snapshot",
   view: {
@@ -146,7 +146,7 @@ describe("lobby controller", () => {
   it("shows rejection feedback without changing readiness or claiming authority", () => {
     const latestReceipt: TableReceipt = {
       type: "table/receipt",
-      protocolVersion: 2,
+      protocolVersion: 1,
       commandId: "rejected",
       stateVersion: 4,
       outcome: "rejected",
@@ -273,7 +273,7 @@ describe("lobby bot management controller", () => {
       snapshot: botLobby,
       latestReceipt: {
         type: "table/receipt",
-        protocolVersion: 2,
+        protocolVersion: 1,
         commandId: "remove-bot",
         stateVersion: 4,
         outcome: "rejected",

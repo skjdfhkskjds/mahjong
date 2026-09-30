@@ -162,7 +162,7 @@ Within `rules-hong-kong`, the engine composes wall, hand, turns, claims, scoring
 
 ## Deployment compatibility and operating tier
 
-Discord may cache non-HTML assets, so hashed asset names and explicit protocol negotiation are mandatory. During a rolling deployment, the Worker should support the current and immediately previous protocol version long enough for cached/connected clients to recover or reject with a clear upgrade response. Storage and engine rollout/rollback behavior must be documented before production data exists.
+Discord may cache non-HTML assets, so hashed asset names and explicit protocol negotiation are mandatory. The first live deployment uses protocol v1 and has no earlier deployed major to support. Client and Worker ship atomically; unsupported versions receive a clear upgrade response. Any future incompatible protocol must define its overlap and rollback behavior before release. Storage and engine rollout/rollback behavior must be documented before production data exists.
 
 SQLite-backed Durable Objects are available on the Workers Free plan, but Free-plan request and storage budgets can interrupt service rather than transparently bill overage. Use Free for development/private alpha; define paid-plan promotion thresholds and budget alerts before availability is promised.
 

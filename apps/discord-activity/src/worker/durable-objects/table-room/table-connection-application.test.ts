@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
   HONG_KONG_V1_RANDOM_BYTES,
-  startHongKongV2Game,
+  startHongKongV1Game,
 } from "@mahjong/rules-hong-kong";
 
 import {
@@ -39,7 +39,7 @@ class MemoryConnectionStore implements TableConnectionStore {
 
 function fixture() {
   const store = new MemoryConnectionStore();
-  const game = startHongKongV2Game(
+  const game = startHongKongV1Game(
     { east: "east", south: "south", west: "west", north: "north" },
     new Uint8Array(HONG_KONG_V1_RANDOM_BYTES),
   ).state;

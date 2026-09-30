@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
-  applyGameCommandV2,
-  startHongKongV2Game,
+  applyGameCommandV1,
+  startHongKongV1Game,
 } from "@mahjong/rules-hong-kong";
 
 import type { PersistedDeadline } from "./table-deadline-application.js";
@@ -10,7 +10,7 @@ import type { PlayerControl } from "./table-player-control.js";
 import { tableGameDeadline } from "./table-room-game-engine.js";
 
 function gameFixture() {
-  const started = startHongKongV2Game(
+  const started = startHongKongV1Game(
     { east: "east", south: "south", west: "west", north: "north" },
     Uint8Array.from({ length: 1_028 }, (_, index) => (index * 41 + 17) & 0xff),
   );
@@ -108,7 +108,7 @@ describe("controller-aware game deadline scheduling", () => {
     ].find(({ actorId }) => actorId === control.actorId);
     const tileId = player?.hand[0];
     if (tileId === undefined) throw new Error("Expected dealer tile.");
-    const discarded = applyGameCommandV2(input.state, control.actorId, {
+    const discarded = applyGameCommandV1(input.state, control.actorId, {
       type: "game/discard",
       tileId,
     });

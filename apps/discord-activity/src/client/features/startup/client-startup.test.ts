@@ -78,7 +78,7 @@ function createApi(overrides: Partial<ActivityApi> = {}): ActivityApi {
 function connectedSnapshot(): ViewerSafeTableSnapshot {
   return {
     type: "table/snapshot",
-    protocolVersion: 2,
+    protocolVersion: 1,
     stateVersion: 0,
     view: {
       phase: "lobby",
@@ -160,7 +160,7 @@ function connectedSocket(): SocketStatusMonitor {
 
 const receipt: TableReceipt = {
   type: "table/receipt",
-  protocolVersion: 2,
+  protocolVersion: 1,
   commandId: "private-reaction",
   stateVersion: 0,
   outcome: "applied",
@@ -269,15 +269,15 @@ describe("client startup", () => {
   it.each([
     {
       state: "session-replaced",
-      input: { type: "session/replaced", protocolVersion: 2 },
+      input: { type: "session/replaced", protocolVersion: 1 },
       sessionFailed: true,
     },
     {
       state: "upgrade-required",
       input: {
         type: "table/upgrade-required",
-        protocolVersion: 2,
-        minimumSupportedVersion: 2,
+        protocolVersion: 1,
+        minimumSupportedVersion: 1,
       },
       sessionFailed: true,
     },
@@ -312,8 +312,8 @@ describe("client startup", () => {
         latestReceipt: undefined,
       });
       if (state === "upgrade-required") {
-        expect(statuses.at(-1)?.socket.detail).toContain("protocol v2");
-        expect(statuses.at(-1)?.session.detail).toContain("protocol v2");
+        expect(statuses.at(-1)?.socket.detail).toContain("protocol v1");
+        expect(statuses.at(-1)?.session.detail).toContain("protocol v1");
       }
       stop();
     },
@@ -597,7 +597,7 @@ describe("client startup", () => {
           try {
             harness.monitor.sendCommand({
               type: "table/command",
-              protocolVersion: 2,
+              protocolVersion: 1,
               commandId: `bot-control-${String(++commandSequence)}`,
               expectedStateVersion: snapshot.stateVersion,
               command,
@@ -628,7 +628,7 @@ describe("client startup", () => {
       [
         JSON.stringify({
           type: "table/command",
-          protocolVersion: 2,
+          protocolVersion: 1,
           commandId: "bot-control-1",
           expectedStateVersion: 4,
           command: { type: "lobby/add-bot", seat: "west" },
@@ -637,7 +637,7 @@ describe("client startup", () => {
       [
         JSON.stringify({
           type: "table/command",
-          protocolVersion: 2,
+          protocolVersion: 1,
           commandId: "bot-control-2",
           expectedStateVersion: 4,
           command: { type: "lobby/remove-bot", seat: "south" },
@@ -656,7 +656,7 @@ describe("client startup", () => {
     expect(reopened.send).toHaveBeenLastCalledWith(
       JSON.stringify({
         type: "table/resync",
-        protocolVersion: 2,
+        protocolVersion: 1,
         lastSeenStateVersion: 4,
       }),
     );

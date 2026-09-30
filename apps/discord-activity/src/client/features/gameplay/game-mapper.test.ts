@@ -66,7 +66,7 @@ const baseGame: GameView = {
 function input(game: GameView = baseGame) {
   const snapshot: ViewerSafeTableSnapshot = {
     type: "table/snapshot",
-    protocolVersion: 2,
+    protocolVersion: 1,
     stateVersion: 1,
     view: {
       phase: "playing",

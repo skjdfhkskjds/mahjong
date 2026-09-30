@@ -21,18 +21,11 @@ const envelope = {
 const request = canonicalTableRequest(envelope);
 const response = {
   type: "table/receipt",
-  protocolVersion: 2,
+  protocolVersion: 1,
   commandId: "claim",
   outcome: "applied",
   stateVersion: 1,
 } as const;
-
-// Permanent examples of the actual protocol-v1 lobby receipt encoding. They
-// remain readable for operation collisions; current clients still speak v2.
-const legacyRequest =
-  '{"command":{"type":"lobby/claim-seat","seat":"east"},"commandId":"claim","expectedStateVersion":0,"protocolVersion":1,"type":"table/command"}';
-const legacyResponse =
-  '{"type":"table/receipt","protocolVersion":1,"commandId":"claim","outcome":"applied","stateVersion":1}';
 
 function insertReceipt(
   sql: SqlStorage,
@@ -88,36 +81,7 @@ describe("stored table command receipt validation", () => {
     });
   });
 
-  it("retains protocol-v1 receipt bytes and reports collision for a protocol-v2 reuse", async () => {
-    await runInDurableObject(tableRoom(), async (_instance, state) => {
-      insertMember(state.storage.sql);
-      insertReceipt(state.storage.sql, legacyRequest, legacyResponse);
-      const store = new SqliteTableCommandStore(state.storage);
-      expect(store.receipt("claim")).toEqual({
-        actorId: "actor:east",
-        requestJson: legacyRequest,
-        response: legacyResponse,
-      });
-      const result = await executeTableCommand(store, {
-        actorId: "actor:east",
-        envelope,
-        now: 200,
-        observations: [],
-        randomBytes: (length) => new Uint8Array(length),
-        authority: { kind: "HUMAN", generation: 0 },
-        createCommandId: () => "unused-job",
-        newBotActorId: () => "bot:00000000-0000-0000-0000-000000000001",
-      });
-      expect(JSON.parse(result.response)).toMatchObject({
-        protocolVersion: 2,
-        outcome: "rejected",
-        error: { code: "command-id-collision" },
-      });
-      expect(store.receipt("claim")?.response).toBe(legacyResponse);
-    });
-  });
-
-  it("accepts the historical closed rejection shape", async () => {
+  it("accepts a closed rejection shape", async () => {
     await runInDurableObject(tableRoom(), (_instance, state) => {
       const rejection = JSON.stringify({
         ...response,
@@ -209,7 +173,7 @@ describe("stored table command receipt validation", () => {
 
   it.each([
     "{}",
-    request.replace('"protocolVersion":2', '"protocolVersion":99'),
+    request.replace('"protocolVersion":1', '"protocolVersion":99'),
     request.replace('"commandId":"claim"', '"commandId":"other"'),
     request.replace('"seat":"east"', '"seat":"invalid"'),
   ])("rejects malformed persisted request %s", async (malformedRequest) => {

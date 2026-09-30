@@ -1,4 +1,4 @@
-import type { CanonicalGameStateV2 } from "@mahjong/rules-hong-kong";
+import type { CanonicalGameStateV1 } from "@mahjong/rules-hong-kong";
 import { botWorkTarget } from "./table-bot-policy.js";
 import {
   prepareBotWork,
@@ -19,7 +19,7 @@ export interface ControllerSnapshot {
 /** Preserve player identity while handing its input to the queued bot controller. */
 export function preparePlayerSubstitution(input: {
   readonly control: PlayerControl | undefined;
-  readonly game: CanonicalGameStateV2 | undefined;
+  readonly game: CanonicalGameStateV1 | undefined;
   readonly deadlines: readonly PersistedDeadline[];
   readonly now: number;
 }):
@@ -90,7 +90,7 @@ export function controlsAfterPresence(
 export function prepareControllerWork(input: {
   readonly controls: readonly PlayerControl[];
   readonly jobs: readonly BotJob[];
-  readonly game: CanonicalGameStateV2 | undefined;
+  readonly game: CanonicalGameStateV1 | undefined;
   readonly now: number;
   readonly abandoned: boolean;
   readonly createCommandId: () => string;

@@ -8,9 +8,9 @@ import {
 import { createHongKongV1TileSet } from "../wall/create-tile-set.js";
 import { HONG_KONG_V1_SHUFFLE_ALGORITHM } from "../wall/deterministic-shuffle.js";
 import {
-  applyGameCommandV2,
+  applyGameCommandV1,
   assertGameInvariants,
-  type CanonicalGameStateV2,
+  type CanonicalGameStateV1,
   type SeatMap,
 } from "./hong-kong-game.js";
 
@@ -31,8 +31,8 @@ interface PlayerPlacement {
 type SeatName = keyof SeatMap<unknown>;
 type MutablePlayers = {
   -readonly [
-    Key in keyof CanonicalGameStateV2["players"]
-  ]: CanonicalGameStateV2["players"][Key];
+    Key in keyof CanonicalGameStateV1["players"]
+  ]: CanonicalGameStateV1["players"][Key];
 };
 
 export function seatName(currentSeat: Seat): SeatName {
@@ -44,7 +44,7 @@ export function buildPreDiscardState(input: {
   readonly eastHasDiscarded?: boolean;
   readonly lastAcquiredTileId: TileId | null;
   readonly lastAcquiredTileWasFinalWall?: boolean;
-  readonly lastAcquisition?: CanonicalGameStateV2["turnProvenance"]["lastAcquisition"];
+  readonly lastAcquisition?: CanonicalGameStateV1["turnProvenance"]["lastAcquisition"];
   readonly placements: Partial<SeatMap<PlayerPlacement>>;
   readonly phase?:
     "awaiting-dealer-discard" | "awaiting-discard" | "awaiting-draw";
@@ -52,7 +52,7 @@ export function buildPreDiscardState(input: {
   readonly wallFinalTileId?: TileId;
   readonly liveWallTileIds?: readonly TileId[];
   readonly turn: Seat;
-}): CanonicalGameStateV2 {
+}): CanonicalGameStateV1 {
   const phase = input.phase ?? "awaiting-discard";
   const liveWallTileIds =
     input.liveWallTileIds ??
@@ -178,7 +178,7 @@ export function buildPreDiscardState(input: {
     head = historicalOwned.length;
     tail = order.length - 2;
   }
-  const state: CanonicalGameStateV2 = {
+  const state: CanonicalGameStateV1 = {
     completionProvenance: null,
     phase,
     players: mutable,
@@ -186,7 +186,7 @@ export function buildPreDiscardState(input: {
     reactionWindow: null,
     result: null,
     ruleset: "hong-kong/v1",
-    schemaVersion: 2,
+    schemaVersion: 1,
     sequence: 1,
     shuffleAlgorithm: HONG_KONG_V1_SHUFFLE_ALGORITHM,
     turn: input.turn,
@@ -252,7 +252,7 @@ export function openDiscard(
   fixtureHands: Partial<SeatMap<readonly TileId[]>>,
   sourceSeat: Seat,
   sourceTileId: TileId,
-): CanonicalGameStateV2 {
+): CanonicalGameStateV1 {
   const initial = buildPreDiscardState({
     lastAcquiredTileId: sourceTileId,
     placements: Object.fromEntries(
@@ -263,7 +263,7 @@ export function openDiscard(
     ),
     turn: sourceSeat,
   });
-  const opened = applyGameCommandV2(initial, actors[seatName(sourceSeat)], {
+  const opened = applyGameCommandV1(initial, actors[seatName(sourceSeat)], {
     type: "game/discard",
     tileId: sourceTileId,
   });

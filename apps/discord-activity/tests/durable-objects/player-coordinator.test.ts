@@ -1,7 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
 import type {
-  GameViewV2,
-  HongKongGameCommandV2,
+  GameViewV1,
+  HongKongGameCommandV1,
 } from "@mahjong/rules-hong-kong";
 import type { TableCommandEnvelope } from "../../src/worker/durable-objects/table-room/table-room-protocol.js";
 import {
@@ -19,10 +19,10 @@ import {
   type UserConnection,
 } from "../../src/worker/players/user-player.js";
 
-const game: GameViewV2 = {
+const game: GameViewV1 = {
   phase: "awaiting-draw",
   players: [],
-  turn: "east" as GameViewV2["turn"],
+  turn: "east" as GameViewV1["turn"],
   wallRemaining: 40,
   viewerActions: { self: [{ type: "game/draw" }] },
 };
@@ -146,8 +146,8 @@ describe("player communication and controller arbitration", () => {
   });
 
   it("rejects late bot decisions after reconnection and permits one new job after a rapid second handoff", async () => {
-    const first = deferred<HongKongGameCommandV2 | undefined>();
-    const second = deferred<HongKongGameCommandV2 | undefined>();
+    const first = deferred<HongKongGameCommandV1 | undefined>();
+    const second = deferred<HongKongGameCommandV1 | undefined>();
     const choose = vi
       .fn()
       .mockReturnValueOnce(first.promise)
@@ -173,7 +173,7 @@ describe("player communication and controller arbitration", () => {
   });
 
   it("does not restart bot work on repeated health notifications or same-generation activation", async () => {
-    const choice = deferred<HongKongGameCommandV2 | undefined>();
+    const choice = deferred<HongKongGameCommandV1 | undefined>();
     const choose = vi.fn(() => choice.promise);
     const room = fixture({ choose });
     room.connections([]);
@@ -189,7 +189,7 @@ describe("player communication and controller arbitration", () => {
   });
 
   it("invalidates a pending policy decision when its permitted view changes privately", async () => {
-    const choice = deferred<HongKongGameCommandV2 | undefined>();
+    const choice = deferred<HongKongGameCommandV1 | undefined>();
     const room = fixture({ choose: () => choice.promise });
     room.coordinator.activate("BOT", 1, view);
     const pending = room.bot.run(command);
@@ -250,7 +250,7 @@ describe("player communication and controller arbitration", () => {
   });
 
   it("cleans up routing and invalidates pending work before reconstruction at a persisted generation", async () => {
-    const choice = deferred<HongKongGameCommandV2 | undefined>();
+    const choice = deferred<HongKongGameCommandV1 | undefined>();
     const old = fixture({ choose: () => choice.promise });
     old.coordinator.activate("BOT", 9, view);
     const pending = old.bot.run(command);

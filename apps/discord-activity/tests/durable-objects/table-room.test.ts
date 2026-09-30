@@ -2,20 +2,16 @@ import { env } from "cloudflare:workers";
 import { evictDurableObject, runInDurableObject } from "cloudflare:test";
 import { describe, expect, it, vi } from "vitest";
 import {
-  applyGameCommand,
-  applyGameCommandV2,
+  applyGameCommandV1,
   assertGameInvariants,
-  canonicalEventHashPayload,
-  canonicalGameEventJson,
   canonicalGameJson,
   decideReactionExpiration,
-  decodeCanonicalVersionedGameJson,
-  projectGameV2,
-  reduceVersionedGameEvent,
+  decodeCanonicalGameJson,
+  projectGameV1,
+  reduceGameEvent,
   startHongKongV1Game,
-  startHongKongV2Game,
-  type CanonicalGameStateV2,
-  type VersionedHongKongGameEvent,
+  type CanonicalGameStateV1,
+  type HongKongGameEventV1,
 } from "@mahjong/rules-hong-kong";
 
 import type { TableRoom } from "../../src/worker/durable-objects/table-room.js";
@@ -36,7 +32,6 @@ import {
   TABLE_HEARTBEAT_REQUEST,
   TABLE_HEARTBEAT_RESPONSE,
 } from "../../src/worker/durable-objects/table-room/table-room-heartbeat.js";
-import { tableRoomV1Schema } from "../fixtures/table-room-v1-schema.js";
 
 interface Binding {
   readonly bindingGeneration: number;
@@ -116,7 +111,7 @@ interface ReceiptMessage {
   readonly commandId: string;
   readonly error?: { readonly code: string; readonly message: string };
   readonly outcome: "applied" | "rejected";
-  readonly protocolVersion: 2;
+  readonly protocolVersion: 1;
   readonly stateVersion: number;
   readonly type: "table/receipt";
 }
@@ -125,8 +120,8 @@ const owner = { displayName: "Table Owner", id: "discord:owner" } as const;
 const member = { displayName: "Invited Member", id: "discord:member" } as const;
 
 function gamePlayerAt(
-  state: CanonicalGameStateV2,
-  seat: CanonicalGameStateV2["turn"],
+  state: CanonicalGameStateV1,
+  seat: CanonicalGameStateV1["turn"],
 ) {
   switch (seat) {
     case "east":
@@ -141,14 +136,14 @@ function gamePlayerAt(
   throw new Error("Fixture has an unsupported seat.");
 }
 
-type PhysicalTileId = CanonicalGameStateV2["players"]["east"]["hand"][number];
+type PhysicalTileId = CanonicalGameStateV1["players"]["east"]["hand"][number];
 type GameSeatName = "east" | "north" | "south" | "west";
 
 function swapPhysicalTiles(
-  state: CanonicalGameStateV2,
+  state: CanonicalGameStateV1,
   left: PhysicalTileId,
   right: PhysicalTileId,
-): CanonicalGameStateV2 {
+): CanonicalGameStateV1 {
   const swap = (id: PhysicalTileId): PhysicalTileId =>
     id === left ? right : id === right ? left : id;
   const players = Object.fromEntries(
@@ -173,7 +168,7 @@ function swapPhysicalTiles(
         },
       ] as const;
     }),
-  ) as unknown as CanonicalGameStateV2["players"];
+  ) as unknown as CanonicalGameStateV1["players"];
   return {
     ...state,
     players,
@@ -196,13 +191,13 @@ function swapPhysicalTiles(
 }
 
 function placePhysicalTiles(
-  state: CanonicalGameStateV2,
+  state: CanonicalGameStateV1,
   placements: readonly {
     readonly index: number;
     readonly seat: GameSeatName;
     readonly tileId: number;
   }[],
-): CanonicalGameStateV2 {
+): CanonicalGameStateV1 {
   let next = state;
   for (const placement of placements) {
     const current = next.players[placement.seat].hand[placement.index];
@@ -211,16 +206,6 @@ function placePhysicalTiles(
   }
   assertGameInvariants(next);
   return next;
-}
-
-async function sha256HexForTest(value: string): Promise<string> {
-  const digest = await crypto.subtle.digest(
-    "SHA-256",
-    new TextEncoder().encode(value),
-  );
-  return [...new Uint8Array(digest)]
-    .map((byte) => byte.toString(16).padStart(2, "0"))
-    .join("");
 }
 
 async function installGameChain(stub: DurableObjectStub<TableRoom>): Promise<{
@@ -237,37 +222,20 @@ async function installGameChain(stub: DurableObjectStub<TableRoom>): Promise<{
   );
   const openingTile = started.state.players.east.hand[0];
   if (openingTile === undefined) throw new Error("Dealer has no opening tile.");
-  const discard = applyGameCommand(
+  const discard = applyGameCommandV1(
     started.state,
     started.state.players.east.actorId,
     { type: "game/discard", tileId: openingTile },
   );
-  if (!discard.accepted || discard.state === undefined)
+  if (!discard.accepted || discard.state === undefined) {
     throw new Error("Unable to build persisted test game.");
-  const finalState = discard.state;
-  const firstHash = await sha256HexForTest(
-    canonicalEventHashPayload(null, started.event),
-  );
-  expect(firstHash).toBe(
-    "d589f4c5af7c9328a38a2d5630de04fb670e7dacb2e9ab1e474d487e6705c2b9",
-  );
-  const secondHash = await sha256HexForTest(
-    canonicalEventHashPayload(firstHash, discard.event),
-  );
+  }
+  const batch = await prepareGameEventBatch(undefined, [
+    started.event,
+    ...discard.events,
+  ]);
   await runInDurableObject(stub, (_instance, state) => {
-    state.storage.sql.exec(
-      "INSERT INTO canonical_game_state (singleton, state_json, last_event_hash) VALUES (1, ?, ?)",
-      canonicalGameJson(finalState),
-      secondHash,
-    );
-    state.storage.sql.exec(
-      "INSERT INTO game_events (sequence, event_json, previous_hash, event_hash) VALUES (1, ?, NULL, ?), (2, ?, ?, ?)",
-      canonicalGameEventJson(started.event),
-      firstHash,
-      canonicalGameEventJson(discard.event),
-      firstHash,
-      secondHash,
-    );
+    persistPreparedGameBatch(state.storage, batch);
   });
   return { genesisStateJson: canonicalGameJson(started.state) };
 }
@@ -435,7 +403,7 @@ function commandMessage(
 ): string {
   return JSON.stringify({
     type: "table/command",
-    protocolVersion: 2,
+    protocolVersion: 1,
     commandId,
     expectedStateVersion,
     command,
@@ -462,7 +430,7 @@ async function connect(
   sessionExpiresAt = Date.now() + 60_000,
 ): Promise<Response> {
   return stub.fetch(
-    new Request("https://table-room.internal/connect?protocolVersion=2", {
+    new Request("https://table-room.internal/connect?protocolVersion=1", {
       headers: {
         Upgrade: "websocket",
         "X-Mahjong-Actor-Id": actor.id,
@@ -1202,7 +1170,7 @@ describe("TableRoom authority", () => {
     );
     expect(attachment).toMatchObject({
       actorId: owner.id,
-      version: 2,
+      version: 1,
     });
     if (typeof attachment !== "object" || attachment === null) {
       throw new Error("Expected a serialized socket attachment.");
@@ -1439,7 +1407,7 @@ describe("TableRoom authority", () => {
       west: { id: "discord:private-west", displayName: "Private West" },
       north: { id: "discord:private-north", displayName: "Private North" },
     } as const;
-    const started = startHongKongV2Game(
+    const started = startHongKongV1Game(
       {
         east: actors.east.id,
         south: actors.south.id,
@@ -1450,7 +1418,7 @@ describe("TableRoom authority", () => {
     );
     const tileId = started.state.players.east.hand[0];
     if (tileId === undefined) throw new Error("Reaction dealer has no tile.");
-    const discarded = applyGameCommandV2(
+    const discarded = applyGameCommandV1(
       started.state,
       started.state.players.east.actorId,
       { type: "game/discard", tileId },
@@ -1534,8 +1502,8 @@ describe("TableRoom authority", () => {
     expect(observerSnapshots).toEqual([]);
     await runInDurableObject(stub, async (_instance, state) => {
       const stored = await verifyStoredGame(state.storage.sql);
-      if (stored?.state.schemaVersion !== 2) {
-        throw new Error("Concurrent reactions did not persist a v2 game.");
+      if (stored?.state.schemaVersion !== 1) {
+        throw new Error("Concurrent reactions did not persist a v1 game.");
       }
       expect(stored.state.sequence).toBe(openingSequence + 2);
       expect(
@@ -1576,8 +1544,8 @@ describe("TableRoom authority", () => {
     expect(observerSnapshots).toHaveLength(1);
     await runInDurableObject(stub, async (_instance, state) => {
       const stored = await verifyStoredGame(state.storage.sql);
-      if (stored?.state.schemaVersion !== 2) {
-        throw new Error("Reaction resolution did not persist a v2 game.");
+      if (stored?.state.schemaVersion !== 1) {
+        throw new Error("Reaction resolution did not persist a v1 game.");
       }
       expect(stored.state.sequence).toBe(openingSequence + 4);
       expect(stored.state.reactionWindow).toBeNull();
@@ -1762,7 +1730,7 @@ describe("TableRoom authority", () => {
         spectator.socket.send(
           JSON.stringify({
             lastSeenStateVersion: version,
-            protocolVersion: 2,
+            protocolVersion: 1,
             type: "table/resync",
           }),
         );
@@ -1772,7 +1740,7 @@ describe("TableRoom authority", () => {
           west.socket.send(
             JSON.stringify({
               lastSeenStateVersion: version,
-              protocolVersion: 2,
+              protocolVersion: 1,
               type: "table/resync",
             }),
           );
@@ -1945,7 +1913,7 @@ describe("TableRoom authority", () => {
     ).resolves.toMatchObject({
       events: 7,
       hashesValid: true,
-      schemaVersion: 6,
+      schemaVersion: 1,
     });
     spectator.socket.close(1000, "test complete");
     south.socket.close(1000, "test complete");
@@ -1980,7 +1948,7 @@ describe("TableRoom authority", () => {
       west: { id: `${tableId}:west`, displayName: "Claim West" },
       north: { id: `${tableId}:north`, displayName: "Claim North" },
     } as const;
-    const started = startHongKongV2Game(
+    const started = startHongKongV1Game(
       {
         east: actors.east.id,
         south: actors.south.id,
@@ -2001,7 +1969,7 @@ describe("TableRoom authority", () => {
       { index: 2, seat: "west", tileId: 7 },
     ]);
     const genesis = { ...started.event, state: placed };
-    const discarded = applyGameCommandV2(placed, placed.players.east.actorId, {
+    const discarded = applyGameCommandV1(placed, placed.players.east.actorId, {
       type: "game/discard",
       tileId: 4 as PhysicalTileId,
     });
@@ -2082,16 +2050,13 @@ describe("TableRoom authority", () => {
     );
     await expect(
       runInDurableObject(stub, (_instance, state) => {
-        const checkpoint = decodeCanonicalVersionedGameJson(
+        const checkpoint = decodeCanonicalGameJson(
           state.storage.sql
             .exec<{ state_json: string }>(
               "SELECT state_json FROM canonical_game_state WHERE singleton = 1",
             )
             .one().state_json,
         );
-        if (checkpoint.schemaVersion !== 2) {
-          throw new Error("Claim checkpoint regressed.");
-        }
         return checkpoint.players[claim.claimant].melds[0]?.tileIds;
       }),
     ).resolves.toEqual(claim.expectedTileIds);
@@ -2110,7 +2075,7 @@ describe("TableRoom authority", () => {
       west: { id: `${tableId}:west`, displayName: "Win West" },
       north: { id: `${tableId}:north`, displayName: "Win North" },
     } as const;
-    const started = startHongKongV2Game(
+    const started = startHongKongV1Game(
       {
         east: actors.east.id,
         south: actors.south.id,
@@ -2213,7 +2178,7 @@ describe("TableRoom authority", () => {
         west: { id: `${tableId}:west`, displayName: "Auto West" },
         north: { id: `${tableId}:north`, displayName: "Auto North" },
       } as const;
-      const started = startHongKongV2Game(
+      const started = startHongKongV1Game(
         {
           east: actors.east.id,
           south: actors.south.id,
@@ -2275,16 +2240,13 @@ describe("TableRoom authority", () => {
       });
       await expect(
         runInDurableObject(stub, (_instance, state) => {
-          const checkpoint = decodeCanonicalVersionedGameJson(
+          const checkpoint = decodeCanonicalGameJson(
             state.storage.sql
               .exec<{ state_json: string }>(
                 "SELECT state_json FROM canonical_game_state WHERE singleton = 1",
               )
               .one().state_json,
           );
-          if (checkpoint.schemaVersion !== 2) {
-            throw new Error("Automatic reaction checkpoint regressed.");
-          }
           return {
             botActors: readBotWork(state.storage.sql)
               .map(({ actor_id }) => actor_id)
@@ -2321,7 +2283,7 @@ describe("TableRoom authority", () => {
       west: { id: `${tableId}:west`, displayName: "Kong West" },
       north: { id: `${tableId}:north`, displayName: "Kong North" },
     } as const;
-    const started = startHongKongV2Game(
+    const started = startHongKongV1Game(
       {
         east: actors.east.id,
         south: actors.south.id,
@@ -2339,14 +2301,14 @@ describe("TableRoom authority", () => {
       { index: 1, seat: "south", tileId: 6 },
       { index: 2, seat: "south", tileId: 7 },
     ]);
-    const events: VersionedHongKongGameEvent[] = [
+    const events: HongKongGameEventV1[] = [
       { ...started.event, state: current },
     ];
     const apply = (
       actorId: string,
-      command: Parameters<typeof applyGameCommandV2>[2],
+      command: Parameters<typeof applyGameCommandV1>[2],
     ) => {
-      const decision = applyGameCommandV2(current, actorId, command);
+      const decision = applyGameCommandV1(current, actorId, command);
       if (!decision.accepted || decision.state === undefined) {
         throw new Error("Added-kong fixture command failed.");
       }
@@ -2416,16 +2378,13 @@ describe("TableRoom authority", () => {
     });
     await expect(
       runInDurableObject(stub, (_instance, state) => {
-        const checkpoint = decodeCanonicalVersionedGameJson(
+        const checkpoint = decodeCanonicalGameJson(
           state.storage.sql
             .exec<{ state_json: string }>(
               "SELECT state_json FROM canonical_game_state WHERE singleton = 1",
             )
             .one().state_json,
         );
-        if (checkpoint.schemaVersion !== 2) {
-          throw new Error("Added-kong checkpoint regressed.");
-        }
         return {
           botActors: readBotWork(state.storage.sql)
             .map(({ actor_id }) => actor_id)
@@ -2606,336 +2565,11 @@ describe("TableRoom authority", () => {
     second.socket.close(1000, "test complete");
   });
 
-  it("migrates persisted v1 storage to v6 without losing milestone 2 data", async () => {
-    const tableId = `migration-${crypto.randomUUID()}`;
-    const stub = tableRoom(tableId);
-    const binding: Binding = {
-      bindingGeneration: 3,
-      bindingProof: "B".repeat(43),
-      role: "owner",
-      tableId,
-      version: 1,
-    };
-    await runInDurableObject(stub, (_instance, state) => {
-      for (const table of [
-        "bot_work",
-        "bot_players",
-        "system_command_receipts",
-        "deadlines",
-        "player_automation",
-        "room_lifecycle",
-        "game_events",
-        "canonical_game_state",
-        "lobby_command_receipts",
-        "lobby_seats",
-        "lobby_state",
-        "connection_grants",
-        "actor_sessions",
-        "capabilities",
-        "binding_receipts",
-        "members",
-        "table_record",
-        "storage_metadata",
-      ]) {
-        state.storage.sql.exec(`DROP TABLE IF EXISTS ${table}`);
-      }
-      for (const statement of tableRoomV1Schema) {
-        state.storage.sql.exec(statement);
-      }
-      state.storage.sql.exec(
-        "INSERT INTO storage_metadata (singleton, schema_version) VALUES (1, 1)",
-      );
-      state.storage.sql.exec(
-        "INSERT INTO table_record (singleton, table_id, owner_actor_id, created_at, instance_id, binding_generation, binding_proof, binding_operation_id) VALUES (1, ?, ?, 100, 'instance-original', ?, ?, 'fixture-binding')",
-        tableId,
-        owner.id,
-        binding.bindingGeneration,
-        binding.bindingProof,
-      );
-      state.storage.sql.exec(
-        "INSERT INTO members (actor_id, display_name, role, joined_at) VALUES (?, ?, 'owner', 100), (?, ?, 'member', 101)",
-        owner.id,
-        owner.displayName,
-        member.id,
-        member.displayName,
-      );
-      state.storage.sql.exec(
-        "INSERT INTO binding_receipts (operation_id, request_json, status, response_json, http_status, created_at, updated_at) VALUES ('fixture-binding', '{}', 'applied', '{}', 200, 100, 100)",
-      );
-      state.storage.sql.exec(
-        "INSERT INTO capabilities (capability_id, kind, subject_actor_id, secret_hash, expected_binding_generation, expires_at, consumed_actor_id, consumed_operation_id) VALUES (?, 'resume', ?, ?, 3, 9999999999999, NULL, NULL)",
-        "C".repeat(22),
-        owner.id,
-        "S".repeat(43),
-      );
-      state.storage.sql.exec(
-        "INSERT INTO actor_sessions (actor_id, session_generation, activated_at) VALUES (?, 7, 100)",
-        owner.id,
-      );
-      state.storage.sql.exec(
-        "INSERT INTO connection_grants (connection_generation, actor_id, display_name, instance_id, table_id, binding_generation, binding_proof, session_generation, expires_at) VALUES ('fixture-connection', ?, ?, 'instance-original', ?, 3, ?, 7, 9999999999999)",
-        owner.id,
-        owner.displayName,
-        tableId,
-        binding.bindingProof,
-      );
-    });
-    await evictDurableObject(stub);
-
-    const migratedActivation = await activateSession(
-      stub,
-      binding,
-      owner.id,
-      7,
-    );
-    expect(migratedActivation.status).toBe(200);
-    await migratedActivation.body?.cancel();
-    await expect(
-      runInDurableObject(stub, (_instance, state) => ({
-        actorSession: state.storage.sql
-          .exec<{ session_generation: number }>(
-            "SELECT session_generation FROM actor_sessions WHERE actor_id = ?",
-            owner.id,
-          )
-          .one().session_generation,
-        bindingReceipts: state.storage.sql
-          .exec<{ count: number }>(
-            "SELECT count(*) AS count FROM binding_receipts",
-          )
-          .one().count,
-        capabilities: state.storage.sql
-          .exec<{ count: number }>("SELECT count(*) AS count FROM capabilities")
-          .one().count,
-        connectionGrant: state.storage.sql
-          .exec<{ connection_generation: string }>(
-            "SELECT connection_generation FROM connection_grants",
-          )
-          .one().connection_generation,
-        members: state.storage.sql
-          .exec<{ count: number }>("SELECT count(*) AS count FROM members")
-          .one().count,
-        schemaVersion: state.storage.sql
-          .exec<{ schema_version: number }>(
-            "SELECT schema_version FROM storage_metadata WHERE singleton = 1",
-          )
-          .one().schema_version,
-        stateVersion: state.storage.sql
-          .exec<{ state_version: number }>(
-            "SELECT state_version FROM lobby_state WHERE singleton = 1",
-          )
-          .one().state_version,
-        tables: state.storage.sql
-          .exec<{ count: number }>("SELECT count(*) AS count FROM table_record")
-          .one().count,
-      })),
-    ).resolves.toEqual({
-      actorSession: 7,
-      bindingReceipts: 1,
-      capabilities: 1,
-      connectionGrant: "fixture-connection",
-      members: 2,
-      schemaVersion: 6,
-      stateVersion: 0,
-      tables: 1,
-    });
-  });
-
-  it("migrates schema v2 lobby state to v6 authority storage", async () => {
-    const tableId = `migration-v2-${crypto.randomUUID()}`;
-    const stub = tableRoom(tableId);
-    const { binding } = await createTable(stub, tableId);
-    const activation = await activateSession(stub, binding, owner.id, 1);
-    expect(activation.status).toBe(200);
-    await activation.body?.cancel();
-    const connection = await openSocket(stub, binding, 1);
-    const messages = nextMessages<ReceiptMessage | SnapshotMessage>(
-      connection.socket,
-      2,
-    );
-    connection.socket.send(
-      commandMessage("migration-v2-seat", 0, {
-        type: "lobby/claim-seat",
-        seat: "east",
-      }),
-    );
-    await messages;
-    connection.socket.close(1000, "downgrade fixture");
-    await runInDurableObject(stub, (_instance, state) => {
-      state.storage.sql.exec("DROP TABLE bot_work");
-      state.storage.sql.exec("DROP TABLE bot_players");
-      state.storage.sql.exec("DROP TABLE system_command_receipts");
-      state.storage.sql.exec("DROP TABLE deadlines");
-      state.storage.sql.exec("DROP TABLE player_automation");
-      state.storage.sql.exec("DROP TABLE room_lifecycle");
-      state.storage.sql.exec("DROP TABLE game_events");
-      state.storage.sql.exec("DROP TABLE canonical_game_state");
-      state.storage.sql.exec(
-        "UPDATE storage_metadata SET schema_version = 2 WHERE singleton = 1",
-      );
-    });
-    await evictDurableObject(stub);
-    const migrated = await openSocket(stub, binding, 1);
-    expect(migrated.initial).toMatchObject({
-      stateVersion: 1,
-      view: { phase: "lobby" },
-    });
-    expect(migrated.initial.view.seats[0]).toEqual({
-      autopilot: false,
-      seat: "east",
-      occupant: owner,
-      ready: false,
-    });
-    await expect(
-      runInDurableObject(
-        stub,
-        (_instance, state) =>
-          state.storage.sql
-            .exec<{ schema_version: number }>(
-              "SELECT schema_version FROM storage_metadata WHERE singleton = 1",
-            )
-            .one().schema_version,
-      ),
-    ).resolves.toBe(6);
-    migrated.socket.close(1000, "test complete");
-  });
-
-  it("reconciles an active v3 game after eviction and continues play", async () => {
-    const tableId = `migration-v3-active-${crypto.randomUUID()}`;
-    const stub = tableRoom(tableId);
-    const { binding } = await createTable(stub, tableId);
-    const ownerActivation = await activateSession(stub, binding, owner.id, 1);
-    expect(ownerActivation.status).toBe(200);
-    await ownerActivation.body?.cancel();
-    const players = {
-      east: owner,
-      south: { id: "discord:v3-south", displayName: "V3 South" },
-      west: { id: "discord:v3-west", displayName: "V3 West" },
-      north: { id: "discord:v3-north", displayName: "V3 North" },
-    } as const;
-    for (const actor of [players.south, players.west, players.north]) {
-      await addMember(stub, binding, actor);
-    }
-    const started = startHongKongV2Game(
-      {
-        east: players.east.id,
-        south: players.south.id,
-        west: players.west.id,
-        north: players.north.id,
-      },
-      Uint8Array.from(
-        { length: 1_028 },
-        (_, index) => (index * 47 + 23) & 0xff,
-      ),
-    );
-    const prepared = await prepareGameEventBatch(undefined, [started.event]);
-    await runInDurableObject(stub, (_instance, state) => {
-      persistPreparedGameBatch(state.storage, prepared, (sql) => {
-        for (const [seat, actor] of Object.entries(players)) {
-          sql.exec(
-            "INSERT INTO lobby_seats (seat, actor_id, display_name, ready) VALUES (?, ?, ?, 1)",
-            seat,
-            actor.id,
-            actor.displayName,
-          );
-        }
-      });
-      state.storage.sql.exec("DROP TABLE bot_work");
-      state.storage.sql.exec("DROP TABLE bot_players");
-      state.storage.sql.exec("DROP TABLE system_command_receipts");
-      state.storage.sql.exec("DROP TABLE deadlines");
-      state.storage.sql.exec("DROP TABLE player_automation");
-      state.storage.sql.exec("DROP TABLE room_lifecycle");
-      state.storage.sql.exec(
-        "UPDATE storage_metadata SET schema_version = 3 WHERE singleton = 1",
-      );
-    });
-    await evictDurableObject(stub);
-
-    const activation = await activateSession(stub, binding, owner.id, 1);
-    expect(activation.status).toBe(200);
-    await activation.body?.cancel();
-    await expect(
-      runInDurableObject(stub, async (_instance, state) => ({
-        alarmScheduled: (await state.storage.getAlarm()) !== null,
-        automations: state.storage.sql
-          .exec<{ count: number }>(
-            "SELECT count(*) AS count FROM player_automation",
-          )
-          .one().count,
-        pendingKinds: state.storage.sql
-          .exec<{ kind: string }>(
-            "SELECT kind FROM deadlines WHERE status = 'pending' ORDER BY kind, deadline_id",
-          )
-          .toArray()
-          .map(({ kind }) => kind),
-        schemaVersion: state.storage.sql
-          .exec<{ schema_version: number }>(
-            "SELECT schema_version FROM storage_metadata WHERE singleton = 1",
-          )
-          .one().schema_version,
-      })),
-    ).resolves.toMatchObject({
-      alarmScheduled: true,
-      automations: 4,
-      pendingKinds: [
-        "abandonment",
-        "disconnect",
-        "disconnect",
-        "disconnect",
-        "disconnect",
-      ],
-      schemaVersion: 6,
-    });
-
-    const playerById = new Map<
-      string,
-      { readonly displayName: string; readonly id: string }
-    >(Object.values(players).map((actor) => [actor.id, actor]));
-    const dealer = playerById.get(started.state.players.east.actorId);
-    if (dealer === undefined) throw new Error("Missing migrated dealer.");
-    const connection = await openSocket(stub, binding, 1, dealer);
-    expect(connection.initial).toMatchObject({
-      stateVersion: 3,
-      view: {
-        game: { phase: "awaiting-dealer-discard", turn: "east" },
-        phase: "playing",
-      },
-    });
-    const tileId = connection.initial.view.game?.viewerHand?.[0]?.id;
-    if (tileId === undefined) throw new Error("Migrated dealer has no tile.");
-    const messages = nextMessages<ReceiptMessage | SnapshotMessage>(
-      connection.socket,
-      2,
-    );
-    connection.socket.send(
-      commandMessage("v3-continued-discard", 3, {
-        type: "game/discard",
-        tileId,
-      }),
-    );
-    expect((await messages)[0]).toMatchObject({
-      outcome: "applied",
-      stateVersion: 4,
-    });
-    await expect(
-      runInDurableObject(
-        stub,
-        (_instance, state) =>
-          state.storage.sql
-            .exec<{ count: number }>(
-              "SELECT count(*) AS count FROM deadlines WHERE kind = 'reaction' AND status = 'pending'",
-            )
-            .one().count,
-      ),
-    ).resolves.toBe(1);
-    connection.socket.close(1000, "test complete");
-  });
-
   it("resolves a persisted reaction deadline once and makes duplicate alarms no-ops", async () => {
     const tableId = `reaction-alarm-${crypto.randomUUID()}`;
     const stub = tableRoom(tableId);
     await createTable(stub, tableId);
-    const started = startHongKongV2Game(
+    const started = startHongKongV1Game(
       {
         east: "alarm:east",
         south: "alarm:south",
@@ -2949,7 +2583,7 @@ describe("TableRoom authority", () => {
     );
     const tileId = started.state.players.east.hand[0];
     if (tileId === undefined) throw new Error("Alarm dealer has no tile.");
-    const discarded = applyGameCommandV2(
+    const discarded = applyGameCommandV1(
       started.state,
       started.state.players.east.actorId,
       { type: "game/discard", tileId },
@@ -3020,7 +2654,7 @@ describe("TableRoom authority", () => {
               ({ event_json }) =>
                 (JSON.parse(event_json) as { readonly type: string }).type,
             ),
-          phase: decodeCanonicalVersionedGameJson(checkpoint.state_json).phase,
+          phase: decodeCanonicalGameJson(checkpoint.state_json).phase,
           receipts: state.storage.sql
             .exec<{ count: number }>(
               "SELECT count(*) AS count FROM system_command_receipts",
@@ -3051,7 +2685,7 @@ describe("TableRoom authority", () => {
       const tableId = `automatic-${kind}-${crypto.randomUUID()}`;
       const stub = tableRoom(tableId);
       await createTable(stub, tableId);
-      const started = startHongKongV2Game(
+      const started = startHongKongV1Game(
         {
           east: `${kind}:east`,
           south: `${kind}:south`,
@@ -3066,7 +2700,7 @@ describe("TableRoom authority", () => {
       const openingTile = started.state.players.east.hand[0];
       if (openingTile === undefined)
         throw new Error("Automatic dealer has no tile.");
-      const discarded = applyGameCommandV2(
+      const discarded = applyGameCommandV1(
         started.state,
         started.state.players.east.actorId,
         { type: "game/discard", tileId: openingTile },
@@ -3079,9 +2713,7 @@ describe("TableRoom authority", () => {
         throw new Error("Automatic reaction did not expire.");
       let awaitingDraw = discarded.state;
       for (const event of expired.events) {
-        const next = reduceVersionedGameEvent(awaitingDraw, event);
-        if (next.schemaVersion !== 2)
-          throw new Error("Automatic fixture regressed.");
+        const next = reduceGameEvent(awaitingDraw, event);
         awaitingDraw = next;
       }
       if (awaitingDraw.phase !== "awaiting-draw") {
@@ -3160,9 +2792,9 @@ describe("TableRoom authority", () => {
             .one(),
           jobs: readBotWork(state.storage.sql),
         }));
-        expect(
-          decodeCanonicalVersionedGameJson(after.stored.state_json),
-        ).toEqual(awaitingDraw);
+        expect(decodeCanonicalGameJson(after.stored.state_json)).toEqual(
+          awaitingDraw,
+        );
         expect(after.stored.last_event_hash).toBe(prepared.lastEventHash);
         expect(after.events).toBe(prepared.rows.length);
         expect(after.automation).toEqual({
@@ -4182,7 +3814,7 @@ describe("TableRoom authority", () => {
     }
   });
 
-  it.each(["", "?protocolVersion=1", "?protocolVersion=99"])(
+  it.each(["", "?protocolVersion=2", "?protocolVersion=99"])(
     "sends an upgrade control frame and closes unsupported socket protocol %s",
     async (query) => {
       const stub = tableRoom(`protocol-upgrade-${crypto.randomUUID()}`);
@@ -4198,8 +3830,8 @@ describe("TableRoom authority", () => {
       const close = nextClose(socket);
       socket.accept();
       await expect(control).resolves.toEqual({
-        minimumSupportedVersion: 2,
-        protocolVersion: 2,
+        minimumSupportedVersion: 1,
+        protocolVersion: 1,
         type: "table/upgrade-required",
       });
       await expect(close).resolves.toMatchObject({ code: 4406 });
@@ -4212,7 +3844,7 @@ describe("TableRoom authority", () => {
       const tableId = `deadline-race-${timing}-${crypto.randomUUID()}`;
       const stub = tableRoom(tableId);
       const { binding } = await createTable(stub, tableId);
-      const started = startHongKongV2Game(
+      const started = startHongKongV1Game(
         {
           east: `${timing}:east`,
           south: `${timing}:south`,
@@ -4227,7 +3859,7 @@ describe("TableRoom authority", () => {
       const openingTile = started.state.players.east.hand[0];
       if (openingTile === undefined)
         throw new Error("Race dealer has no tile.");
-      const discarded = applyGameCommandV2(
+      const discarded = applyGameCommandV1(
         started.state,
         started.state.players.east.actorId,
         { type: "game/discard", tileId: openingTile },
@@ -4387,7 +4019,7 @@ describe("TableRoom authority", () => {
     currentSocket.send(
       JSON.stringify({
         lastSeenStateVersion: 0,
-        protocolVersion: 2,
+        protocolVersion: 1,
         type: "table/resync",
       }),
     );
@@ -4527,7 +4159,7 @@ describe("persistent bot players", () => {
       socket.send(
         JSON.stringify({
           type: "table/resync",
-          protocolVersion: 2,
+          protocolVersion: 1,
           lastSeenStateVersion: removed.stateVersion,
         }),
       );
@@ -4570,7 +4202,7 @@ describe("persistent bot players", () => {
       const actors = Object.fromEntries(
         seats.map((row) => [row.seat, row.actor_id]),
       ) as Record<GameSeatName, string>;
-      const started = startHongKongV2Game(
+      const started = startHongKongV1Game(
         actors,
         Uint8Array.from(
           { length: 1_028 },
@@ -4579,7 +4211,7 @@ describe("persistent bot players", () => {
       );
       const tileId = started.state.players.east.hand[0];
       if (tileId === undefined) throw new Error("Dealer has no tile.");
-      const discarded = applyGameCommandV2(
+      const discarded = applyGameCommandV1(
         started.state,
         started.state.players.east.actorId,
         { type: "game/discard", tileId },
@@ -4645,7 +4277,7 @@ describe("persistent bot players", () => {
       socket.send(
         JSON.stringify({
           type: "table/resync",
-          protocolVersion: 2,
+          protocolVersion: 1,
           lastSeenStateVersion: 0,
         }),
       );
@@ -4657,10 +4289,10 @@ describe("persistent bot players", () => {
       await evictDurableObject(stub);
       await runInDurableObject(stub, async (instance, state) => {
         const stored = await verifyStoredGame(state.storage.sql);
-        if (stored?.state.schemaVersion !== 2)
-          throw new Error("Missing v2 game.");
+        if (stored?.state.schemaVersion !== 1)
+          throw new Error("Missing v1 game.");
         expect(
-          projectGameV2(stored.state, before.job.actor_id).viewerActions
+          projectGameV1(stored.state, before.job.actor_id).viewerActions
             ?.reaction?.status,
         ).toBe("submitted");
         state.storage.sql.exec(
@@ -4703,9 +4335,9 @@ describe("persistent bot players", () => {
         stub,
         async (_instance, state) => {
           const game = await verifyStoredGame(state.storage.sql);
-          if (game?.state.schemaVersion !== 2) throw new Error("Missing game.");
+          if (game?.state.schemaVersion !== 1) throw new Error("Missing game.");
           expect(game.state.phase).toBe("awaiting-dealer-discard");
-          return projectGameV2(game.state, owner.id).viewerActions?.self.find(
+          return projectGameV1(game.state, owner.id).viewerActions?.self.find(
             (command) => command.type === "game/discard",
           );
         },
@@ -4846,9 +4478,9 @@ describe("persistent bot players", () => {
           stub,
           async (_instance, state) => {
             const game = await verifyStoredGame(state.storage.sql);
-            if (game?.state.schemaVersion !== 2)
+            if (game?.state.schemaVersion !== 1)
               throw new Error("Missing game.");
-            return projectGameV2(game.state, owner.id);
+            return projectGameV1(game.state, owner.id);
           },
         );
         if (view.phase === "complete" || view.phase === "exhausted") {
@@ -4921,7 +4553,7 @@ describe("player controller handoff", () => {
   ) {
     const response = await stub.fetch(
       new Request(
-        "https://table-room.internal/connect?protocolVersion=2&heartbeat=1",
+        "https://table-room.internal/connect?protocolVersion=1&heartbeat=1",
         {
           headers: {
             Upgrade: "websocket",
@@ -4995,7 +4627,7 @@ describe("player controller handoff", () => {
       const actors = Object.fromEntries(
         seats.map((row) => [row.seat, row.actor_id]),
       ) as Record<GameSeatName, string>;
-      let started = startHongKongV2Game(
+      let started = startHongKongV1Game(
         actors,
         Uint8Array.from({ length: 1_028 }, (_, index) => (index * 73) & 0xff),
       );
@@ -5004,7 +4636,7 @@ describe("player controller handoff", () => {
         started.state.players.east.actorId !== owner.id && seed < 256;
         seed += 1
       ) {
-        started = startHongKongV2Game(
+        started = startHongKongV1Game(
           actors,
           Uint8Array.from(
             { length: 1_028 },
@@ -5028,11 +4660,11 @@ describe("player controller handoff", () => {
   async function checkpoint(stub: DurableObjectStub<TableRoom>) {
     return runInDurableObject(stub, async (_instance, state) => {
       const game = await verifyStoredGame(state.storage.sql);
-      if (game?.state.schemaVersion !== 2)
+      if (game?.state.schemaVersion !== 1)
         throw new Error("Missing handoff game.");
       return {
         hash: game.lastEventHash,
-        hand: projectGameV2(game.state, owner.id).viewerHand,
+        hand: projectGameV1(game.state, owner.id).viewerHand,
         seats: state.storage.sql
           .exec("SELECT seat, actor_id FROM lobby_seats ORDER BY seat")
           .toArray(),

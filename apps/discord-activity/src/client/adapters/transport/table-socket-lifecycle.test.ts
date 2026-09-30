@@ -13,7 +13,7 @@ import type {
   TableReceipt,
   TableSocketMessage,
   ViewerSafeTableSnapshot,
-} from "./table-socket-protocol-v2.js";
+} from "./table-socket-protocol-v1.js";
 import {
   ReconnectingSocketStatusMonitor,
   type SocketStatus,
@@ -21,7 +21,7 @@ import {
 
 const snapshot: ViewerSafeTableSnapshot = {
   type: "table/snapshot",
-  protocolVersion: 2,
+  protocolVersion: 1,
   stateVersion: 4,
   view: {
     phase: "lobby",
@@ -42,7 +42,7 @@ const snapshot: ViewerSafeTableSnapshot = {
 
 const receipt: TableReceipt = {
   type: "table/receipt",
-  protocolVersion: 2,
+  protocolVersion: 1,
   commandId: "reaction-1",
   stateVersion: 4,
   outcome: "applied",
@@ -50,7 +50,7 @@ const receipt: TableReceipt = {
 
 const command: TableCommandEnvelope = {
   type: "table/command",
-  protocolVersion: 2,
+  protocolVersion: 1,
   commandId: "command-1",
   expectedStateVersion: 4,
   command: { type: "lobby/leave-seat" },
@@ -125,7 +125,7 @@ function setup() {
     return socket as unknown as WebSocket;
   });
   const monitor = new ReconnectingSocketStatusMonitor(
-    "ws://activity.test/api/table/socket?protocolVersion=2",
+    "ws://activity.test/api/table/socket?protocolVersion=1",
     createSocket,
   );
   const statuses: SocketStatus[] = [];
@@ -201,7 +201,7 @@ describe("typed socket lifecycle and message delivery", () => {
       expect(first.sent).toEqual([
         JSON.stringify({
           type: "table/resync",
-          protocolVersion: 2,
+          protocolVersion: 1,
           lastSeenStateVersion: 0,
         }),
       ]);
@@ -225,7 +225,7 @@ describe("typed socket lifecycle and message delivery", () => {
       expect(second.sent).toEqual([
         JSON.stringify({
           type: "table/resync",
-          protocolVersion: 2,
+          protocolVersion: 1,
           lastSeenStateVersion: 4,
         }),
       ]);
@@ -445,7 +445,7 @@ describe("typed socket lifecycle and message delivery", () => {
     expect(currentSocket().sent).toEqual([
       JSON.stringify({
         type: "table/resync",
-        protocolVersion: 2,
+        protocolVersion: 1,
         lastSeenStateVersion: 0,
       }),
     ]);
@@ -535,7 +535,7 @@ describe("typed socket lifecycle and message delivery", () => {
       expect(replacement.sent).toEqual([
         JSON.stringify({
           type: "table/resync",
-          protocolVersion: 2,
+          protocolVersion: 1,
           lastSeenStateVersion: 0,
         }),
       ]);
@@ -551,13 +551,13 @@ describe("typed socket lifecycle and message delivery", () => {
   it.each([
     {
       type: "session/replaced",
-      protocolVersion: 2,
+      protocolVersion: 1,
       state: "session-replaced",
     },
     {
       type: "table/upgrade-required",
-      protocolVersion: 2,
-      minimumSupportedVersion: 2,
+      protocolVersion: 1,
+      minimumSupportedVersion: 1,
       state: "upgrade-required",
     },
   ] as const)(
@@ -598,14 +598,14 @@ describe("typed socket lifecycle and message delivery", () => {
   it.each([
     {
       type: "session/replaced",
-      protocolVersion: 2,
+      protocolVersion: 1,
       state: "session-replaced",
       code: 4001,
     },
     {
       type: "table/upgrade-required",
-      protocolVersion: 2,
-      minimumSupportedVersion: 2,
+      protocolVersion: 1,
+      minimumSupportedVersion: 1,
       state: "upgrade-required",
       code: 4406,
     },

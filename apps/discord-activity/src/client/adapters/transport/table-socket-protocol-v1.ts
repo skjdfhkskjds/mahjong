@@ -3,7 +3,7 @@ import {
   type CompletedHandResult,
 } from "@mahjong/rules-hong-kong";
 
-export const TABLE_PROTOCOL_VERSION = 2;
+export const TABLE_PROTOCOL_VERSION = 1;
 
 export type TableSeat = "east" | "south" | "west" | "north";
 
@@ -80,7 +80,7 @@ export type SelfTableCommand = Exclude<
 
 export interface TableCommandEnvelope {
   readonly type: "table/command";
-  readonly protocolVersion: 2;
+  readonly protocolVersion: 1;
   readonly commandId: string;
   readonly expectedStateVersion: number;
   readonly command: TableCommand;
@@ -126,7 +126,7 @@ export interface GameView {
 
 export interface ViewerSafeTableSnapshot {
   readonly type: "table/snapshot";
-  readonly protocolVersion: 2;
+  readonly protocolVersion: 1;
   readonly stateVersion: number;
   readonly view: {
     readonly phase:
@@ -147,7 +147,7 @@ export interface ViewerSafeTableSnapshot {
 
 export interface TableReceipt {
   readonly type: "table/receipt";
-  readonly protocolVersion: 2;
+  readonly protocolVersion: 1;
   readonly commandId: string;
   readonly stateVersion: number;
   readonly outcome: "applied" | "rejected";
@@ -157,11 +157,11 @@ export interface TableReceipt {
 export type TableSocketMessage =
   | ViewerSafeTableSnapshot
   | TableReceipt
-  | { readonly type: "session/replaced"; readonly protocolVersion: 2 }
+  | { readonly type: "session/replaced"; readonly protocolVersion: 1 }
   | {
       readonly type: "table/upgrade-required";
-      readonly protocolVersion: 2;
-      readonly minimumSupportedVersion: 2;
+      readonly protocolVersion: 1;
+      readonly minimumSupportedVersion: 1;
     };
 
 const tableSeats = ["east", "south", "west", "north"] as const;
@@ -911,7 +911,7 @@ export function parseTableSnapshot(value: unknown): ViewerSafeTableSnapshot {
     !nonNegativeInteger(value["stateVersion"])
   ) {
     throw new Error(
-      "Table socket message is not a canonical protocol v2 snapshot.",
+      "Table socket message is not a canonical protocol v1 snapshot.",
     );
   }
   const view = value["view"];
@@ -1075,7 +1075,7 @@ export function parseTableReceipt(value: unknown): TableReceipt {
   if (value["outcome"] === "applied" && value["error"] === undefined)
     return {
       type: "table/receipt",
-      protocolVersion: 2,
+      protocolVersion: 1,
       commandId: value["commandId"],
       stateVersion: value["stateVersion"],
       outcome: "applied",
@@ -1091,7 +1091,7 @@ export function parseTableReceipt(value: unknown): TableReceipt {
     throw new Error("Table receipt has an invalid outcome or error.");
   return {
     type: "table/receipt",
-    protocolVersion: 2,
+    protocolVersion: 1,
     commandId: value["commandId"],
     stateVersion: value["stateVersion"],
     outcome: "rejected",
@@ -1115,21 +1115,21 @@ export function parseSocketMessage(
   if (
     isRecord(value) &&
     value["type"] === "session/replaced" &&
-    value["protocolVersion"] === 2 &&
+    value["protocolVersion"] === 1 &&
     hasExactKeys(value, ["type", "protocolVersion"])
   )
-    return { type: "session/replaced", protocolVersion: 2 };
+    return { type: "session/replaced", protocolVersion: 1 };
   if (
     isRecord(value) &&
     value["type"] === "table/upgrade-required" &&
-    value["protocolVersion"] === 2 &&
-    value["minimumSupportedVersion"] === 2 &&
+    value["protocolVersion"] === 1 &&
+    value["minimumSupportedVersion"] === 1 &&
     hasExactKeys(value, ["type", "protocolVersion", "minimumSupportedVersion"])
   )
     return {
       type: "table/upgrade-required",
-      protocolVersion: 2,
-      minimumSupportedVersion: 2,
+      protocolVersion: 1,
+      minimumSupportedVersion: 1,
     };
   if (isRecord(value) && value["type"] === "table/receipt")
     return parseTableReceipt(value);
@@ -1149,7 +1149,7 @@ export function validateCommand(
       "command",
     ]) ||
     envelope["type"] !== "table/command" ||
-    envelope["protocolVersion"] !== 2 ||
+    envelope["protocolVersion"] !== 1 ||
     typeof envelope["commandId"] !== "string" ||
     !commandIdPattern.test(envelope["commandId"]) ||
     !nonNegativeInteger(envelope["expectedStateVersion"]) ||

@@ -1,10 +1,10 @@
-import type { GameViewV2 } from "@mahjong/rules-hong-kong";
+import type { GameViewV1 } from "@mahjong/rules-hong-kong";
 import type { TableCommandEnvelope } from "../durable-objects/table-room/table-room-protocol.js";
 
 export interface PlayerView {
   readonly type: "view";
   readonly stateVersion: number;
-  readonly game?: GameViewV2;
+  readonly game?: GameViewV1;
   /** Already projected and encoded for this player by the authoritative room. */
   readonly snapshot: string;
   /** A runtime-selected audience within this actor's connections. */

@@ -37,7 +37,7 @@ the snapshot initialization boundary again.
 
 ### Liveness and controller policy
 
-New clients request `heartbeat=1` on the protocol-v2 WebSocket URL. Supporting
+New clients request `heartbeat=1` on the protocol-v1 WebSocket URL. Supporting
 Workers send `table/heartbeat-ready/1`; only after that negotiation does the
 client send `table/heartbeat/1` every five seconds. A hibernation-compatible
 WebSocket auto-response returns `table/heartbeat-ack/1`. Latest accepted heartbeat
@@ -70,7 +70,7 @@ not infer health from gameplay inactivity.
 
 ### Persistence and compatibility
 
-Storage schema v6 records player kind, active controller, and controller
+Storage schema v1 records player kind, active controller, and controller
 generation. `bot_work` now references members, allowing all four original human
 identities to be bot-controlled, and includes `controller_generation`.
 Dedicated bot identities remain distinct membership kinds and retain their
@@ -82,17 +82,16 @@ and abandonment cancel obsolete jobs.
 
 Recovery reconstructs communication from validated storage and authorized
 hibernating connections, repairs bot jobs and periodic health work, and schedules
-the earliest alarm. The retained schema-v5 fixture verifies migration of
-dedicated bots and pending jobs; the permanent v1 root remains the oldest
-supported fixture. Existing canonical game state, event bytes, and hashes do
-not change. Protocol-v2 snapshot and receipt schemas remain unchanged; heartbeat
+the earliest alarm. The permanent complete-v1 fixture verifies recovery of
+dedicated bots, pending jobs, and controller authority. Protocol-v1 snapshot and
+receipt schemas include this behavior from the first release; heartbeat
 support is negotiated outside those messages. A successful active-hand departure
 uses terminal close code `4002` for heartbeat-negotiated connections; new clients
 enter `stopped` and cancel heartbeat/reconnect work. The Worker uses the existing
 terminal policy code `1008` for unnegotiated connections, keeping cached clients
 from automatically reconnecting after departure. Ordinary `1000` closes remain
-recoverable. Rollback requires v6-aware code
-or restoration of the complete pre-migration deployment and storage backup.
+recoverable. See [ADR 0017](0017-prelaunch-v1-baseline.md) for the prelaunch
+storage and protocol baseline.
 
 ## Worked operational examples
 

@@ -1,7 +1,6 @@
 export * from "./game-decisions.js";
 export * from "./game-checkpoint.js";
-export * from "./game-invariants-migration.js";
-export * from "./game-migration.js";
+export * from "./game-invariants.js";
 export * from "./game-projection.js";
 export * from "./game-reducer.js";
 export * from "./game-serialization.js";
@@ -18,34 +17,28 @@ export type {
 } from "./win-resolution.js";
 export type {
   GameDecision,
-  GameDecisionV2,
+  GameDecisionV1,
   GameView,
-  GameViewV2,
+  GameViewV1,
   HandCompletedEvent,
   HongKongGameCommand,
-  HongKongGameCommandV2,
+  HongKongGameCommandV1,
   HongKongGameEvent,
-  HongKongGameEventV2,
-  LegacyUpgradeProvenance,
+  HongKongGameEventV1,
   NonEmptyGameEventBatch,
   PublicMeld,
   PublicTile,
   SelfWinDeclaredEvent,
-  StateUpgradedEvent,
-  VersionedHongKongGameEvent,
 } from "./game-contracts.js";
 export type {
   CanonicalGameState,
   CanonicalGameStateV1,
-  CanonicalGameStateV2,
   CanonicalPlayerState,
   CanonicalPlayerStateV1,
-  CanonicalPlayerStateV2,
   CompletionProvenance,
   GamePhase,
   PlayerReactionResponse,
   ReactionResponse,
   ReactionWindow,
   SeatMap,
-  VersionedCanonicalGameState,
 } from "./game-state.js";

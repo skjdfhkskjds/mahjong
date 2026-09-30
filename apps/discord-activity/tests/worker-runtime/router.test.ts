@@ -105,7 +105,7 @@ describe("Worker router", () => {
     expect(cookie).toBeDefined();
     const response = await routeRequest(
       new Request(
-        `${origin}/api/table/socket?protocolVersion=2&heartbeat=1&heartbeat=invalid&ignored=value`,
+        `${origin}/api/table/socket?protocolVersion=1&heartbeat=1&heartbeat=invalid&ignored=value`,
         {
           headers: {
             Cookie: cookie ?? "",
@@ -123,7 +123,7 @@ describe("Worker router", () => {
       throw new Error("Missing table request.");
     const query = new URL(request.url).searchParams;
     expect(query.getAll("heartbeat")).toEqual(["1", "invalid"]);
-    expect(query.getAll("protocolVersion")).toEqual(["2"]);
+    expect(query.getAll("protocolVersion")).toEqual(["1"]);
     expect(query.has("ignored")).toBe(false);
   });
 

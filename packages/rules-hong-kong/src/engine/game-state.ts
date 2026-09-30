@@ -4,12 +4,6 @@ import type { DeclaredMeld } from "../melds/meld.js";
 import type { CompletedHandResult } from "./win-resolution.js";
 import type { HONG_KONG_V1_SHUFFLE_ALGORITHM } from "../wall/deterministic-shuffle.js";
 
-export type LegacyGamePhase =
-  | "awaiting-dealer-discard"
-  | "awaiting-draw"
-  | "awaiting-discard"
-  | "exhausted";
-
 export type GamePhase =
   | "awaiting-dealer-discard"
   | "awaiting-draw"
@@ -41,30 +35,15 @@ export interface CanonicalPlayerStateV1 extends GameParticipant {
   readonly bonuses: readonly TileId[];
   readonly discards: readonly TileId[];
   readonly hand: readonly TileId[];
-}
-
-export interface CanonicalPlayerStateV2 extends CanonicalPlayerStateV1 {
   readonly melds: readonly DeclaredMeld[];
 }
 
-export type CanonicalPlayerState =
-  CanonicalPlayerStateV1 | CanonicalPlayerStateV2;
+export type CanonicalPlayerState = CanonicalPlayerStateV1;
 
 export interface CanonicalWallState {
   readonly head: number;
   readonly order: readonly TileId[];
   readonly tail: number;
-}
-
-export interface CanonicalGameStateV1 {
-  readonly phase: LegacyGamePhase;
-  readonly players: SeatMap<CanonicalPlayerStateV1>;
-  readonly ruleset: "hong-kong/v1";
-  readonly schemaVersion: 1;
-  readonly sequence: number;
-  readonly shuffleAlgorithm: typeof HONG_KONG_V1_SHUFFLE_ALGORITHM;
-  readonly turn: Seat;
-  readonly wall: CanonicalWallState;
 }
 
 export type ReactionKind = "added-kong" | "discard";
@@ -145,15 +124,15 @@ export type CompletionProvenance =
       readonly winningTileId: TileId;
     };
 
-export interface CanonicalGameStateV2 {
+export interface CanonicalGameStateV1 {
   readonly completionProvenance: CompletionProvenance | null;
   readonly phase: GamePhase;
-  readonly players: SeatMap<CanonicalPlayerStateV2>;
+  readonly players: SeatMap<CanonicalPlayerStateV1>;
   readonly prevailingWind: "east";
   readonly reactionWindow: ReactionWindow | null;
   readonly result: CompletedHandResult | null;
   readonly ruleset: "hong-kong/v1";
-  readonly schemaVersion: 2;
+  readonly schemaVersion: 1;
   readonly sequence: number;
   readonly shuffleAlgorithm: typeof HONG_KONG_V1_SHUFFLE_ALGORITHM;
   readonly turn: Seat;
@@ -161,13 +140,4 @@ export interface CanonicalGameStateV2 {
   readonly wall: CanonicalWallState;
 }
 
-/** Historical unversioned name retained for deployed schema-v1 callers. */
 export type CanonicalGameState = CanonicalGameStateV1;
-export type VersionedCanonicalGameState =
-  CanonicalGameStateV1 | CanonicalGameStateV2;
-
-export function isCanonicalGameStateV2(
-  state: VersionedCanonicalGameState,
-): state is CanonicalGameStateV2 {
-  return state.schemaVersion === 2;
-}

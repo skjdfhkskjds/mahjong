@@ -1,6 +1,6 @@
 import type {
-  GameViewV2,
-  HongKongGameCommandV2,
+  GameViewV1,
+  HongKongGameCommandV1,
 } from "@mahjong/rules-hong-kong";
 import {
   CommandPlayer,
@@ -11,11 +11,11 @@ import {
 
 export interface BotDecision {
   readonly choose: (
-    view: GameViewV2,
+    view: GameViewV1,
   ) =>
-    | HongKongGameCommandV2
+    | HongKongGameCommandV1
     | undefined
-    | Promise<HongKongGameCommandV2 | undefined>;
+    | Promise<HongKongGameCommandV1 | undefined>;
 }
 
 /** A policy receives only the same permitted game view as its human delegate. */

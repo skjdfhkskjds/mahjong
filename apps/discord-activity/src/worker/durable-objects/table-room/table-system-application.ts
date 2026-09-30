@@ -79,7 +79,7 @@ export async function processTableDeadline(
   }
   const deadline = plan.deadline;
   const stored = await store.verifiedGame();
-  const state = stored?.state.schemaVersion === 2 ? stored.state : undefined;
+  const state = stored?.state;
   const presence = store.presenceState();
   const controller = store.controllerSnapshot();
   const connected = new Set(
@@ -168,7 +168,7 @@ export async function processTableDeadline(
     ? prepareControllerWork({
         controls,
         jobs: controller.jobs,
-        game: game?.finalState.schemaVersion === 2 ? game.finalState : state,
+        game: game?.finalState ?? state,
         now,
         abandoned: presence.lifecycle.abandoned || abandonRoom,
         createCommandId: options.createCommandId,

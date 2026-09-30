@@ -4,19 +4,19 @@ import { describe, expect, it } from "vitest";
 import { legalReactionsForSeat } from "../claims/legal-reactions.js";
 import type { ReactionResponse, SeatMap } from "./game-state.js";
 import {
-  applyGameCommandV2 as applyGameCommand,
+  applyGameCommandV1 as applyGameCommand,
   assertGameInvariants,
-  canonicalVersionedGameEventJson as canonicalGameEventJson,
-  canonicalVersionedGameJson as canonicalGameJson,
-  decodeCanonicalVersionedGameEventJson as decodeCanonicalGameEventJson,
-  decodeCanonicalVersionedGameJson as decodeCanonicalGameJson,
+  canonicalGameEventJson,
+  canonicalGameJson,
+  decodeCanonicalGameEventJson,
+  decodeCanonicalGameJson,
   decideReactionExpiration,
-  projectGameV2 as projectGame,
-  reduceVersionedGameEvent as reduceGameEvent,
-  replayVersionedGameEvents as replayGameEvents,
-  startHongKongV2Game as startHongKongV1Game,
-  type CanonicalGameStateV2,
-  type VersionedHongKongGameEvent as HongKongGameEvent,
+  projectGameV1 as projectGame,
+  reduceGameEvent,
+  replayGameEvents,
+  startHongKongV1Game,
+  type CanonicalGameStateV1,
+  type HongKongGameEventV1 as HongKongGameEvent,
 } from "./hong-kong-game.js";
 
 const actors: SeatMap<string> = {
@@ -34,10 +34,10 @@ function randomness(offset: number): Uint8Array {
 }
 
 function swapEverywhere(
-  state: CanonicalGameStateV2,
+  state: CanonicalGameStateV1,
   left: TileId,
   right: TileId,
-): CanonicalGameStateV2 {
+): CanonicalGameStateV1 {
   const swap = (id: TileId): TileId =>
     id === left ? right : id === right ? left : id;
   return {
@@ -64,7 +64,7 @@ function swapEverywhere(
           },
         ];
       }),
-    ) as unknown as CanonicalGameStateV2["players"],
+    ) as unknown as CanonicalGameStateV1["players"],
     reactionWindow:
       state.reactionWindow === null
         ? null
@@ -84,13 +84,13 @@ function swapEverywhere(
 }
 
 function placeInHands(
-  state: CanonicalGameStateV2,
+  state: CanonicalGameStateV1,
   placements: readonly {
     readonly index: number;
     readonly seat: Seat;
     readonly tileId: TileId;
   }[],
-): CanonicalGameStateV2 {
+): CanonicalGameStateV1 {
   let next = state;
   for (const placement of placements) {
     const current =
@@ -105,11 +105,11 @@ function placeInHands(
 }
 
 function openDiscard(
-  state: CanonicalGameStateV2,
+  state: CanonicalGameStateV1,
   tileId: TileId,
 ): {
   readonly events: readonly HongKongGameEvent[];
-  readonly state: CanonicalGameStateV2;
+  readonly state: CanonicalGameStateV1;
 } {
   const actor = state.players[state.turn as keyof SeatMap<unknown>].actorId;
   const result = applyGameCommand(state, actor, {
@@ -123,12 +123,12 @@ function openDiscard(
 }
 
 function respond(
-  state: CanonicalGameStateV2,
+  state: CanonicalGameStateV1,
   responder: Seat,
   response: ReactionResponse,
 ): {
   readonly events: readonly HongKongGameEvent[];
-  readonly state: CanonicalGameStateV2;
+  readonly state: CanonicalGameStateV1;
 } {
   if (state.reactionWindow === null) throw new Error("No fixture window.");
   const result = applyGameCommand(
@@ -142,20 +142,20 @@ function respond(
   return { events: result.events, state: result.state };
 }
 
-function resolvePasses(state: CanonicalGameStateV2): CanonicalGameStateV2 {
+function resolvePasses(state: CanonicalGameStateV1): CanonicalGameStateV1 {
   const decision = decideReactionExpiration(state);
   if (!decision.accepted) throw new Error("Fixture reaction expiry failed.");
   let next = state;
   for (const event of decision.events) {
-    next = reduceGameEvent(next, event) as CanonicalGameStateV2;
+    next = reduceGameEvent(next, event);
   }
   return next;
 }
 
-describe("canonical schema-v2 claims and kongs", () => {
-  it("starts explicit v2 games and round-trips their genesis", () => {
+describe("canonical schema-v1 claims and kongs", () => {
+  it("starts explicit v1 games and round-trips their genesis", () => {
     const started = startHongKongV1Game(actors, randomness(201));
-    expect(started.state.schemaVersion).toBe(2);
+    expect(started.state.schemaVersion).toBe(1);
     expect(decodeCanonicalGameJson(canonicalGameJson(started.state))).toEqual(
       started.state,
     );
@@ -487,7 +487,7 @@ describe("canonical schema-v2 claims and kongs", () => {
       "game/hand-completed",
     ]);
     for (const event of resolved.events) {
-      state = reduceGameEvent(state, event) as CanonicalGameStateV2;
+      state = reduceGameEvent(state, event);
     }
     expect(state).toMatchObject({ phase: "complete" });
     expect(state.players.south.melds[0]).toMatchObject({ kind: "pung" });
@@ -496,7 +496,7 @@ describe("canonical schema-v2 claims and kongs", () => {
   });
 
   it("recurses through bonus tiles for a kong replacement", () => {
-    let state: CanonicalGameStateV2 | undefined;
+    let state: CanonicalGameStateV1 | undefined;
     for (let offset = 220; offset < 300; offset += 1) {
       const candidate = startHongKongV1Game(actors, randomness(offset)).state;
       const live = candidate.wall.order.slice(
