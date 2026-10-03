@@ -4,7 +4,7 @@
 root Cargo workspace. Its entry point currently exits without starting a
 service. It has no dependencies or game behavior.
 
-`backend/crates/` also contains the `engine`, `mailbox`, `rulesets`, and `tasks`
+`backend/crates/` also contains the `engine`, `pubsub`, `rulesets`, and `tasks`
 library crates and the `server` binary crate. Their entry points are initialized
 but do not yet implement the backend components or start a service.
 
