@@ -11,9 +11,17 @@ name = "mahjong"
 version = "0.0.0"
 
 [[package]]
+name = "mailbox"
+version = "0.0.0"
+
+[[package]]
 name = "rulesets"
 version = "0.0.0"
 
 [[package]]
 name = "server"
+version = "0.0.0"
+
+[[package]]
+name = "tasks"
 version = "0.0.0"
