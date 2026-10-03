@@ -13,6 +13,8 @@ the component responsibilities and lifecycle decisions. Runtime, transport,
 storage, and compatibility choices remain to be implemented as those interfaces
 are settled.
 
+Follow the [backend style guide](STYLE_GUIDE.md) for Rust code in this directory.
+
 ## Development
 
 Install Rust through [rustup](https://rustup.rs/). The root `rust-toolchain.toml`
