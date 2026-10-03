@@ -23,6 +23,7 @@ history policy remain gated to Milestone 7.
 
 - [Implementation roadmap](docs/roadmap.md)
 - [Technical baseline](docs/architecture/technical-baseline.md)
+- [Backend redesign by component](docs/architecture/backend-redesign/README.md)
 - [Hong Kong v1 rules decision register](docs/rules/hong-kong-v1/decision-register.md)
 - [Accepted Hong Kong v1 profile](docs/rules/hong-kong-v1/README.md)
 - [Testing strategy](docs/testing-strategy.md)
