@@ -17,7 +17,7 @@ export default tseslint.config(
       "**/dist/**",
       "**/node_modules/**",
       "**/target/**",
-      "apps/discord-activity/src/worker/worker-configuration.d.ts",
+      "discord-activity/src/worker/worker-configuration.d.ts",
     ],
   },
   {

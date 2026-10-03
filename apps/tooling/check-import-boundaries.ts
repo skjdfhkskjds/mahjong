@@ -15,7 +15,7 @@ const dependencyRules: Readonly<Record<string, readonly string[]>> = {
 
 const sourceRoots = [
   resolve(repositoryRoot, "packages"),
-  resolve(repositoryRoot, "apps"),
+  resolve(repositoryRoot, "discord-activity"),
 ];
 const sourceExtensions = new Set([".ts", ".tsx", ".mts", ".cts"]);
 
@@ -42,12 +42,12 @@ function workspaceArea(path: string):
   if (segments[0] === "packages" && segments[1] !== undefined) {
     return { type: "package", name: segments[1] };
   }
-  if (segments[0] === "apps" && segments[1] !== undefined) {
+  if (segments[0] === "discord-activity") {
     const sourceIndex = segments.indexOf("src");
     const side = segments[sourceIndex + 1];
     return {
       type: "app",
-      name: segments[1],
+      name: "discord-activity",
       ...(side === "client" || side === "worker" ? { side } : {}),
     };
   }

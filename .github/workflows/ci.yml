@@ -23,6 +23,9 @@ jobs:
 
   quality:
     runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: apps
     steps:
       - uses: actions/checkout@v6
         with:
@@ -33,8 +36,9 @@ jobs:
           run_install: false
       - uses: actions/setup-node@v6
         with:
-          node-version-file: .node-version
+          node-version-file: apps/.node-version
           cache: pnpm
+          cache-dependency-path: apps/pnpm-lock.yaml
       - run: pnpm install --frozen-lockfile
       - run: pnpm check
       - name: Build Discord production bundle

@@ -2,7 +2,7 @@
 
 Documentation is part of the implementation contract rather than a retrospective description.
 
-The [backend redesign](architecture/backend-redesign/README.md) records the new
+The [backend design](../../backend/docs/architecture/README.md) records the new
 architecture by component: runner, ruleset, seat mailboxes, transport, and
 repository. It distinguishes agreed design decisions from proposed interfaces;
 the baseline and status documents below describe the existing implementation.

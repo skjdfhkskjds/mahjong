@@ -36,14 +36,14 @@ importers:
         specifier: 4.1.11
         version: 4.1.11(@types/node@24.13.3)(vite@8.2.2(@types/node@24.13.3)(esbuild@0.28.1)(jiti@2.6.1))
 
-  apps/discord-activity:
+  discord-activity:
     dependencies:
       '@discord/embedded-app-sdk':
         specifier: 2.5.0
         version: 2.5.0
       '@mahjong/rules-hong-kong':
         specifier: workspace:*
-        version: link:../../packages/rules-hong-kong
+        version: link:../packages/rules-hong-kong
       react:
         specifier: 19.2.8
         version: 19.2.8

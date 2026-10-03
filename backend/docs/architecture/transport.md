@@ -41,5 +41,5 @@ under the same session ID.
 
 Transport authentication and deployment compatibility must be specified with the
 implementation. This design document does not change the current
-[session and request security](../session-and-request-security.md) implementation
+[session and request security](../../../../apps/docs/architecture/session-and-request-security.md) implementation
 or its wire protocol.

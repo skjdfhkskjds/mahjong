@@ -37,7 +37,7 @@ partial batch. No manual `sync()` or generic compare-and-swap layer is needed.
 ## Entry points, awaits, and transaction ownership
 
 References below use symbols in
-[`table-room.ts`](../../apps/discord-activity/src/worker/durable-objects/table-room.ts),
+[`table-room.ts`](../../discord-activity/src/worker/durable-objects/table-room.ts),
 unless another module is linked. Symbol references deliberately survive
 subsequent extraction better than line numbers.
 
@@ -107,7 +107,7 @@ behavioral suites, full check, and build are the validation requirement.
 
 ## Cross-object operations are different
 
-[`ActivityInstance`](../../apps/discord-activity/src/worker/durable-objects/activity-instance.ts)
+[`ActivityInstance`](../../discord-activity/src/worker/durable-objects/activity-instance.ts)
 does await another Durable Object between proposal and promotion. Two session
 issuances can read the same old credential, await TableRoom activation, and
 complete in opposite order. `promoteSession` must compare its expected stored

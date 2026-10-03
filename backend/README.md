@@ -8,7 +8,7 @@ service. It has no dependencies or game behavior.
 library crates and the `server` binary crate. Their entry points are initialized
 but do not yet implement the backend components or start a service.
 
-The [backend redesign](../docs/architecture/backend-redesign/README.md) owns
+The [backend design](docs/architecture/README.md) owns
 the component responsibilities and lifecycle decisions. Runtime, transport,
 storage, and compatibility choices remain to be implemented as those interfaces
 are settled.

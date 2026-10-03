@@ -8,7 +8,7 @@ export default defineConfig({
     include: [
       "packages/**/*.test.ts",
       "tooling/**/*.test.ts",
-      "apps/*/tooling/**/*.test.ts",
+      "discord-activity/tooling/**/*.test.ts",
     ],
     passWithNoTests: false,
     sequence: {

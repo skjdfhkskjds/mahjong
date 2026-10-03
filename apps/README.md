@@ -23,7 +23,7 @@ history policy remain gated to Milestone 7.
 
 - [Implementation roadmap](docs/roadmap.md)
 - [Technical baseline](docs/architecture/technical-baseline.md)
-- [Backend redesign by component](docs/architecture/backend-redesign/README.md)
+- [Backend design by component](../backend/docs/architecture/README.md)
 - [Hong Kong v1 rules decision register](docs/rules/hong-kong-v1/decision-register.md)
 - [Accepted Hong Kong v1 profile](docs/rules/hong-kong-v1/README.md)
 - [Testing strategy](docs/testing-strategy.md)
@@ -41,15 +41,8 @@ The server is authoritative for ordering and hidden state. Clients receive viewe
 
 ## Local application
 
-Run `corepack pnpm app:dev` for standalone mock mode, or
+From `apps/`, run `corepack pnpm app:dev` for standalone mock mode, or
 `corepack pnpm app:dev:solo` to try the same bot-player feature without Discord credentials
-in a temporary local table. See [the Activity application guide](apps/discord-activity/README.md)
+in a temporary local table. See [the Activity application guide](discord-activity/README.md)
 for setup, reset behavior, Discord-proxied development, verification, and the
 guarded production deployment workflow.
-
-## Rust backend workspace
-
-The root Cargo workspace is the foundation for the replacement Rust backend.
-Its initial `mahjong` crate has a minimal entry point and no service
-implementation yet. See [the Rust backend guide](backend/README.md) for
-the pinned toolchain, development commands, and workspace conventions.

@@ -1,0 +1,7 @@
+node_modules/
+dist/
+target/
+coverage/
+.wrangler/
+pnpm-lock.yaml
+discord-activity/src/worker/worker-configuration.d.ts

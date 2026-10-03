@@ -9,12 +9,12 @@ marked. The replacement has not been implemented.
 The root Cargo workspace and its initial `mahjong` binary crate provide
 the Rust implementation foundation. The entry point currently exits without
 starting a service; component implementation has not begun. See the
-[Rust backend guide](../../../backend/README.md) for development commands.
+[Rust backend guide](../../../README.md) for development commands.
 
 The existing system supplies lessons and behavior examples. Its package layout,
 runtime topology, APIs, and storage formats do not determine this design. The
-[technical baseline](../technical-baseline.md), [ADRs](../../decisions/README.md),
-and [roadmap](../../roadmap.md) continue to describe the existing implementation
+[technical baseline](../../../../apps/docs/architecture/technical-baseline.md), [ADRs](../../../../apps/docs/decisions/README.md),
+and [roadmap](../../../../apps/docs/roadmap.md) continue to describe the existing implementation
 and its delivery status. Replacement compatibility and migration behavior remain
 to be specified before implementation or deployment.
 

@@ -14,7 +14,7 @@ This application is the single deployable React client and Cloudflare Worker. Th
 
 ## Standalone development
 
-From the repository root:
+From the `apps/` directory:
 
 ```text
 corepack pnpm app:dev
@@ -164,7 +164,7 @@ manage bots against an older Worker, which rejects the unknown commands, so
 ship bot controls and Worker support together. Existing tables migrate to v5
 without changing seats, game events, or hashes. Rollback to pre-bot code needs
 the complete pre-migration backup because that code rejects schema v5.
-See [ADR 0015](../../docs/decisions/0015-persistent-bot-players.md).
+See [ADR 0015](../docs/decisions/0015-persistent-bot-players.md).
 
 The production command fails before building unless `VITE_ACTIVITY_MODE=discord` and a valid `VITE_DISCORD_CLIENT_ID` are present. The production Wrangler environment does not inherit the committed mock signing key.
 

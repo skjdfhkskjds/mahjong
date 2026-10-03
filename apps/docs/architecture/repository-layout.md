@@ -5,22 +5,23 @@ This is the intended shape, not a command to create empty directories. Add a pac
 ```text
 mahjong-bot/
 ├── apps/
-│   └── discord-activity/
-│       ├── src/client/       # React, Discord bridge, transport, UI
-│       ├── src/worker/       # HTTP, auth, Discord REST, Durable Objects
-│       └── tests/            # runtime-boundary and browser tests
-├── packages/
-│   ├── game-core/            # deliberately small variant-neutral contracts
-│   ├── rules-hong-kong/      # hong-kong/v1 profile and pure engine
-│   ├── protocol/             # runtime-validated HTTP/WebSocket contracts
-│   ├── fairness/             # canonical encoding, shuffle, commitments, audit
-│   └── testkit/              # fixtures, builders, replay, simulations
-├── docs/
-│   ├── architecture/
-│   ├── decisions/
-│   ├── protocol/
-│   └── rules/hong-kong-v1/
-├── tooling/                  # boundary and export verification
+│   ├── discord-activity/
+│   │   ├── src/client/       # React, Discord bridge, transport, UI
+│   │   ├── src/worker/       # HTTP, auth, Discord REST, Durable Objects
+│   │   └── tests/            # runtime-boundary and browser tests
+│   ├── packages/
+│   │   ├── game-core/        # deliberately small variant-neutral contracts
+│   │   ├── rules-hong-kong/  # hong-kong/v1 profile and pure engine
+│   │   ├── protocol/         # runtime-validated HTTP/WebSocket contracts
+│   │   ├── fairness/         # canonical encoding, shuffle, commitments, audit
+│   │   └── testkit/          # fixtures, builders, replay, simulations
+│   ├── docs/
+│   │   ├── architecture/
+│   │   ├── decisions/
+│   │   ├── protocol/
+│   │   └── rules/hong-kong-v1/
+│   └── tooling/              # boundary and export verification
+├── backend/                  # Rust backend crates and design notes
 └── .github/                  # CI, deploy, and review templates
 ```
 
