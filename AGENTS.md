@@ -33,6 +33,10 @@ Keep the server authoritative, validate all external/persisted data, persist bef
 
 - Use Node 24 from `.node-version` and the Corepack-pinned pnpm version. Install with `corepack pnpm install --frozen-lockfile` when needed.
 - Run focused tests/typechecks while iterating.
+- For Rust changes, use the pinned `rust-toolchain.toml` and run
+  `cargo fmt --all -- --check`,
+  `cargo clippy --workspace --all-targets --locked -- -D warnings`, and
+  `cargo test --workspace --locked`.
 - Run `corepack pnpm check` before handoff.
 - Also run `corepack pnpm app:build` for client, Worker, dependency, or build-configuration changes.
 - Report commands run and any checks skipped or failing.

@@ -40,7 +40,9 @@ A rules-semantic change must update the Hong Kong decision register, worked exam
 
 ## Engineering constraints
 
-- Application and game code is TypeScript.
+- The existing Discord Activity application and game packages use TypeScript.
+  The replacement backend uses Rust in the root Cargo workspace; see
+  [the Rust backend guide](backend/README.md) for setup and checks.
 - Enable strict TypeScript, including `noUncheckedIndexedAccess` and `exactOptionalPropertyTypes`.
 - Runtime schemas validate every untrusted HTTP, WebSocket, persisted, and Discord payload.
 - Packages never import from applications.

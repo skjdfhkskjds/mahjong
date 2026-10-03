@@ -46,3 +46,10 @@ Run `corepack pnpm app:dev` for standalone mock mode, or
 in a temporary local table. See [the Activity application guide](apps/discord-activity/README.md)
 for setup, reset behavior, Discord-proxied development, verification, and the
 guarded production deployment workflow.
+
+## Rust backend workspace
+
+The root Cargo workspace is the foundation for the replacement Rust backend.
+Its initial `mahjong-backend` crate has a minimal entry point and no service
+implementation yet. See [the Rust backend guide](backend/README.md) for
+the pinned toolchain, development commands, and workspace conventions.

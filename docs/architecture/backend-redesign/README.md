@@ -6,6 +6,11 @@ starting point for the replacement design. Component responsibilities and
 lifecycle decisions are agreed; detailed interfaces remain proposals where
 marked. The replacement has not been implemented.
 
+The root Cargo workspace and its initial `mahjong-backend` binary crate provide
+the Rust implementation foundation. The entry point currently exits without
+starting a service; component implementation has not begun. See the
+[Rust backend guide](../../../backend/README.md) for development commands.
+
 The existing system supplies lessons and behavior examples. Its package layout,
 runtime topology, APIs, and storage formats do not determine this design. The
 [technical baseline](../technical-baseline.md), [ADRs](../../decisions/README.md),
