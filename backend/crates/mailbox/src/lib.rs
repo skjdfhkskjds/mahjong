@@ -1,1 +1,3 @@
-//! Seat mailbox interfaces and implementation.
+mod mailbox;
+
+pub use mailbox::{MailboxReceiver, MailboxSender, channel};
