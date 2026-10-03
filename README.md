@@ -50,6 +50,6 @@ guarded production deployment workflow.
 ## Rust backend workspace
 
 The root Cargo workspace is the foundation for the replacement Rust backend.
-Its initial `mahjong-backend` crate has a minimal entry point and no service
+Its initial `mahjong` crate has a minimal entry point and no service
 implementation yet. See [the Rust backend guide](backend/README.md) for
 the pinned toolchain, development commands, and workspace conventions.

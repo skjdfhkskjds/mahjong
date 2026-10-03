@@ -6,7 +6,7 @@ starting point for the replacement design. Component responsibilities and
 lifecycle decisions are agreed; detailed interfaces remain proposals where
 marked. The replacement has not been implemented.
 
-The root Cargo workspace and its initial `mahjong-backend` binary crate provide
+The root Cargo workspace and its initial `mahjong` binary crate provide
 the Rust implementation foundation. The entry point currently exits without
 starting a service; component implementation has not begun. See the
 [Rust backend guide](../../../backend/README.md) for development commands.

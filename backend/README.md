@@ -1,6 +1,6 @@
 # Rust backend
 
-`mahjong-backend` is the initial binary crate for the replacement backend in the
+`mahjong` is the initial binary crate for the replacement backend in the
 root Cargo workspace. Its entry point currently exits without starting a
 service. It has no dependencies or game behavior.
 
@@ -22,7 +22,7 @@ run from this repository.
 Run from the repository root:
 
 ```sh
-cargo run --package mahjong-backend --locked
+cargo run --package mahjong --locked
 cargo build --workspace --locked
 cargo fmt --all -- --check
 cargo clippy --workspace --all-targets --locked -- -D warnings
