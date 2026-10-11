@@ -264,6 +264,20 @@ fn run(root: &Path, check: bool) -> Result<bool, TaskError> {
     Ok(!check || changes.is_empty())
 }
 
+pub(crate) fn format(check: bool) -> ExitCode {
+    let mode = if check { "--check" } else { "--write" };
+    println!("Running SQL formatting {mode}");
+    let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("..");
+    match run(&root, check) {
+        Ok(true) => ExitCode::SUCCESS,
+        Ok(false) => ExitCode::FAILURE,
+        Err(error) => {
+            eprintln!("{error}");
+            ExitCode::FAILURE
+        }
+    }
+}
+
 pub(crate) fn execute(args: &[String]) -> ExitCode {
     if args == ["--help"] {
         println!("{USAGE}");
@@ -282,15 +296,7 @@ pub(crate) fn execute(args: &[String]) -> ExitCode {
             return ExitCode::from(2);
         }
     };
-    let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("..");
-    match run(&root, check) {
-        Ok(true) => ExitCode::SUCCESS,
-        Ok(false) => ExitCode::FAILURE,
-        Err(error) => {
-            eprintln!("{error}");
-            ExitCode::FAILURE
-        }
-    }
+    format(check)
 }
 
 #[cfg(test)]

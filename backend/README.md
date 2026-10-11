@@ -22,6 +22,8 @@ run from this repository.
 Run from the repository root:
 
 ```sh
+cargo xtask precommit
+cargo xtask check
 cargo xtask format-sql
 cargo xtask format-sql --check
 cargo run --package mahjong --locked
@@ -30,6 +32,15 @@ cargo fmt --all -- --check
 cargo clippy --workspace --all-targets --locked -- -D warnings
 cargo test --workspace --locked
 ```
+
+`cargo xtask precommit` formats SQL, runs `cargo fmt --all`, then runs
+`cargo clippy --workspace --all-targets --locked -- -D warnings`.
+`cargo xtask check` runs the same sequence using SQL `--check` and
+`cargo fmt --all -- --check`, so it verifies formatting without editing source.
+Clippy reports warnings as errors in both commands. Each command stops at the
+first failure. These are manual commands; they do not install a Git hook.
+If formatting changes inline query strings, regenerate `.sqlx` metadata as
+described below and rerun the command so Clippy can compile the queries offline.
 
 SQL formatting uses the pinned `sql-formatter` CLI through `npx` and requires
 Node.js and npm (the first run downloads the formatter). The xtask formats `.sql`
@@ -44,7 +55,7 @@ Concatenated or computed query expressions in recognized macros fail explicitly.
 unchanged and exits nonzero if formatting is needed or a formatter fails. The
 `backend/scripts/format-sql.sh [--write|--check]` wrapper runs the same task from
 any working directory. CI integration is deferred; its eventual entry point is
-`cargo xtask format-sql --check` after installing Rust and Node.js/npm.
+`cargo xtask check` after installing Rust and Node.js/npm.
 
 After formatting inline queries, run `cargo fmt --all` and
 `backend/scripts/prepare-sqlx.sh` to regenerate the offline `.sqlx` metadata,
