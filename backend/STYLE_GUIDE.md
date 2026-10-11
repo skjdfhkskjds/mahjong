@@ -1,5 +1,10 @@
 # Backend style guide
 
+- Format SQL files and inline SQLx query macros with `cargo xtask format-sql`
+  (also available through `backend/scripts/format-sql.sh`). The shared configuration
+  uses the SQLite dialect, uppercase keywords, and four-space indentation.
+  After changing inline queries, run `cargo fmt --all` and regenerate `.sqlx`
+  metadata with `backend/scripts/prepare-sqlx.sh`.
 - Use the prelude `Result` for fallible returns. Write the error type in each
   signature, for example `Result<T, io::Error>` after importing `std::io`.
   Do not use a specialized `Result` alias. Import items from `std` instead of

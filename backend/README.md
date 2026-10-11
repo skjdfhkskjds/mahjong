@@ -22,12 +22,36 @@ run from this repository.
 Run from the repository root:
 
 ```sh
+cargo xtask format-sql
+cargo xtask format-sql --check
 cargo run --package mahjong --locked
 cargo build --workspace --locked
 cargo fmt --all -- --check
 cargo clippy --workspace --all-targets --locked -- -D warnings
 cargo test --workspace --locked
 ```
+
+SQL formatting uses the pinned `sql-formatter` CLI through `npx` and requires
+Node.js and npm (the first run downloads the formatter). The xtask formats `.sql`
+files and literal queries in SQLx `query!`, `query_as!`, and `query_scalar!`
+macros, including their unchecked variants, under `backend/crates`. It uses the
+SQLite dialect and configuration in `.sql-formatter.json`. Qualified `sqlx::`
+macros and bare macro names are recognized; runtime query functions, aliased
+macro names, and queries inside other macros are outside this command's scope.
+Concatenated or computed query expressions in recognized macros fail explicitly.
+
+`cargo xtask format-sql` (or `--write`) updates files. `--check` leaves files
+unchanged and exits nonzero if formatting is needed or a formatter fails. The
+`backend/scripts/format-sql.sh [--write|--check]` wrapper runs the same task from
+any working directory. CI integration is deferred; its eventual entry point is
+`cargo xtask format-sql --check` after installing Rust and Node.js/npm.
+
+After formatting inline queries, run `cargo fmt --all` and
+`backend/scripts/prepare-sqlx.sh` to regenerate the offline `.sqlx` metadata,
+then commit those changes together. Metadata generation requires `sqlx-cli`
+0.9.0 with SQLite support. Formatting alone does not require a database or the
+SQLx CLI. Format migrations before applying them: SQLx checksums migration files,
+so reformatting an already-applied migration causes a checksum mismatch.
 
 The workspace shares package metadata and lints. Add new crates only when they
 have an implementation responsibility, list them explicitly in the root

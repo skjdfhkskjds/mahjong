@@ -1,0 +1,12 @@
+{
+  "db_name": "SQLite",
+  "query": "\n                INSERT INTO\n                    session_revisions (session_id, revision, payload)\n                VALUES\n                    (?, ?, ?)\n            ",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Right": 3
+    },
+    "nullable": []
+  },
+  "hash": "2f3ca744fe1617ff21f201e31076346cfc8aba15a94e12dc32538a238714dde6"
+}

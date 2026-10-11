@@ -1,0 +1,12 @@
+{
+  "db_name": "SQLite",
+  "query": "\n                    INSERT INTO\n                        sessions (session_id, revision, payload)\n                    VALUES\n                        (?, ?, ?)\n                    ON CONFLICT (session_id) DO NOTHING\n                ",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Right": 3
+    },
+    "nullable": []
+  },
+  "hash": "0ef151d9778fe549a4962035c007e4adbc0689ac80864bf616b9aa69313edf77"
+}

@@ -1,0 +1,12 @@
+{
+  "db_name": "SQLite",
+  "query": "\n                    UPDATE sessions\n                    SET\n                        revision = ?,\n                        payload = ?\n                    WHERE\n                        session_id = ?\n                        AND revision = ?\n                ",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Right": 4
+    },
+    "nullable": []
+  },
+  "hash": "549783b1fc2d03435c453e8f864eaef2b25697fb97de9109404ef99b20ecb8be"
+}

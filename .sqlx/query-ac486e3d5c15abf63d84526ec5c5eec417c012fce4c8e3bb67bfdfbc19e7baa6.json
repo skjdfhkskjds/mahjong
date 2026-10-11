@@ -1,6 +1,6 @@
 {
   "db_name": "SQLite",
-  "query": "SELECT revision, payload FROM sessions WHERE session_id = ?",
+  "query": "\n                SELECT\n                    revision,\n                    payload\n                FROM\n                    session_revisions\n                WHERE\n                    session_id = ?\n                    AND revision = ?\n            ",
   "describe": {
     "columns": [
       {
@@ -9,7 +9,7 @@
         "type_info": "Integer",
         "origin": {
           "Table": {
-            "table": "sessions",
+            "table": "session_revisions",
             "name": "revision"
           }
         }
@@ -20,19 +20,19 @@
         "type_info": "Text",
         "origin": {
           "Table": {
-            "table": "sessions",
+            "table": "session_revisions",
             "name": "payload"
           }
         }
       }
     ],
     "parameters": {
-      "Right": 1
+      "Right": 2
     },
     "nullable": [
       false,
       false
     ]
   },
-  "hash": "954c8d83d4b009bfee1aaaa84520d98e6955b8e9c8561f44e621c43088dfb557"
+  "hash": "ac486e3d5c15abf63d84526ec5c5eec417c012fce4c8e3bb67bfdfbc19e7baa6"
 }

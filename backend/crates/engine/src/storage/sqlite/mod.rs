@@ -47,7 +47,16 @@ impl SqliteDb {
     ) -> Result<Option<StoredSession>, StoreError> {
         let revision = i64::try_from(revision).map_err(|_| StoreError::InvalidRecord)?;
         let row = sqlx::query!(
-            "SELECT revision, payload FROM session_revisions WHERE session_id = ? AND revision = ?",
+            r#"
+                SELECT
+                    revision,
+                    payload
+                FROM
+                    session_revisions
+                WHERE
+                    session_id = ?
+                    AND revision = ?
+            "#,
             session_id,
             revision
         )
@@ -68,7 +77,15 @@ impl SqliteDb {
 impl Store for SqliteDb {
     async fn load(&self, session_id: &str) -> Result<Option<StoredSession>, StoreError> {
         let row = sqlx::query!(
-            "SELECT revision, payload FROM sessions WHERE session_id = ?",
+            r#"
+                SELECT
+                    revision,
+                    payload
+                FROM
+                    sessions
+                WHERE
+                    session_id = ?
+            "#,
             session_id
         )
         .fetch_optional(&self.pool)
@@ -105,11 +122,40 @@ impl Store for SqliteDb {
         let mut transaction = self.pool.begin().await?;
         let changed = if let Some(expected) = expected_revision {
             let expected = i64::try_from(expected).map_err(|_| StoreError::InvalidRecord)?;
-            sqlx::query!("UPDATE sessions SET revision = ?, payload = ? WHERE session_id = ? AND revision = ?", next_revision, encoded, session_id, expected)
-                .execute(&mut *transaction).await?.rows_affected()
+            sqlx::query!(
+                r#"
+                    UPDATE sessions
+                    SET
+                        revision = ?,
+                        payload = ?
+                    WHERE
+                        session_id = ?
+                        AND revision = ?
+                "#,
+                next_revision,
+                encoded,
+                session_id,
+                expected
+            )
+            .execute(&mut *transaction)
+            .await?
+            .rows_affected()
         } else {
-            sqlx::query!("INSERT INTO sessions (session_id, revision, payload) VALUES (?, ?, ?) ON CONFLICT(session_id) DO NOTHING", session_id, next_revision, encoded)
-                .execute(&mut *transaction).await?.rows_affected()
+            sqlx::query!(
+                r#"
+                    INSERT INTO
+                        sessions (session_id, revision, payload)
+                    VALUES
+                        (?, ?, ?)
+                    ON CONFLICT (session_id) DO NOTHING
+                "#,
+                session_id,
+                next_revision,
+                encoded
+            )
+            .execute(&mut *transaction)
+            .await?
+            .rows_affected()
         };
         if changed != 1 {
             transaction.rollback().await?;
@@ -117,7 +163,12 @@ impl Store for SqliteDb {
         }
 
         sqlx::query!(
-            "INSERT INTO session_revisions (session_id, revision, payload) VALUES (?, ?, ?)",
+            r#"
+                INSERT INTO
+                    session_revisions (session_id, revision, payload)
+                VALUES
+                    (?, ?, ?)
+            "#,
             session_id,
             next_revision,
             encoded

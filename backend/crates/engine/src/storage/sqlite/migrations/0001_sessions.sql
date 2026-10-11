@@ -6,7 +6,7 @@ CREATE TABLE sessions (
 
 -- A revision retains exactly the private snapshot accepted at that boundary.
 CREATE TABLE session_revisions (
-    session_id TEXT NOT NULL REFERENCES sessions(session_id),
+    session_id TEXT NOT NULL REFERENCES sessions (session_id),
     revision INTEGER NOT NULL CHECK (revision > 0),
     payload TEXT NOT NULL CHECK (json_valid(payload)),
     PRIMARY KEY (session_id, revision)
