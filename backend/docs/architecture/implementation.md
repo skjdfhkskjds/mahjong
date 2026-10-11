@@ -90,14 +90,14 @@ hand outcomes are retained; historical hands are not replayed from a move log.
 All application SQL uses `sqlx::query!`; migrations use `sqlx::migrate!`. Generated
 `.sqlx` descriptions are checked in. `.cargo/config.toml` sets `SQLX_OFFLINE=true`,
 so ordinary builds need no schema database. Regenerate metadata after SQL/schema
-changes with `backend/scripts/prepare-sqlx.sh`; add `--check` to verify freshness.
-The script creates and removes an isolated temporary database and applies the
+changes with `cargo xtask sqlx-prepare`; add `--check` to verify freshness.
+The command creates and removes an isolated temporary database and applies the
 actual migrations before preparing all targets. SQLx CLI 0.9 is required:
 
 ```sh
 cargo install sqlx-cli --version 0.9.0 --no-default-features --features sqlite --locked
-backend/scripts/prepare-sqlx.sh
-backend/scripts/prepare-sqlx.sh --check
+cargo xtask sqlx-prepare
+cargo xtask sqlx-prepare --check
 ```
 
 Snapshots and revision history contain private canonical game information.

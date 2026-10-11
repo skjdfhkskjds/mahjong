@@ -14,4 +14,6 @@ pub(crate) enum TaskError {
     Command { command: String, status: ExitStatus },
     #[error(transparent)]
     Sql(#[from] Box<dyn Error>),
+    #[error("Could not create temporary SQLx database directory: {0}")]
+    TemporaryDatabase(#[source] io::Error),
 }

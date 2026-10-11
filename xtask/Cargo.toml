@@ -8,6 +8,7 @@ publish.workspace = true
 [dependencies]
 proc-macro2 = { version = "1", features = ["span-locations"] }
 syn = { version = "2", features = ["full", "visit"] }
+tempfile = "3"
 thiserror = "2"
 
 [dev-dependencies]

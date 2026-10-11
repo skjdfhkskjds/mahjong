@@ -1,0 +1,14 @@
+#!/bin/sh
+set -eu
+
+cargo xtask precommit
+
+if ! git diff --quiet -- backend xtask .sqlx; then
+    echo "Backend, xtask, or SQLx metadata changes are unstaged. Review and stage them, then retry the commit." >&2
+    exit 1
+fi
+
+if [ -n "$(git ls-files --others --exclude-standard -- .sqlx)" ]; then
+    echo "New SQLx metadata files are unstaged. Review and stage them, then retry the commit." >&2
+    exit 1
+fi

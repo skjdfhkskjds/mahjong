@@ -1,8 +1,8 @@
 # Backend style guide
 
 - Format SQL files and inline SQLx query macros with `cargo xtask format-sql`
-  (also available through `backend/scripts/format-sql.sh`). The shared configuration
-  uses the SQLite dialect, uppercase keywords, and four-space indentation.
+  using the shared configuration: SQLite dialect, uppercase keywords, and
+  four-space indentation.
   After changing inline queries, run `cargo fmt --all` and regenerate `.sqlx`
   metadata with `cargo xtask sqlx-prepare`, or run `cargo xtask precommit`
   to format, prepare metadata, and lint in one command.

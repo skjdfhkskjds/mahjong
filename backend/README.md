@@ -38,11 +38,21 @@ cargo test --workspace --locked
 `cargo xtask precommit` formats SQL, runs `cargo fmt --all`, regenerates SQLx
 offline metadata, then runs
 `cargo clippy --workspace --all-targets --locked -- -D warnings`.
-`cargo xtask check` runs the same sequence using SQL `--check` and
-`cargo fmt --all -- --check`, followed by SQLx `prepare --check`, so it verifies
-formatting and metadata without editing source or the committed `.sqlx` files.
+`cargo xtask check` verifies SQL formatting, SQLx metadata, and Rust formatting,
+then runs the same Clippy command. It uses SQL `--check`, SQLx `prepare --check`,
+and `cargo fmt --all -- --check`, without editing source or committed `.sqlx` files.
 Clippy reports warnings as errors in both commands. Each command stops at the
-first failure. These are manual commands; they do not install a Git hook.
+first failure. Enable the checked-in pre-commit hook once per clone:
+
+```sh
+git config --local core.hooksPath .githooks
+```
+
+The hook runs `cargo xtask precommit`. If backend/tooling or `.sqlx` changes
+remain unstaged afterward, it stops the commit. Review and stage the changes,
+then retry. This includes existing unstaged backend/tooling edits; the hook does
+not stage files automatically.
+
 SQLx preparation runs before Clippy so newly formatted queries can compile offline.
 
 SQL formatting uses the pinned `sql-formatter` CLI through `npx` and requires
@@ -55,17 +65,17 @@ macro names, and queries inside other macros are outside this command's scope.
 Concatenated or computed query expressions in recognized macros fail explicitly.
 
 `cargo xtask format-sql` (or `--write`) updates files. `--check` leaves files
-unchanged and exits nonzero if formatting is needed or a formatter fails. The
-`backend/scripts/format-sql.sh [--write|--check]` wrapper runs the same task from
-any working directory. CI integration is deferred; its eventual entry point is
-`cargo xtask check` after installing Rust, Node.js/npm, and `sqlx-cli`.
+unchanged and exits nonzero if formatting is needed or a formatter fails.
+The Rust CI job runs `cargo xtask check` after installing Rust, Node.js/npm,
+and `sqlx-cli`. This checks formatting, SQLx metadata, and Clippy; it does not
+execute the test suite. Run `cargo test --workspace --locked` to execute tests.
 
 After formatting inline queries, run `cargo fmt --all` and
 `cargo xtask sqlx-prepare` to regenerate the offline `.sqlx` metadata,
 then commit those changes together (or run `cargo xtask precommit` for all steps).
 `cargo xtask sqlx-prepare --check` verifies the committed metadata. Both modes
-reuse `backend/scripts/prepare-sqlx.sh`, which creates and migrates a temporary
-SQLite database and cleans it up afterward. Metadata generation and verification
+create and migrate a temporary SQLite database directly from Rust and clean it
+up afterward, including when a command fails. Metadata generation and verification
 require `sqlx-cli` 0.9.0 with SQLite support:
 
 ```sh

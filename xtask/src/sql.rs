@@ -1,4 +1,5 @@
 use std::{
+    env,
     error::Error,
     fs,
     io::{self, Write},
@@ -16,6 +17,8 @@ const SQL_FORMATTER: &str = "sql-formatter@15.9.0";
 pub(crate) const USAGE: &str = "Usage: cargo xtask format-sql [--write|--check]";
 
 const PREPARE_USAGE: &str = "Usage: cargo xtask sqlx-prepare [--check]";
+
+const SQL_MIGRATION_PATH: &str = "backend/crates/engine/src/storage/sqlite/migrations";
 
 struct Query {
     literal: LitStr,
@@ -333,37 +336,53 @@ pub(crate) fn execute(args: &[String]) -> Result<(), TaskError> {
     format(check)
 }
 
-pub(crate) fn prepare(check: bool) -> Result<(), TaskError> {
-    let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("..");
-    let mut command = Command::new("bash");
-    command
-        .arg(root.join("backend/scripts/prepare-sqlx.sh"))
-        .current_dir(root);
+fn sqlx(root: &Path, database_url: &str, args: &[&str]) -> Result<(), TaskError> {
+    let command = format!("cargo sqlx {}", args.join(" "));
+    println!("Running {command}");
 
-    if check {
-        println!("Checking SQLx offline metadata");
-        command.arg("--check");
-    } else {
-        println!("Preparing SQLx offline metadata");
-    }
-
-    let label = if check {
-        "SQLx offline metadata check"
-    } else {
-        "SQLx offline metadata preparation"
-    }
-    .to_owned();
-    let status = command.status().map_err(|source| TaskError::Spawn {
-        command: label.clone(),
-        source,
-    })?;
+    let status = Command::new(env::var_os("CARGO").unwrap_or_else(|| "cargo".into()))
+        .arg("sqlx")
+        .args(args)
+        .current_dir(root)
+        .env("DATABASE_URL", database_url)
+        .env("SQLX_OFFLINE", "false")
+        .status()
+        .map_err(|source| TaskError::Spawn {
+            command: command.clone(),
+            source,
+        })?;
 
     if !status.success() {
-        return Err(TaskError::Command {
-            command: label,
-            status,
-        });
+        return Err(TaskError::Command { command, status });
     }
+
+    Ok(())
+}
+
+pub(crate) fn prepare(check: bool) -> Result<(), TaskError> {
+    let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("..");
+    let database = tempfile::tempdir().map_err(TaskError::TemporaryDatabase)?;
+    let database_url = format!(
+        "sqlite://{}",
+        database.path().join("schema.sqlite").display()
+    );
+
+    sqlx(&root, &database_url, &["database", "create"])?;
+
+    sqlx(
+        &root,
+        &database_url,
+        &["migrate", "run", "--source", SQL_MIGRATION_PATH],
+    )?;
+
+    let mut args = vec!["prepare", "--workspace"];
+
+    if check {
+        args.push("--check");
+    }
+
+    args.extend(["--", "--all-targets", "--locked"]);
+    sqlx(&root, &database_url, &args)?;
 
     Ok(())
 }
