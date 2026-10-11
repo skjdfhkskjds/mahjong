@@ -1563,6 +1563,7 @@ dependencies = [
  "proc-macro2",
  "rstest",
  "syn 2.0.119",
+ "thiserror",
 ]
 
 [[package]]

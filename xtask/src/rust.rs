@@ -1,27 +1,30 @@
-use std::{
-    env,
-    path::Path,
-    process::{Command, ExitCode},
-};
+use std::{env, path::Path, process::Command};
 
-fn cargo(args: &[&str]) -> ExitCode {
+use crate::errors::TaskError;
+
+fn cargo(args: &[&str]) -> Result<(), TaskError> {
     println!("Running cargo {}", args.join(" "));
+
     let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("..");
-    match Command::new(env::var_os("CARGO").unwrap_or_else(|| "cargo".into()))
+
+    let command = format!("cargo {}", args.join(" "));
+    let status = Command::new(env::var_os("CARGO").unwrap_or_else(|| "cargo".into()))
         .args(args)
         .current_dir(root)
         .status()
-    {
-        Ok(status) if status.success() => ExitCode::SUCCESS,
-        Ok(_) => ExitCode::FAILURE,
-        Err(error) => {
-            eprintln!("Could not run cargo {}: {error}", args.join(" "));
-            ExitCode::FAILURE
-        }
+        .map_err(|source| TaskError::Spawn {
+            command: command.clone(),
+            source,
+        })?;
+
+    if !status.success() {
+        return Err(TaskError::Command { command, status });
     }
+
+    Ok(())
 }
 
-pub(crate) fn format(check: bool) -> ExitCode {
+pub(crate) fn format(check: bool) -> Result<(), TaskError> {
     if check {
         cargo(&["fmt", "--all", "--", "--check"])
     } else {
@@ -29,7 +32,7 @@ pub(crate) fn format(check: bool) -> ExitCode {
     }
 }
 
-pub(crate) fn clippy() -> ExitCode {
+pub(crate) fn clippy() -> Result<(), TaskError> {
     cargo(&[
         "clippy",
         "--workspace",

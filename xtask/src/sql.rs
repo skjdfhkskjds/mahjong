@@ -4,14 +4,18 @@ use std::{
     io::{self, Write},
     ops::Range,
     path::{Path, PathBuf},
-    process::{Command, ExitCode, Stdio},
+    process::{Command, Stdio},
 };
+
 use syn::{LitStr, Token, Type, parse::Parser, spanned::Spanned, visit::Visit};
 
+use crate::errors::TaskError;
+
 const SQL_FORMATTER: &str = "sql-formatter@15.9.0";
+
 pub(crate) const USAGE: &str = "Usage: cargo xtask format-sql [--write|--check]";
 
-type TaskError = Box<dyn Error>;
+const PREPARE_USAGE: &str = "Usage: cargo xtask sqlx-prepare [--check]";
 
 struct Query {
     literal: LitStr,
@@ -36,6 +40,7 @@ impl<'ast> Visit<'ast> for Queries {
         let name = segments.last().map(String::as_str).unwrap_or_default();
         let is_sqlx = segments.len() == 1 || (segments.len() == 2 && segments[0] == "sqlx");
         let typed = matches!(name, "query_as" | "query_as_unchecked");
+
         if is_sqlx
             && (typed
                 || matches!(
@@ -48,13 +53,16 @@ impl<'ast> Visit<'ast> for Queries {
                     input.parse::<Type>()?;
                     input.parse::<Token![,]>()?;
                 }
+
                 let literal = input.parse::<LitStr>()?;
                 if !input.is_empty() && !input.peek(Token![,]) {
                     return Err(input.error("SQL formatting requires a single string literal"));
                 }
+
                 input.parse::<proc_macro2::TokenStream>()?;
                 Ok(literal)
             };
+
             match parser.parse2(node.tokens.clone()) {
                 Ok(literal) => self
                     .literals
@@ -62,20 +70,24 @@ impl<'ast> Visit<'ast> for Queries {
                 Err(error) => self.errors.push(error),
             }
         }
+
         syn::visit::visit_macro(self, node);
     }
 }
 
-fn queries(source: &str) -> Result<Vec<Query>, TaskError> {
+fn queries(source: &str) -> Result<Vec<Query>, Box<dyn Error>> {
     let syntax = syn::parse_file(source)?;
+
     // syn removes these prefixes before assigning token spans.
     let prefix_len = if source.starts_with('\u{feff}') { 3 } else { 0 }
         + syntax.shebang.as_ref().map_or(0, String::len);
+
     let mut visitor = Queries::default();
     visitor.visit_file(&syntax);
     if let Some(error) = visitor.errors.into_iter().next() {
         return Err(format!("line {}: {error}", error.span().start().line).into());
     }
+
     visitor
         .literals
         .into_iter()
@@ -88,6 +100,7 @@ fn queries(source: &str) -> Result<Vec<Query>, TaskError> {
                 .chars()
                 .take_while(|c| *c == ' ' || *c == '\t')
                 .collect();
+
             Ok(Query {
                 literal,
                 range,
@@ -105,19 +118,23 @@ fn indent_sql(sql: &str, indent: &str) -> String {
     let mut block_comment = false;
     let mut line_comment = false;
     let mut line_start = true;
+
     while let Some(ch) = chars.next() {
         if line_start && ch != '\n' && quote.is_none() && !block_comment {
             result.push_str(indent);
         }
+
         result.push(ch);
         line_start = ch == '\n';
         if line_start {
             line_comment = false;
             continue;
         }
+
         if line_comment {
             continue;
         }
+
         if block_comment {
             if ch == '*' && chars.peek() == Some(&'/') {
                 result.push('/');
@@ -147,20 +164,24 @@ fn indent_sql(sql: &str, indent: &str) -> String {
             }
         }
     }
+
     result
 }
 
 fn render_query(query: &Query, sql: &str) -> String {
     let mut hashes = String::from("#");
+
     while sql.contains(&format!("\"{hashes}")) {
         hashes.push('#');
     }
+
     let indent = &query.indent;
     let lines = indent_sql(sql.trim_end(), &format!("{indent}        "));
+
     format!("r{hashes}\"\n{lines}\n{indent}    \"{hashes}")
 }
 
-fn format_sql(root: &Path, sql: &str) -> Result<String, TaskError> {
+fn format_sql(root: &Path, sql: &str) -> Result<String, Box<dyn Error>> {
     let mut child = Command::new("npx")
         .args(["--yes", SQL_FORMATTER, "--config"])
         .arg(root.join("backend/.sql-formatter.json"))
@@ -175,10 +196,12 @@ fn format_sql(root: &Path, sql: &str) -> Result<String, TaskError> {
                 format!("could not run npx (install Node.js and npm): {error}"),
             )
         })?;
+
     let mut stdin = child
         .stdin
         .take()
         .ok_or_else(|| io::Error::other("formatter stdin unavailable"))?;
+
     // Feed input concurrently: large SQL files can otherwise fill both pipes.
     let input = sql.to_owned();
     let writer = std::thread::spawn(move || stdin.write_all(input.as_bytes()));
@@ -189,25 +212,29 @@ fn format_sql(root: &Path, sql: &str) -> Result<String, TaskError> {
     if !output.status.success() {
         return Err(format!("{SQL_FORMATTER} failed with {}", output.status).into());
     }
+
     written?;
     Ok(String::from_utf8(output.stdout)?)
 }
 
-fn format_rust(root: &Path, source: &str) -> Result<String, TaskError> {
+fn format_rust(root: &Path, source: &str) -> Result<String, Box<dyn Error>> {
     let mut replacements: Vec<(Range<usize>, String)> = Vec::new();
+
     for query in queries(source)? {
         let formatted = format_sql(root, &query.literal.value())?;
         replacements.push((query.range.clone(), render_query(&query, &formatted)));
     }
+
     replacements.sort_by_key(|(range, _)| range.start);
     let mut result = source.to_owned();
+
     for (range, replacement) in replacements.into_iter().rev() {
         result.replace_range(range, &replacement);
     }
     Ok(result)
 }
 
-fn collect_files(directory: &Path, files: &mut Vec<PathBuf>) -> Result<(), TaskError> {
+fn collect_files(directory: &Path, files: &mut Vec<PathBuf>) -> Result<(), Box<dyn Error>> {
     for entry in fs::read_dir(directory)? {
         let entry = entry?;
         let kind = entry.file_type()?;
@@ -222,13 +249,15 @@ fn collect_files(directory: &Path, files: &mut Vec<PathBuf>) -> Result<(), TaskE
             files.push(entry.path());
         }
     }
+
     Ok(())
 }
 
-fn run(root: &Path, check: bool) -> Result<bool, TaskError> {
+fn run(root: &Path, check: bool) -> Result<(), Box<dyn Error>> {
     let mut files = Vec::new();
     collect_files(&root.join("backend/crates"), &mut files)?;
     files.sort();
+
     // Finish parsing/formatting everything before writing any source files.
     let mut changes = Vec::new();
     for path in files {
@@ -243,46 +272,53 @@ fn run(root: &Path, check: bool) -> Result<bool, TaskError> {
             changes.push((path, formatted));
         }
     }
+
+    if check && !changes.is_empty() {
+        let paths = changes
+            .iter()
+            .map(|(path, _)| {
+                path.strip_prefix(root)
+                    .map(|path| path.display().to_string())
+            })
+            .collect::<Result<Vec<_>, _>>()?;
+
+        return Err(format!("SQL formatting required:\n{}", paths.join("\n")).into());
+    }
+
     for (path, formatted) in &changes {
         let relative = path.strip_prefix(root)?;
-        if check {
-            eprintln!("SQL formatting required: {}", relative.display());
-        } else {
-            fs::write(path, formatted)?;
-            println!("Formatted {}", relative.display());
-        }
+        fs::write(path, formatted)?;
+        println!("Formatted {}", relative.display());
     }
+
     if !check
         && changes
             .iter()
             .any(|(path, _)| path.extension().is_some_and(|ext| ext == "rs"))
     {
-        println!(
-            "Run cargo fmt --all, then backend/scripts/prepare-sqlx.sh to refresh SQLx metadata."
-        );
+        println!("Run cargo fmt --all, then cargo xtask sqlx-prepare to refresh SQLx metadata.");
     }
-    Ok(!check || changes.is_empty())
+
+    Ok(())
 }
 
-pub(crate) fn format(check: bool) -> ExitCode {
+pub(crate) fn format(check: bool) -> Result<(), TaskError> {
     let mode = if check { "--check" } else { "--write" };
     println!("Running SQL formatting {mode}");
+
     let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("..");
-    match run(&root, check) {
-        Ok(true) => ExitCode::SUCCESS,
-        Ok(false) => ExitCode::FAILURE,
-        Err(error) => {
-            eprintln!("{error}");
-            ExitCode::FAILURE
-        }
-    }
+
+    run(&root, check)?;
+
+    Ok(())
 }
 
-pub(crate) fn execute(args: &[String]) -> ExitCode {
+pub(crate) fn execute(args: &[String]) -> Result<(), TaskError> {
     if args == ["--help"] {
         println!("{USAGE}");
-        return ExitCode::SUCCESS;
+        return Ok(());
     }
+
     let check = match args
         .iter()
         .map(String::as_str)
@@ -291,12 +327,60 @@ pub(crate) fn execute(args: &[String]) -> ExitCode {
     {
         [] | ["--write"] => false,
         ["--check"] => true,
-        _ => {
-            eprintln!("{USAGE}");
-            return ExitCode::from(2);
-        }
+        _ => return Err(TaskError::Usage(USAGE)),
     };
+
     format(check)
+}
+
+pub(crate) fn prepare(check: bool) -> Result<(), TaskError> {
+    let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("..");
+    let mut command = Command::new("bash");
+    command
+        .arg(root.join("backend/scripts/prepare-sqlx.sh"))
+        .current_dir(root);
+
+    if check {
+        println!("Checking SQLx offline metadata");
+        command.arg("--check");
+    } else {
+        println!("Preparing SQLx offline metadata");
+    }
+
+    let label = if check {
+        "SQLx offline metadata check"
+    } else {
+        "SQLx offline metadata preparation"
+    }
+    .to_owned();
+    let status = command.status().map_err(|source| TaskError::Spawn {
+        command: label.clone(),
+        source,
+    })?;
+
+    if !status.success() {
+        return Err(TaskError::Command {
+            command: label,
+            status,
+        });
+    }
+
+    Ok(())
+}
+
+pub(crate) fn execute_prepare(args: &[String]) -> Result<(), TaskError> {
+    if args == ["--help"] || args == ["-h"] {
+        println!("{PREPARE_USAGE}");
+        return Ok(());
+    }
+
+    if args.is_empty() {
+        prepare(false)
+    } else if args == ["--check"] {
+        prepare(true)
+    } else {
+        Err(TaskError::Usage(PREPARE_USAGE))
+    }
 }
 
 #[cfg(test)]
@@ -317,9 +401,10 @@ mod tests {
     fn finds_only_query_literal(
         #[case] expression: &str,
         #[case] expected: &str,
-    ) -> Result<(), TaskError> {
+    ) -> Result<(), Box<dyn Error>> {
         let source = format!("fn main() {{ let _ = \"🀄\"; {expression}; }}");
         let found = queries(&source)?;
+
         assert_eq!(found.len(), 1);
         assert_eq!(found[0].literal.value(), expected);
         let range = found[0].range.clone();
@@ -331,15 +416,18 @@ mod tests {
     #[case("\u{feff}")]
     #[case("#!/usr/bin/env rust-script\n")]
     #[case("\u{feff}#!/usr/bin/env rust-script\n")]
-    fn preserves_file_prefixes(#[case] prefix: &str) -> Result<(), TaskError> {
+    fn preserves_file_prefixes(#[case] prefix: &str) -> Result<(), Box<dyn Error>> {
         let source = format!("{prefix}fn main() {{ sqlx::query!(\"select 1\"); }}");
         let found = queries(&source)?;
+
         assert_eq!(&source[found[0].range.clone()], "\"select 1\"");
         let mut changed = source;
+
         changed.replace_range(
             found[0].range.clone(),
             &render_query(&found[0], "SELECT\n    1"),
         );
+
         assert!(changed.starts_with(prefix));
         assert_eq!(queries(&changed)?.len(), 1);
         Ok(())
@@ -360,13 +448,15 @@ mod tests {
     }
 
     #[rstest]
-    fn preserves_sql_and_surrounding_rust() -> Result<(), TaskError> {
+    fn preserves_sql_and_surrounding_rust() -> Result<(), Box<dyn Error>> {
         let source = "fn main() {\n    sqlx::query!(\"select ?\", arg);\n}";
         let found = queries(source)?;
         let sql = "SELECT\n    'quote\"# and \\ slash',\n    ?\n";
         let replacement = render_query(&found[0], sql);
         let mut changed = source.to_owned();
+
         changed.replace_range(found[0].range.clone(), &replacement);
+
         assert!(changed.ends_with(", arg);\n}"));
         let reparsed = queries(&changed)?;
         let unindented = reparsed[0]
@@ -377,6 +467,7 @@ mod tests {
             .map(|line| line.strip_prefix("            ").unwrap_or(line).to_owned())
             .collect::<Vec<_>>()
             .join("\n");
+
         assert_eq!(unindented, sql.trim_end());
         assert_eq!(render_query(&reparsed[0], sql), replacement);
         Ok(())
@@ -390,7 +481,7 @@ mod tests {
     }
 
     #[rstest]
-    fn ignores_files_and_unrelated_strings() -> Result<(), TaskError> {
+    fn ignores_files_and_unrelated_strings() -> Result<(), Box<dyn Error>> {
         assert!(
             queries(
                 r#"fn main() {

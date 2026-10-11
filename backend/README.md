@@ -26,6 +26,8 @@ cargo xtask precommit
 cargo xtask check
 cargo xtask format-sql
 cargo xtask format-sql --check
+cargo xtask sqlx-prepare
+cargo xtask sqlx-prepare --check
 cargo run --package mahjong --locked
 cargo build --workspace --locked
 cargo fmt --all -- --check
@@ -33,14 +35,15 @@ cargo clippy --workspace --all-targets --locked -- -D warnings
 cargo test --workspace --locked
 ```
 
-`cargo xtask precommit` formats SQL, runs `cargo fmt --all`, then runs
+`cargo xtask precommit` formats SQL, runs `cargo fmt --all`, regenerates SQLx
+offline metadata, then runs
 `cargo clippy --workspace --all-targets --locked -- -D warnings`.
 `cargo xtask check` runs the same sequence using SQL `--check` and
-`cargo fmt --all -- --check`, so it verifies formatting without editing source.
+`cargo fmt --all -- --check`, followed by SQLx `prepare --check`, so it verifies
+formatting and metadata without editing source or the committed `.sqlx` files.
 Clippy reports warnings as errors in both commands. Each command stops at the
 first failure. These are manual commands; they do not install a Git hook.
-If formatting changes inline query strings, regenerate `.sqlx` metadata as
-described below and rerun the command so Clippy can compile the queries offline.
+SQLx preparation runs before Clippy so newly formatted queries can compile offline.
 
 SQL formatting uses the pinned `sql-formatter` CLI through `npx` and requires
 Node.js and npm (the first run downloads the formatter). The xtask formats `.sql`
@@ -55,13 +58,22 @@ Concatenated or computed query expressions in recognized macros fail explicitly.
 unchanged and exits nonzero if formatting is needed or a formatter fails. The
 `backend/scripts/format-sql.sh [--write|--check]` wrapper runs the same task from
 any working directory. CI integration is deferred; its eventual entry point is
-`cargo xtask check` after installing Rust and Node.js/npm.
+`cargo xtask check` after installing Rust, Node.js/npm, and `sqlx-cli`.
 
 After formatting inline queries, run `cargo fmt --all` and
-`backend/scripts/prepare-sqlx.sh` to regenerate the offline `.sqlx` metadata,
-then commit those changes together. Metadata generation requires `sqlx-cli`
-0.9.0 with SQLite support. Formatting alone does not require a database or the
-SQLx CLI. Format migrations before applying them: SQLx checksums migration files,
+`cargo xtask sqlx-prepare` to regenerate the offline `.sqlx` metadata,
+then commit those changes together (or run `cargo xtask precommit` for all steps).
+`cargo xtask sqlx-prepare --check` verifies the committed metadata. Both modes
+reuse `backend/scripts/prepare-sqlx.sh`, which creates and migrates a temporary
+SQLite database and cleans it up afterward. Metadata generation and verification
+require `sqlx-cli` 0.9.0 with SQLite support:
+
+```sh
+cargo install sqlx-cli --version 0.9.0 --no-default-features --features sqlite --locked
+```
+
+Formatting alone does not require a database or the SQLx CLI.
+Format migrations before applying them: SQLx checksums migration files,
 so reformatting an already-applied migration causes a checksum mismatch.
 
 The workspace shares package metadata and lints. Add new crates only when they

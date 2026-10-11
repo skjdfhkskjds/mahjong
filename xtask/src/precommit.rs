@@ -1,25 +1,21 @@
-use std::process::ExitCode;
-
-use crate::{rust, sql};
+use crate::{errors::TaskError, rust, sql};
 
 const USAGE: &str = "Usage: cargo xtask precommit";
 
-pub(crate) fn execute(args: &[String]) -> ExitCode {
+pub(crate) fn execute(args: &[String]) -> Result<(), TaskError> {
     if args == ["--help"] || args == ["-h"] {
         println!("{USAGE}");
-        return ExitCode::SUCCESS;
+        return Ok(());
     }
+
     if !args.is_empty() {
-        eprintln!("{USAGE}");
-        return ExitCode::from(2);
+        return Err(TaskError::Usage(USAGE));
     }
-    let status = sql::format(false);
-    if status != ExitCode::SUCCESS {
-        return status;
-    }
-    let status = rust::format(false);
-    if status != ExitCode::SUCCESS {
-        return status;
-    }
-    rust::clippy()
+
+    sql::format(false)?;
+    rust::format(false)?;
+    sql::prepare(false)?;
+    rust::clippy()?;
+
+    Ok(())
 }
