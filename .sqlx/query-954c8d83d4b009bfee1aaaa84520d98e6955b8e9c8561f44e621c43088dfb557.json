@@ -1,0 +1,38 @@
+{
+  "db_name": "SQLite",
+  "query": "SELECT revision, payload FROM sessions WHERE session_id = ?",
+  "describe": {
+    "columns": [
+      {
+        "name": "revision",
+        "ordinal": 0,
+        "type_info": "Integer",
+        "origin": {
+          "Table": {
+            "table": "sessions",
+            "name": "revision"
+          }
+        }
+      },
+      {
+        "name": "payload",
+        "ordinal": 1,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "sessions",
+            "name": "payload"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Right": 1
+    },
+    "nullable": [
+      false,
+      false
+    ]
+  },
+  "hash": "954c8d83d4b009bfee1aaaa84520d98e6955b8e9c8561f44e621c43088dfb557"
+}

@@ -1,5 +1,9 @@
 # Game runner
 
+Implementation note: the [Rust implementation contract](implementation.md)
+resolves the initial API, coordination, and local SQLx persistence choices. This
+component document records responsibilities and the original design questions.
+
 The runner is the application coordinator in the
 [backend redesign](README.md). It owns message ordering, readiness, response
 collection, deadlines, lifecycle coordination, persistence, and publication. It

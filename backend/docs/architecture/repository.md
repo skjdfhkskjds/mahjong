@@ -1,5 +1,9 @@
 # Repository and recovery
 
+Implementation note: the [Rust implementation contract](implementation.md)
+resolves the initial API, coordination, and local SQLx persistence choices. This
+component document records responsibilities and the original design questions.
+
 The repository is the persistence boundary in the
 [backend redesign](README.md). The [runner](runner.md) owns loading, saving,
 transaction coordination, and acceptance of transitions. The

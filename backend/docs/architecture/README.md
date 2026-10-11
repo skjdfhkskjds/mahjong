@@ -4,11 +4,12 @@ This document set records the backend architecture agreed in the September 30,
 2026 design conversation, organized by component on October 2, 2026. It is the
 starting point for the replacement design. Component responsibilities and
 lifecycle decisions are agreed; detailed interfaces remain proposals where
-marked. The replacement has not been implemented.
+marked. The initial Rust library implementation is specified in the
+[implementation contract](implementation.md); server transport remains unwired.
 
 The root Cargo workspace and its initial `mahjong` binary crate provide
 the Rust implementation foundation. The entry point currently exits without
-starting a service; component implementation has not begun. See the
+starting a service. The engine library and generic ruleset contracts are implemented. See the
 [Rust backend guide](../../../README.md) for development commands.
 
 The existing system supplies lessons and behavior examples. Its package layout,
@@ -79,7 +80,10 @@ Canonical state and internal events stay inside the authoritative boundary.
 Ruleset decisions receive any required time, identifiers, and randomness as
 explicit inputs.
 
-## Design sequence and scope
+## Original design sequence and scope
+
+The [implementation contract](implementation.md) resolves the Rust interface and
+local persistence proposals below. Concrete ruleset implementations remain separate work.
 
 Response validation is settled: current state plus a proposed transition returns
 a validity result without changing state. The next topic is the
